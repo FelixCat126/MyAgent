@@ -1,0 +1,86 @@
+// Preload：必须在任何页面脚本之前运行，全局包装 ipcRenderer，避免 Structured Clone 报错
+const { ipcRenderer } = require('electron');
+
+function cloneForIpc(v) {
+  if (v === undefined || v === null) return v;
+  try {
+    const s = JSON.stringify(v);
+    if (s === undefined) return undefined;
+    return JSON.parse(s);
+  } catch (e) {
+    console.warn('[cloneForIpc]', e);
+    return null;
+  }
+}
+
+(function patchIpcRenderer() {
+  const rawSend = ipcRenderer.send.bind(ipcRenderer);
+  ipcRenderer.send = function patchedSend(channel, ...args) {
+    const cleaned = args.map((a) => (a === undefined || a === null ? a : cloneForIpc(a)));
+    return rawSend(channel, ...cleaned);
+  };
+  const rawInvoke = ipcRenderer.invoke.bind(ipcRenderer);
+  ipcRenderer.invoke = function patchedInvoke(channel, ...args) {
+    const cleaned = args.map((a) => (a === undefined || a === null ? a : cloneForIpc(a)));
+    return rawInvoke(channel, ...cleaned);
+  };
+})();
+
+window.electron = {
+  sendMessage: (channel, data) =>
+    ipcRenderer.send(channel, data == null ? null : cloneForIpc(data)),
+  onMessage: (channel, func) => {
+    const handler = (_event, ...args) => func(...args);
+    ipcRenderer.on(channel, handler);
+    return () => ipcRenderer.removeListener(channel, handler);
+  },
+  callModel: (messages, config, options) =>
+    ipcRenderer.invoke('call-model', cloneForIpc(messages), cloneForIpc(config), cloneForIpc(options ?? null)),
+  subscribeModelStream: (messages, config, handlers) => {
+    const d = (_e, t) => handlers.onDelta(t);
+    const err = (_e, m) => handlers.onError(m);
+    const end = () => {
+      cleanup();
+      handlers.onEnd();
+    };
+    function cleanup() {
+      ipcRenderer.removeListener('model-stream-delta', d);
+      ipcRenderer.removeListener('model-stream-error', err);
+      ipcRenderer.removeListener('model-stream-end', end);
+    }
+    ipcRenderer.on('model-stream-delta', d);
+    ipcRenderer.on('model-stream-error', err);
+    ipcRenderer.on('model-stream-end', end);
+    ipcRenderer.send(
+      'model-stream-start',
+      cloneForIpc({ messages, config, locale: handlers.locale || 'zh' })
+    );
+    return () => {
+      ipcRenderer.send('model-stream-abort');
+      cleanup();
+    };
+  },
+  closeModelStream: () => ipcRenderer.send('model-stream-abort'),
+  saveTextFile: (arg) => ipcRenderer.invoke('save-text-file', cloneForIpc(arg)),
+  importTextFile: () => ipcRenderer.invoke('import-text-file'),
+  readTextFileAbsolute: (p) => ipcRenderer.invoke('read-text-file-absolute', cloneForIpc(p)),
+  readWorkspaceHint: (arg) => ipcRenderer.invoke('read-workspace-hint', cloneForIpc(arg)),
+  getClipboardText: () => ipcRenderer.invoke('get-clipboard-text'),
+  setClipboardText: (t) => ipcRenderer.invoke('set-clipboard-text', cloneForIpc(t)),
+  uploadFile: (fileData) => ipcRenderer.invoke('upload-file', cloneForIpc(fileData)),
+  launchApp: (appName) => ipcRenderer.invoke('launch-app', cloneForIpc(appName)),
+  getInstalledApps: () => ipcRenderer.invoke('get-installed-apps'),
+  generateImage: (params) => ipcRenderer.invoke('generate-image', cloneForIpc(params)),
+  webSearch: (params) => ipcRenderer.invoke('web-search', cloneForIpc(params)),
+  persistGet: (name) => ipcRenderer.invoke('persist-state-get', name),
+  persistSet: (name, value) => ipcRenderer.invoke('persist-state-set', cloneForIpc({ name, value })),
+  persistRemove: (name) => ipcRenderer.invoke('persist-state-remove', name),
+  persistClearAll: () => ipcRenderer.invoke('persist-state-clear-all'),
+  persistGetSync: (name) => {
+    const v = ipcRenderer.sendSync('persist-state-get-sync', name);
+    return v === undefined || v === null ? null : String(v);
+  },
+  persistSetSync: (name, value) => {
+    ipcRenderer.send('persist-state-set-sync', name, value);
+  },
+};

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="用户头像">
+  <defs>
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffe8d9"/>
+      <stop offset="100%" stop-color="#ffd0c0"/>
+    </linearGradient>
+    <linearGradient id="hair" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6b4f7a"/>
+      <stop offset="100%" stop-color="#3d2a4a"/>
+    </linearGradient>
+  </defs>
+  <circle cx="32" cy="32" r="32" fill="#1e1526"/>
+  <path fill="url(#hair)" d="M12 30c0-12 8-20 20-20s20 8 20 20c0 2-1 4-2 6 2-4 2-6 2-6 0-14-10-18-20-18S8 20 8 34c0 6 2 10 2 10-4-4-2-8-2-8z"/>
+  <circle cx="32" cy="34" r="20" fill="url(#face)"/>
+  <ellipse cx="32" cy="32" fill="#f0b0a8" opacity=".35" rx="12" ry="6"/>
+  <ellipse cx="24" cy="34" fill="#1a1a2e" rx="3.2" ry="4"/>
+  <ellipse cx="40" cy="34" fill="#1a1a2e" rx="3.2" ry="4"/>
+  <circle cx="25" cy="32.5" fill="#fff" r="1.1"/>
+  <circle cx="41" cy="32.5" fill="#fff" r="1.1"/>
+  <path fill="none" stroke="#c97b8a" stroke-linecap="round" stroke-width="1.2" d="M26 42c2 1.5 4 2 6 2s4-.5 6-2"/>
+  <ellipse cx="22" cy="38" fill="#f5a0b0" opacity=".5" rx="2.2" ry="1.1"/>
+  <ellipse cx="42" cy="38" fill="#f5a0b0" opacity=".5" rx="2.2" ry="1.1"/>
+</svg>
