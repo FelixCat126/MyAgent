@@ -1,6 +1,7 @@
 import { clipboard, dialog, ipcMain } from 'electron';
 import fs from 'fs/promises';
 import path from 'path';
+import { expandUserPath } from '../utils/expandUserPath';
 
 const TEXT_LIMIT = 800_000;
 
@@ -78,8 +79,9 @@ ipcMain.handle('set-clipboard-text', async (_e, t: string) => {
 ipcMain.handle(
   'read-workspace-hint',
   async (_e, arg: { root: string; maxChars: number }) => {
-    const root = String(arg?.root || '').trim();
-    if (!root) return { ok: false as const };
+    const rawRoot = String(arg?.root || '').trim();
+    if (!rawRoot) return { ok: false as const };
+    const root = path.resolve(expandUserPath(rawRoot));
     const max = Math.min(200_000, Math.max(500, arg?.maxChars ?? 12_000));
     for (const name of ['MYAGENT_KNOWLEDGE.md', 'knowledge.md', 'README.md']) {
       const p = path.join(root, name);

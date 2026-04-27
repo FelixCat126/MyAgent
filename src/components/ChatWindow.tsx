@@ -5,6 +5,7 @@ import { useWebSearchStore } from '../store/webSearchStore';
 import { useSettingStore } from '../store/settingStore';
 import { useI18n } from '../hooks/useI18n';
 import { useWorkspaceStore } from '../store/workspaceStore';
+import { useKnowledgeStore } from '../store/knowledgeStore';
 import { Message, ChatSession, FileInfo, ModelConfig, WebSearchProvider } from '../types';
 import { FiPaperclip, FiFile, FiImage, FiSquare, FiDownload, FiGlobe } from 'react-icons/fi';
 import MessageItem from './MessageItem';
@@ -14,6 +15,86 @@ import { getWebSearchQueryIfTriggered } from '../utils/webSearchTrigger';
 import { extractLaunchAppNames, extractGenerateImageCalls } from '../utils/toolCalls';
 import { sessionToHtml, sessionToMarkdown } from '../utils/exportChat';
 import { canUseSseStream, effectiveWebEnabled } from '../utils/chatModelPolicy';
+import { enrichMessagesForModel } from '../utils/enrichMessagesForModel';
+
+function userQueryTextForRag(m: Message): string {
+  const t = (m.content || '').trim();
+  if (t && t !== '（附件）') return t;
+  if (m.files?.length) return m.files.map((f) => f.name).join(' ');
+  return '';
+}
+
+/** 本次发送是否用到工作区向量（仅用于界面提示，不落盘） */
+type VectorRagSendHint =
+  | { kind: 'skipped' }
+  | { kind: 'injected'; usedChunks: number; totalChunks: number }
+  | { kind: 'empty' }
+  | { kind: 'error'; message: string };
+
+/** 工作区向量索引：按用户问题检索相关片段（不落盘到聊天记录）。不设关键词门控；是否注入由主进程嵌入 + 相关度阈值决定。 */
+async function maybeInjectVectorRag(
+  sessionMessages: Message[],
+  userMessage: Message
+): Promise<{ messages: Message[]; ragHint: VectorRagSendHint }> {
+  const root = useWorkspaceStore.getState().rootPath.trim();
+  const {
+    vectorRagEnabled,
+    vectorTopK,
+    ragMaxInjectChars,
+    getEmbedConfigForIpc,
+  } = useKnowledgeStore.getState();
+  const embed = getEmbedConfigForIpc();
+  if (!root || !vectorRagEnabled || !embed) {
+    return { messages: [...sessionMessages, userMessage], ragHint: { kind: 'skipped' } };
+  }
+  const q = userQueryTextForRag(userMessage);
+  if (!q) {
+    return { messages: [...sessionMessages, userMessage], ragHint: { kind: 'skipped' } };
+  }
+  try {
+    const r = await window.electron.knowledgeSearch({
+      root,
+      query: q,
+      topK: vectorTopK,
+      maxChars: ragMaxInjectChars,
+      embed,
+    });
+    if (!r.ok) {
+      const msg = r.error || 'unknown';
+      console.warn('[RAG]', msg);
+      return {
+        messages: [...sessionMessages, userMessage],
+        ragHint: { kind: 'error', message: msg },
+      };
+    }
+    const total = r.meta?.chunkCount ?? 0;
+    if (!r.text?.trim()) {
+      return { messages: [...sessionMessages, userMessage], ragHint: { kind: 'empty' } };
+    }
+    const used = r.meta?.usedChunks ?? 0;
+    const inj: Message = {
+      id: `vecctx-${Date.now()}`,
+      role: 'system',
+      content:
+        '【工作区向量检索·相关素材片段】\n' +
+        '以下片段由本地向量索引按语义选出，与本次用户问题最相关。请仅在不与后文其他系统说明冲突时参考；若片段不足，请向用户说明可补充的文档或重新建索引。\n\n' +
+        r.text,
+      timestamp: Date.now(),
+      model: 'vector-rag',
+    };
+    return {
+      messages: [inj, ...sessionMessages, userMessage],
+      ragHint: { kind: 'injected', usedChunks: used, totalChunks: total },
+    };
+  } catch (e) {
+    console.warn('[RAG] search failed', e);
+    const message = e instanceof Error ? e.message : String(e);
+    return {
+      messages: [...sessionMessages, userMessage],
+      ragHint: { kind: 'error', message },
+    };
+  }
+}
 
 /** 工作区根目录下 MYAGENT_KNOWLEDGE.md / knowledge.md / README.md 片段 */
 async function maybeInjectWorkspaceMessages(
@@ -108,11 +189,16 @@ async function buildOutgoingChain(
   historyWithoutUser: Message[],
   userMessage: Message,
   web: { enabled: boolean; provider: WebSearchProvider; apiKey: string }
-): Promise<Message[]> {
-  const withWs = await maybeInjectWorkspaceMessages(historyWithoutUser, userMessage);
+): Promise<{ chain: Message[]; ragHint: VectorRagSendHint }> {
+  const vec = await maybeInjectVectorRag(historyWithoutUser, userMessage);
+  const withVec = vec.messages;
+  const hist0 = withVec.slice(0, -1);
+  const last0 = withVec[withVec.length - 1];
+  const withWs = await maybeInjectWorkspaceMessages(hist0, last0);
   const hist = withWs.slice(0, -1);
   const last = withWs[withWs.length - 1];
-  return buildMessagesWithOptionalWebSearch(hist, last, web);
+  const chain = await buildMessagesWithOptionalWebSearch(hist, last, web);
+  return { chain, ragHint: vec.ragHint };
 }
 
 async function postProcessAssistantContent(
@@ -187,6 +273,29 @@ async function postProcessAssistantContent(
   return { content: text, files };
 }
 
+function formatVectorRagHint(
+  h: VectorRagSendHint,
+  t: (key: string, params?: Record<string, string | number>) => string
+): { text: string; tone: 'success' | 'info' | 'error' } | null {
+  if (h.kind === 'skipped') return null;
+  if (h.kind === 'injected') {
+    return {
+      text: t('chat.ragStatusInjected', { used: h.usedChunks, total: h.totalChunks }),
+      tone: 'success',
+    };
+  }
+  if (h.kind === 'empty') {
+    return { text: t('chat.ragStatusEmpty'), tone: 'info' };
+  }
+  const err = h.message;
+  return {
+    text: t('chat.ragStatusError', {
+      err: err.length > 120 ? err.slice(0, 120) + '…' : err,
+    }),
+    tone: 'error',
+  };
+}
+
 const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   const {
     currentSessionId,
@@ -219,6 +328,10 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   const inlineImageIndexRef = useRef(0);
   inlineImageIndexRef.current = inlineImageIndex;
   const [isStreaming, setIsStreaming] = useState(false);
+  const [vectorRagStatus, setVectorRagStatus] = useState<{
+    text: string;
+    tone: 'success' | 'info' | 'error';
+  } | null>(null);
   const streamUnsubRef = useRef<(() => void) | null>(null);
   const streamHadErrorRef = useRef(false);
   const streamingAssistantIdRef = useRef<string | null>(null);
@@ -226,19 +339,27 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   const currentSession = sessions.find((s: ChatSession) => s.id === currentSessionId);
   const messages = currentSession?.messages || [];
 
+  useEffect(() => {
+    setVectorRagStatus(null);
+  }, [currentSessionId]);
+
   const runModelReply = useCallback(
     async (sendSessionId: string, historyBeforeUser: Message[], userMessage: Message, activeModel: ModelConfig) => {
       const session = useChatStore.getState().sessions.find((s) => s.id === sendSessionId);
       const webState = useWebSearchStore.getState();
       const webOn = effectiveWebEnabled(session, webState.enabled);
+      setVectorRagStatus(null);
 
       let chain: Message[];
+      let ragHint: VectorRagSendHint;
       try {
-        chain = await buildOutgoingChain(historyBeforeUser, userMessage, {
+        const built = await buildOutgoingChain(historyBeforeUser, userMessage, {
           enabled: webOn,
           provider: webState.provider,
           apiKey: webState.apiKey,
         });
+        chain = built.chain;
+        ragHint = built.ragHint;
       } catch (e) {
         console.error(e);
         addMessage(sendSessionId, {
@@ -252,7 +373,25 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         return;
       }
 
-      const plainMessages = JSON.parse(JSON.stringify(chain)) as Message[];
+      let chainForModel: Message[];
+      try {
+        chainForModel = await enrichMessagesForModel(chain, uiLocale);
+      } catch (e) {
+        console.error(e);
+        addMessage(sendSessionId, {
+          id: `${Date.now()}-err2`,
+          role: 'assistant',
+          content: t('chat.buildFailed') + (e instanceof Error ? e.message : String(e)),
+          timestamp: Date.now(),
+          model: activeModel.name,
+        });
+        clearLoadingForSession(sendSessionId);
+        return;
+      }
+
+      setVectorRagStatus(formatVectorRagHint(ragHint, t));
+
+      const plainMessages = JSON.parse(JSON.stringify(chainForModel)) as Message[];
       const plainModel = JSON.parse(JSON.stringify(activeModel)) as ModelConfig;
       const useStream = useSettingStore.getState().streamResponses && canUseSseStream(activeModel);
 
@@ -601,6 +740,22 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         </div>
       )}
 
+      {vectorRagStatus && (
+        <div
+          className={
+            'shrink-0 border-b px-6 py-2.5 text-[11px] leading-relaxed antialiased ' +
+            (vectorRagStatus.tone === 'error'
+              ? 'border-red-200/80 bg-red-50 text-red-900 dark:border-red-500/35 dark:bg-red-950/50 dark:text-red-100'
+              : vectorRagStatus.tone === 'success'
+                ? 'border-emerald-200/80 bg-emerald-50/95 text-emerald-950 dark:border-emerald-500/30 dark:bg-emerald-950/45 dark:text-emerald-50'
+                : 'border-amber-200/90 bg-amber-50/95 text-amber-950 dark:border-amber-500/30 dark:bg-amber-950/40 dark:text-amber-50')
+          }
+          role="status"
+        >
+          {vectorRagStatus.text}
+        </div>
+      )}
+
       <div
         ref={scrollContainerRef}
         className="flex-1 min-h-0 overflow-y-auto px-8 py-4 space-y-4"
@@ -720,7 +875,14 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
             ) : null;
           })()}
 
-          <input type="file" multiple ref={fileInputRef} onChange={handleFileInput} className="hidden" />
+          <input
+            type="file"
+            multiple
+            ref={fileInputRef}
+            onChange={handleFileInput}
+            className="hidden"
+            accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.xlsm,.md,.markdown,.txt,.csv,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+          />
 
           <div className="flex w-full min-w-0 items-center gap-2">
             <div className="flex min-h-10 min-w-0 flex-1 items-center gap-1 rounded-2xl border border-stone-400/28 bg-stone-100/95 py-0 pl-1.5 pr-1 shadow-sm transition-all focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-500/50 dark:border-slate-700 dark:bg-slate-800/80">

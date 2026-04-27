@@ -1,10 +1,24 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useModelStore } from '../store/modelStore';
 import { useWebSearchStore } from '../store/webSearchStore';
 import { useSettingStore } from '../store/settingStore';
 import { useWorkspaceStore } from '../store/workspaceStore';
+import { useKnowledgeStore } from '../store/knowledgeStore';
 import { ModelConfig, WebSearchProvider } from '../types';
-import { FiPlus, FiTrash2, FiSave, FiEdit2, FiChevronDown, FiChevronUp, FiGlobe, FiCpu, FiZap, FiFolder, FiShield } from 'react-icons/fi';
+import {
+  FiPlus,
+  FiTrash2,
+  FiSave,
+  FiEdit2,
+  FiChevronDown,
+  FiChevronUp,
+  FiGlobe,
+  FiCpu,
+  FiZap,
+  FiFolder,
+  FiShield,
+  FiLayers,
+} from 'react-icons/fi';
 import { IosSwitch } from './IosSwitch';
 import { useI18n } from '../hooks/useI18n';
 
@@ -55,9 +69,56 @@ const SettingsPanel: React.FC = () => {
   } = useWebSearchStore();
   const { streamResponses, setStreamResponses } = useSettingStore();
   const { rootPath, maxChars, setRootPath, setMaxChars } = useWorkspaceStore();
+  const {
+    vectorRagEnabled,
+    setVectorRagEnabled,
+    vectorTopK,
+    setVectorTopK,
+    ragMaxInjectChars,
+    setRagMaxInjectChars,
+    embeddingProvider,
+    setEmbeddingProvider,
+    embeddingApiUrl,
+    setEmbeddingApiUrl,
+    embeddingApiKey,
+    setEmbeddingApiKey,
+    embeddingModel,
+    setEmbeddingModel,
+    embeddingVolcMultimodal,
+    setEmbeddingVolcMultimodal,
+    getEmbedConfigForIpc,
+  } = useKnowledgeStore();
   const [modelBlockExpanded, setModelBlockExpanded] = useState(true);
   const [webSearchBlockExpanded, setWebSearchBlockExpanded] = useState(true);
+  const [knowledgeBlockExpanded, setKnowledgeBlockExpanded] = useState(true);
   const [appBlockExpanded, setAppBlockExpanded] = useState(true);
+  const [indexBusy, setIndexBusy] = useState(false);
+  const [indexMeta, setIndexMeta] = useState<{
+    chunkCount: number;
+    root: string | null;
+    model: string | null;
+    updatedAt: number;
+  } | null>(null);
+
+  const refreshIndexStatus = useCallback(async () => {
+    try {
+      const s = await window.electron.knowledgeGetIndexStatus();
+      if (s?.ok) {
+        setIndexMeta({
+          chunkCount: s.chunkCount,
+          root: s.root,
+          model: s.model,
+          updatedAt: s.updatedAt,
+        });
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshIndexStatus();
+  }, [refreshIndexStatus]);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState<EditingFormData>(defaultFormData);
@@ -561,6 +622,227 @@ const SettingsPanel: React.FC = () => {
 
         <section
           className={`${cardShell} mt-2 shrink-0`}
+          aria-labelledby="settings-knowledge-heading"
+        >
+          <div className="flex items-center justify-between gap-2 border-b border-stone-300/38 px-3 py-2.5 dark:border-white/10">
+            <div className="flex min-w-0 items-center gap-2">
+              <FiLayers className="shrink-0 text-primary-600 dark:text-primary-400" size={16} aria-hidden />
+              <h2 id="settings-knowledge-heading" className="text-sm font-semibold text-stone-800 dark:text-white">
+                {t('settings.knowledge')}
+              </h2>
+            </div>
+            <button
+              type="button"
+              aria-expanded={knowledgeBlockExpanded}
+              onClick={() => setKnowledgeBlockExpanded((v) => !v)}
+              className="rounded-lg p-1.5 text-stone-500 transition-colors hover:bg-stone-200/65 hover:text-stone-800 dark:hover:bg-white/10 dark:hover:text-white"
+            >
+              {knowledgeBlockExpanded ? <FiChevronUp size={18} /> : <FiChevronDown size={18} />}
+            </button>
+          </div>
+          {knowledgeBlockExpanded && (
+            <div className="space-y-2.5 px-3 pb-3 pt-3">
+              <p className="text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
+                {t('settings.knowledgeDescShort')}
+              </p>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs text-stone-700 dark:text-slate-300">{t('settings.ragEnableShort')}</span>
+                <IosSwitch
+                  checked={vectorRagEnabled}
+                  aria-label={t('settings.ragEnableShort')}
+                  onChange={setVectorRagEnabled}
+                />
+              </div>
+              <p className="text-[10px] font-medium text-stone-600 dark:text-slate-400">
+                {t('settings.knowledgePickSource')}
+              </p>
+              <div className="grid grid-cols-3 gap-1.5">
+                {(
+                  [
+                    { id: 'off' as const, label: t('settings.knowledgeModeOff') },
+                    { id: 'ollama' as const, label: t('settings.knowledgeModeLocal') },
+                    { id: 'openai' as const, label: t('settings.knowledgeModeCloud') },
+                  ] as const
+                ).map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setEmbeddingProvider(opt.id)}
+                    className={
+                      'rounded-lg border px-1.5 py-2 text-center text-[11px] font-medium leading-tight transition-colors ' +
+                      (embeddingProvider === opt.id
+                        ? 'border-primary-500/80 bg-primary-500/12 text-primary-800 shadow-sm ring-1 ring-primary-500/15 dark:border-primary-400/55 dark:bg-primary-500/18 dark:text-primary-100 dark:ring-primary-400/10'
+                        : 'border-stone-300/40 bg-stone-100/85 text-stone-700 hover:border-stone-400/50 hover:bg-stone-200/60 dark:border-white/12 dark:bg-slate-800/80 dark:text-slate-300 dark:hover:border-white/18 dark:hover:bg-slate-700/70')
+                    }
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              {embeddingProvider === 'off' && (
+                <p className="text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
+                  {t('settings.knowledgeHintOff')}
+                </p>
+              )}
+              {embeddingProvider === 'ollama' && (
+                <p className="text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
+                  {t('settings.knowledgeHintLocal')}
+                </p>
+              )}
+              {embeddingProvider === 'openai' && (
+                <>
+                  <p className="text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
+                    {t('settings.knowledgeHintCloud')}
+                  </p>
+                  <div>
+                    <label className="mb-0.5 block text-[10px] font-medium text-stone-600 dark:text-gray-400">
+                      {t('settings.cloudApiKey')}
+                    </label>
+                    <input
+                      type="password"
+                      autoComplete="off"
+                      value={embeddingApiKey}
+                      onChange={(e) => setEmbeddingApiKey(e.target.value)}
+                      placeholder="sk-…"
+                      className="w-full rounded-md border border-stone-400/25 bg-stone-100/90 px-2 py-1.5 font-mono text-xs text-stone-900 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-slate-700 dark:text-white"
+                    />
+                  </div>
+                </>
+              )}
+              <details className="rounded-lg border border-stone-300/38 bg-stone-100/70 px-2 py-1.5 dark:border-white/10 dark:bg-slate-900/55">
+                <summary className="cursor-pointer select-none list-none text-[10px] font-medium text-stone-600 dark:text-slate-400 [&::-webkit-details-marker]:hidden">
+                  {t('settings.advanced')}
+                </summary>
+                <div className="mt-2 space-y-2 border-t border-stone-300/35 pt-2 dark:border-white/8">
+                  {embeddingProvider !== 'off' && (
+                    <>
+                      <div>
+                        <label className="mb-0.5 block text-[9px] font-medium text-stone-500 dark:text-slate-500">
+                          {t('settings.embedUrl')}
+                        </label>
+                        <input
+                          type="text"
+                          value={embeddingApiUrl}
+                          onChange={(e) => setEmbeddingApiUrl(e.target.value)}
+                          placeholder={
+                            embeddingProvider === 'ollama'
+                              ? t('settings.embedUrlPhOllama')
+                              : t('settings.embedUrlPhOpenAI')
+                          }
+                          className="w-full rounded-md border border-stone-400/30 bg-stone-100/95 px-2 py-1 font-mono text-[10px] text-stone-900 focus:outline-none focus:ring-1 focus:ring-primary-500/70 dark:border-gray-600 dark:bg-slate-800/95 dark:text-slate-100"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-0.5 block text-[9px] font-medium text-stone-500 dark:text-slate-500">
+                          {t('settings.embedModel')}
+                        </label>
+                        <input
+                          type="text"
+                          value={embeddingModel}
+                          onChange={(e) => setEmbeddingModel(e.target.value)}
+                          className="w-full rounded-md border border-stone-400/30 bg-stone-100/95 px-2 py-1 font-mono text-[10px] text-stone-900 focus:outline-none focus:ring-1 focus:ring-primary-500/70 dark:border-gray-600 dark:bg-slate-800/95 dark:text-slate-100"
+                        />
+                      </div>
+                      {embeddingProvider === 'openai' && (
+                        <div className="rounded-md border border-stone-300/40 bg-stone-50/90 px-2 py-1.5 dark:border-white/10 dark:bg-slate-800/50">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="min-w-0 text-[9px] leading-snug text-stone-700 dark:text-slate-300">
+                              {t('settings.embedVolcMultimodal')}
+                            </span>
+                            <IosSwitch
+                              checked={embeddingVolcMultimodal}
+                              aria-label={t('settings.embedVolcMultimodal')}
+                              onChange={setEmbeddingVolcMultimodal}
+                            />
+                          </div>
+                          <p className="mt-1 text-[9px] leading-relaxed text-stone-500 dark:text-slate-500">
+                            {t('settings.embedVolcMultimodalHint')}
+                          </p>
+                        </div>
+                      )}
+                    </>
+                  )}
+                  <div className="flex flex-wrap gap-2">
+                    <div className="min-w-[5rem] flex-1">
+                      <label className="mb-0.5 block text-[9px] font-medium text-stone-500 dark:text-slate-500">
+                        {t('settings.ragTopK')}
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={12}
+                        value={vectorTopK}
+                        onChange={(e) => setVectorTopK(parseInt(e.target.value, 10) || 5)}
+                        className="w-full rounded border border-stone-400/30 bg-stone-100/95 px-1.5 py-0.5 text-[10px] text-stone-900 dark:border-gray-600 dark:bg-slate-800/95 dark:text-slate-100"
+                      />
+                    </div>
+                    <div className="min-w-[6rem] flex-[1.2]">
+                      <label className="mb-0.5 block text-[9px] font-medium text-stone-500 dark:text-slate-500">
+                        {t('settings.ragMaxInject')}
+                      </label>
+                      <input
+                        type="number"
+                        min={1000}
+                        max={30000}
+                        step={500}
+                        value={ragMaxInjectChars}
+                        onChange={(e) => setRagMaxInjectChars(parseInt(e.target.value, 10) || 8000)}
+                        className="w-full rounded border border-stone-400/30 bg-stone-100/95 px-1.5 py-0.5 text-[10px] text-stone-900 dark:border-gray-600 dark:bg-slate-800/95 dark:text-slate-100"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </details>
+              <p className="text-[10px] text-stone-500 dark:text-slate-500">
+                {indexMeta && indexMeta.chunkCount > 0
+                  ? t('settings.indexStatus', {
+                      chunks: indexMeta.chunkCount,
+                      time:
+                        indexMeta.updatedAt > 0
+                          ? new Date(indexMeta.updatedAt).toLocaleString()
+                          : '—',
+                    })
+                  : t('settings.indexNone')}
+              </p>
+              <button
+                type="button"
+                disabled={indexBusy}
+                onClick={async () => {
+                  const root = rootPath.trim();
+                  if (!root) {
+                    alert(t('settings.indexRootMissing'));
+                    return;
+                  }
+                  const embed = getEmbedConfigForIpc();
+                  if (!embed) {
+                    alert(t('settings.indexEmbedOff'));
+                    return;
+                  }
+                  setIndexBusy(true);
+                  try {
+                    const r = await window.electron.knowledgeIndexWorkspace({ root, embed });
+                    if (!r.ok) {
+                      alert(r.error || 'index failed');
+                      return;
+                    }
+                    if (r.truncated) {
+                      alert(t('settings.indexTruncated'));
+                    }
+                    await refreshIndexStatus();
+                  } finally {
+                    setIndexBusy(false);
+                  }
+                }}
+                className="w-full rounded-lg bg-primary-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {indexBusy ? t('settings.reindexing') : t('settings.reindex')}
+              </button>
+            </div>
+          )}
+        </section>
+
+        <section
+          className={`${cardShell} mt-2 shrink-0`}
           aria-labelledby="settings-app-heading"
         >
           <div className="flex items-center justify-between gap-2 border-b border-stone-300/38 px-3 py-2.5 dark:border-white/10">
@@ -581,18 +863,22 @@ const SettingsPanel: React.FC = () => {
           </div>
           {appBlockExpanded && (
             <div className="space-y-3 px-3 pb-3 pt-3">
-              <label className="flex cursor-pointer items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={streamResponses}
-                  onChange={(e) => setStreamResponses(e.target.checked)}
-                  className="rounded border-stone-400"
-                />
-                <span className="text-xs text-stone-700 dark:text-slate-300">{t('settings.stream')}</span>
-                <p className="mt-1 pl-5 text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
+              <div>
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={streamResponses}
+                    onChange={(e) => setStreamResponses(e.target.checked)}
+                    className="shrink-0 rounded border-stone-400"
+                  />
+                  <span className="shrink-0 text-xs text-stone-700 dark:text-slate-300 whitespace-nowrap">
+                    {t('settings.stream')}
+                  </span>
+                </label>
+                <p className="mt-1.5 pl-6 text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
                   {t('settings.streamDesc')}
                 </p>
-              </label>
+              </div>
               <div>
                 <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-stone-700 dark:text-slate-300">
                   <FiFolder size={14} className="text-stone-500" aria-hidden />
@@ -605,18 +891,20 @@ const SettingsPanel: React.FC = () => {
                   type="text"
                   value={rootPath}
                   onChange={(e) => setRootPath(e.target.value)}
-                  placeholder="/path/to/your/project"
+                  placeholder={t('settings.workspacePlaceholder')}
                   className="w-full rounded-md border border-stone-400/30 bg-stone-100/90 px-2 py-1.5 font-mono text-xs text-stone-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
                 />
                 <div className="mt-2 flex items-center gap-2">
-                  <label className="text-[10px] text-stone-600 dark:text-slate-400">{t('settings.maxChars')}</label>
+                  <label className="text-[10px] font-medium text-stone-700 dark:text-slate-200">
+                    {t('settings.maxChars')}
+                  </label>
                   <input
                     type="number"
                     min={500}
                     max={200000}
                     value={maxChars}
                     onChange={(e) => setMaxChars(parseInt(e.target.value, 10) || 12000)}
-                    className="w-24 rounded border border-stone-400/30 bg-stone-100/90 px-1.5 py-0.5 text-xs dark:border-slate-600 dark:bg-slate-800"
+                    className="w-24 rounded border border-stone-400/30 bg-stone-100/90 px-1.5 py-0.5 text-xs text-stone-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
                   />
                 </div>
               </div>
@@ -647,6 +935,7 @@ const SettingsPanel: React.FC = () => {
                       'workspace-storage',
                       'web-search-storage',
                       'model-storage',
+                      'knowledge-storage',
                       'myagent-onboarding-dismissed',
                     ];
                     keys.forEach((k) => localStorage.removeItem(k));

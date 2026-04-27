@@ -1,4 +1,6 @@
 import './utils/userDataPath';
+/** 须尽早注册：若置于其它 ipc 之后，同目录其它模块在 import 阶段抛错会导致本段 handler 未执行 */
+import './ipc/knowledge';
 import { app, BrowserWindow, clipboard, globalShortcut, protocol } from 'electron';
 import path from 'path';
 import fsSync from 'fs';
@@ -110,6 +112,7 @@ import './ipc/model';
 import './ipc/model-stream';
 import './ipc/export';
 import './ipc/file';
+import './ipc/documents';
 import './ipc/image-gen';
 import './ipc/web-search';
 import './ipc/persist';

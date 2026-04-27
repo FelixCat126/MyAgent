@@ -13,6 +13,18 @@ export interface WebSearchResponse {
   error?: string;
 }
 
+/** 工作区向量索引使用的嵌入服务（与对话模型独立配置） */
+export type EmbeddingProviderKey = 'off' | 'openai' | 'ollama';
+
+export interface KnowledgeEmbedConfig {
+  provider: Exclude<EmbeddingProviderKey, 'off'>;
+  baseUrl: string;
+  apiKey?: string;
+  model: string;
+  /** 火山 Doubao-embedding-vision：须走 /embeddings/multimodal；名称含 embedding-vision 且为方舟地址时自动为 true */
+  volcMultimodal?: boolean;
+}
+
 // Electron API 类型定义
 export interface ElectronAPI {
   sendMessage: (channel: string, data: any) => void;
@@ -59,6 +71,48 @@ export interface ElectronAPI {
   getInstalledApps: () => Promise<string[]>;
   generateImage: (params: ImageGenerationParams) => Promise<{ url: string; path: string; width: number; height: number }>;
   webSearch: (params: WebSearchRequest) => Promise<WebSearchResponse>;
+  /** 从本地已上传路径提取文档正文（xlsx / docx / md / txt 等） */
+  extractDocumentText: (arg: { path: string; name?: string }) => Promise<{
+    ok: boolean;
+    text?: string;
+    kind?: string;
+    error?: string;
+  }>;
+  /** 将助手消息全文导出为 md / xlsx(表格) / docx */
+  saveAssistantExport: (arg: {
+    format: 'md' | 'xlsx' | 'docx';
+    content: string;
+    defaultBaseName: string;
+  }) => Promise<{ ok: boolean; path?: string }>;
+  /** 为工作区构建向量索引（需先配置嵌入服务与模型） */
+  knowledgeIndexWorkspace: (arg: { root: string; embed: KnowledgeEmbedConfig }) => Promise<{
+    ok: boolean;
+    fileCount?: number;
+    chunkCount?: number;
+    truncated?: boolean;
+    root?: string;
+    error?: string;
+  }>;
+  /** 按用户问题在索引中做向量检索，返回用于注入模型的文本 */
+  knowledgeSearch: (arg: {
+    root: string;
+    query: string;
+    topK: number;
+    maxChars: number;
+    embed: KnowledgeEmbedConfig;
+  }) => Promise<{
+    ok: boolean;
+    text?: string;
+    error?: string;
+    meta?: { chunkCount: number; usedChunks: number };
+  }>;
+  knowledgeGetIndexStatus: () => Promise<{
+    ok: boolean;
+    chunkCount: number;
+    root: string | null;
+    model: string | null;
+    updatedAt: number;
+  }>;
   /** 渲染进程 zustand 持久化：写入 ~/Library/Application Support/MyAgent/persist/（与安装包共用） */
   persistGet: (name: string) => Promise<string | null>;
   persistSet: (name: string, value: string) => Promise<void>;

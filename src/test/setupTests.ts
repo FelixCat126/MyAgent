@@ -19,6 +19,17 @@ const electronStub: ElectronAPI = {
   getInstalledApps: async () => [],
   generateImage: async () => ({ url: '', path: '', width: 0, height: 0 }),
   webSearch: async () => ({ ok: false, text: '' }),
+  extractDocumentText: async () => ({ ok: true, text: '', kind: 'test' }),
+  saveAssistantExport: async () => ({ ok: false }),
+  knowledgeIndexWorkspace: async () => ({ ok: false, error: 'stub' }),
+  knowledgeSearch: async () => ({ ok: false, error: 'stub' }),
+  knowledgeGetIndexStatus: async () => ({
+    ok: true,
+    chunkCount: 0,
+    root: null,
+    model: null,
+    updatedAt: 0,
+  }),
   persistGet: async (name) => localStorage.getItem(name),
   persistSet: async (name, value) => {
     localStorage.setItem(name, value);

@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
 import { pathToFileURL } from 'url';
 import { Message } from '../types';
-import { FiMessageSquare, FiRefreshCw, FiCopy } from 'react-icons/fi';
+import { FiMessageSquare, FiRefreshCw, FiCopy, FiDownload } from 'react-icons/fi';
 import { useI18n } from '../hooks/useI18n';
+import MarkdownContent from './MarkdownContent';
+import { markdownContainsPipeTable } from '../utils/markdownTableDetect';
 
 interface MessageItemProps {
   message: Message;
@@ -45,6 +47,16 @@ const MessageItem: React.FC<MessageItemProps> = ({ message, onResend }) => {
     try {
       await navigator.clipboard.writeText(message.content);
     } catch {}
+  };
+
+  const handleSaveExport = async (format: 'md' | 'xlsx' | 'docx') => {
+    const safe = String(message.content ?? '').slice(0, 40).replace(/[\\/:"*?<>|\r\n]/g, '_');
+    const base = safe || `reply-${message.timestamp}`;
+    await window.electron.saveAssistantExport({
+      format,
+      content: message.content,
+      defaultBaseName: base,
+    });
   };
 
   return (
@@ -187,7 +199,38 @@ const MessageItem: React.FC<MessageItemProps> = ({ message, onResend }) => {
                     })}
                   </div>
                 )}
-                <div className="whitespace-pre-wrap text-sm break-words">{message.content}</div>
+                <MarkdownContent text={message.content} />
+                {message.content?.trim() && markdownContainsPipeTable(message.content) ? (
+                  <div className="mt-3 flex flex-wrap gap-1.5 border-t border-stone-200/80 pt-2.5 dark:border-slate-600/50">
+                    <p className="mb-0.5 text-[10px] leading-snug text-stone-500 dark:text-slate-400">
+                      {t('chat.exportStripHint')}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveExport('md')}
+                      className="inline-flex items-center gap-1 rounded-md border border-stone-300/60 bg-white/60 px-2 py-1 text-[10px] font-medium text-stone-600 hover:bg-stone-100 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-200 dark:hover:bg-slate-600"
+                    >
+                      <FiDownload size={11} />
+                      {t('chat.downloadMd')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveExport('xlsx')}
+                      className="inline-flex items-center gap-1 rounded-md border border-stone-300/60 bg-white/60 px-2 py-1 text-[10px] font-medium text-stone-600 hover:bg-stone-100 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-200 dark:hover:bg-slate-600"
+                    >
+                      <FiDownload size={11} />
+                      {t('chat.downloadXlsx')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveExport('docx')}
+                      className="inline-flex items-center gap-1 rounded-md border border-stone-300/60 bg-white/60 px-2 py-1 text-[10px] font-medium text-stone-600 hover:bg-stone-100 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-200 dark:hover:bg-slate-600"
+                    >
+                      <FiDownload size={11} />
+                      {t('chat.downloadDocx')}
+                    </button>
+                  </div>
+                ) : null}
               </div>
               {/** AI：日期/模型居左，复制在日期右侧，悬停显示复制 */}
               <div className="mt-1.5 flex w-full min-w-0 items-center justify-start gap-2 px-1 text-[10px] text-stone-500/85 dark:text-slate-500">
