@@ -3,7 +3,12 @@ import type { ElectronAPI } from '../types';
 
 type PersistApi = Pick<
   ElectronAPI,
-  'persistGet' | 'persistSet' | 'persistRemove' | 'persistClearAll'
+  | 'persistGet'
+  | 'persistSet'
+  | 'persistRemove'
+  | 'persistClearAll'
+  | 'persistGetSync'
+  | 'persistSetSync'
 >;
 
 function hasFilePersist(e: unknown): e is PersistApi {
@@ -15,7 +20,7 @@ function hasFilePersist(e: unknown): e is PersistApi {
   );
 }
 
-const DEBOUNCE_MS = 420;
+const DEBOUNCE_MS = 160;
 
 let singleton: StateStorage | undefined;
 
@@ -38,12 +43,18 @@ export async function flushZustandFilePersist(): Promise<void> {
     if (tmr) clearTimeout(tmr);
     pendingTimers.delete(name);
   }
+  const syncSave = pinnedPersistApi.persistSetSync;
   await Promise.all(
-    pairs.map(([name, value]) =>
-      pinnedPersistApi!.persistSet(name, value).then(() => {
+    pairs.map(([name, value]) => {
+      if (typeof syncSave === 'function') {
+        syncSave.call(pinnedPersistApi!, name, value);
         pendingValues.delete(name);
-      })
-    )
+        return Promise.resolve();
+      }
+      return pinnedPersistApi!.persistSet(name, value).then(() => {
+        pendingValues.delete(name);
+      });
+    })
   );
 }
 
@@ -51,6 +62,16 @@ function wrapElectronStorage(e: PersistApi): StateStorage {
   pinnedPersistApi = e;
   return {
     getItem: async (name) => {
+      /** 先用同步读，降低 persist hydrate 未完成时误用空状态覆盖磁盘的风险 */
+      try {
+        if (typeof e.persistGetSync === 'function') {
+          const syn = e.persistGetSync(name);
+          if (syn != null && syn.length > 0) return syn;
+        }
+      } catch {
+        /* ignore */
+      }
+
       const fromFile = await e.persistGet(name);
       if (fromFile != null && fromFile.length > 0) {
         return fromFile;

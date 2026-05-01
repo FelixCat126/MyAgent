@@ -33,3 +33,7 @@ yarn-error.log*
 
 # Database
 *.db
+
+# Local probe outputs
+.tmp-flux-probe.png
+.tmp-flux-fast-probe.png

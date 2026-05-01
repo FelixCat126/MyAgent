@@ -53,6 +53,11 @@ export interface ElectronAPI {
     content: string;
     filters?: { name: string; extensions: string[] }[];
   }) => Promise<{ ok: boolean; path?: string }>;
+  /** 将本机已有文件拷贝到用户选择的路径（保存为…） */
+  saveLocalFileCopy: (arg: {
+    sourcePath: string;
+    defaultFileName: string;
+  }) => Promise<{ ok: boolean; path?: string; error?: string }>;
   importTextFile: () => Promise<{ ok: boolean; text?: string; name?: string }>;
   readTextFileAbsolute: (p: string) => Promise<{
     ok: boolean;
@@ -70,7 +75,10 @@ export interface ElectronAPI {
   uploadFile: (fileData: any) => Promise<FileInfo & { preview?: string }>;
   launchApp: (appName: string) => Promise<boolean>;
   getInstalledApps: () => Promise<string[]>;
-  generateImage: (params: ImageGenerationParams) => Promise<{ url: string; path: string; width: number; height: number }>;
+  /** 返回 1 张或多张（如火山 sequential / 多 URL）；界面按顺序展示 */
+  generateImage: (params: ImageGenerationParams) => Promise<
+    Array<{ url: string; path: string; width: number; height: number }>
+  >;
   webSearch: (params: WebSearchRequest) => Promise<WebSearchResponse>;
   /** 从本地已上传路径提取文档正文（xlsx / docx / md / txt 等） */
   extractDocumentText: (arg: { path: string; name?: string }) => Promise<{
@@ -153,9 +161,10 @@ export interface ModelConfig {
     env?: Record<string, string>;
     /**
      * HTTP 响应解析：auto 自动识别；sdwebui = Automatic1111/Forge txt2img JSON；
-     * ollama = Ollama /api/generate JSON；raw = 响应体即为图片二进制
-     */
-    httpFormat?: 'auto' | 'sdwebui' | 'ollama' | 'raw';
+     * ollama = Ollama /api/generate JSON；openai_images = POST /images/generations（OpenAI Images 兼容，含火山方舟/豆包远端）；
+     * raw = 响应体即为图片二进制
+      */
+      httpFormat?: 'auto' | 'sdwebui' | 'ollama' | 'openai_images' | 'raw';
     /**
      * CLI 参数：每行一条，占位符 {{prompt}} {{outputPath}} {{width}} {{height}}
      * 留空则不给进程传 argv，仅用环境变量（推荐本地脚本读 MYAGENT_*）

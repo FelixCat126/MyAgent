@@ -19,6 +19,17 @@ function stringifyChildren(node: ReactNode): string {
   return '';
 }
 
+/**
+ * 模型偶发把围栏粘在 *…* / 单独 * 行前，GFM 会解析成 code∈em∈p，使自定义围栏含 div/pre 触发 DOM 嵌套告警。
+ */
+function normalizeMarkdownForBlockFence(md: string): string {
+  let s = md.replace(/\r\n/g, '\n');
+  s = s.replace(/^(\s*)\*{1,2}\s*(```+)/gm, '$1$2');
+  s = s.replace(/^(\s*)\*\s*\n(?=\s*```+)/gm, '$1');
+  s = s.replace(/\*\s*\n(```[\s\S]*?```)\s*\*/g, '$1');
+  return s;
+}
+
 /** 整块 fenced 代码的头部工具条 + 一键复制（必须独立组件后才能使用 hooks） */
 function FencedCodeBlock(props: {
   className?: string;
@@ -69,6 +80,12 @@ const MarkdownContent: React.FC<MarkdownContentProps> = ({
   copyCodeLabel = '复制',
 }) => {
   const mdComponents: Partial<Components> = {
+    /** paragraph 改用 div：允许与块级自定义组件共存且不触发 validateDOMNesting */
+    p: ({ children }) => <div className="myagent-md-p">{children}</div>,
+    /** 默认 </pre><code> 中我们渲染含 div 的 fenced 组件，去掉 pre 壳避免 pre>div */
+    pre({ children }: { children?: ReactNode }) {
+      return <>{children}</>;
+    },
     code({ inline, className: cn, children }: CodeProps) {
       if (inline) {
         return (
@@ -87,7 +104,7 @@ const MarkdownContent: React.FC<MarkdownContentProps> = ({
   return (
     <div className={`myagent-md text-sm leading-relaxed ${className}`}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
-        {text}
+        {normalizeMarkdownForBlockFence(text)}
       </ReactMarkdown>
     </div>
   );

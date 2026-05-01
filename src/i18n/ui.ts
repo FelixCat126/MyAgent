@@ -31,6 +31,7 @@ const zh: Record<string, string> = {
   'message.resend': '重发',
   'message.resendTitle': '重新发送此消息',
   'message.closePreview': '关闭预览',
+  'message.imagePreviewDownload': '另存为…',
   'message.imageAlt': '图片预览',
   'modelSelect.placeholder': '选择模型',
   'modelSelect.empty': '暂无模型',
@@ -51,6 +52,8 @@ const zh: Record<string, string> = {
   'chat.reasoningExpand': '展开',
   'chat.reasoningCollapse': '收起',
   'chat.reasoningStreaming': '正在输出…',
+  'chat.imageGenWorking': '正在生成图片',
+  'chat.imageGenWorkingSub': '（第 {current} / {total} 张）',
   'chat.buildFailed': '构建请求失败：',
   'chat.requestFailed': '请求失败：',
   'chat.stopped': '（已停止）',
@@ -69,12 +72,18 @@ const zh: Record<string, string> = {
   'chat.downloadMd': '下载 MD',
   'chat.downloadXlsx': '下载 Excel',
   'chat.downloadDocx': '下载 Word',
-  'chat.exportStripHint': '检测到本回复含 Markdown 表格，可将内容导出为文件：',
+  'chat.exportStripHint': '检测到本回复含 Markdown 表格，可将内容导出为文件。',
   'chat.ragStatusInjected':
     '本次交互将结合本地知识库内容发起（已按相关度选入 {used} 条片段，索引共 {total} 块）。',
   'chat.ragStatusEmpty':
     '本次未附加本地知识库：与当前问题足够相关的片段不足（或相关度未达阈值）。已建索引时可换更具体的问题重试。',
   'chat.ragStatusError': '工作区向量未生效：{err}',
+  'chat.imageGenToolSystemPrompt':
+    '【MyAgent · 图像生成】本客户端已连接图像生成工具（本地 CLI 或 HTTP）。当用户明确要求画图、生成图片、海报、插画、头像等时，你必须在回复中给出一条可被客户端解析的「工具调用」，以便在本机执行绘图；禁止仅用「我不能生成图片」「我没有绘图能力」「我是文本模型」等理由拒绝而不输出工具调用。\n\n' +
+    '任选其一（须出现在回复正文中）：\n' +
+    '· JSON 单行：{"myagent_tool":"generate_image","prompt":"对画面主体的具体中文描述，可含光线、构图、风格等","width":512,"height":768}\n' +
+    '· 或 XML：<GenerateImage prompt="对画面的具体中文或中英混写描述" width="512" height="768" />\n\n' +
+    '要求：prompt 须**尽量具体**（主体、氛围、光线、构图、风格等）；语言**不限**，中文、英文或中英混写均可——对接火山豆包等云端模型时可直接用高质量中文。**width/height 可选**：本地轻量生图建议 512×512 / 512×768 / 768×512（除非用户明确要高分辨率）。可在工具调用外行文用中文简述说明与合规。**不要**再在正文末尾单独挂一大段「仅英文可复制 Prompt」围栏；**禁止**引导用户复制 prompt 到文心一格、通义万相、Midjourney 等**任何第三方**绘图站点，也**禁止**以「密钥/授权异常、暂时失败」为由在气泡里写出上述外站话术——这些都不应出现在用户可见的回答里。不要编造「本地生图异常」类引导——客户端会在同一条消息内附上生成图（失败时仅以简短技术性说明带过即可）。',
   'postProcess.tag': '[后处理] ',
   'onboarding.welcome': '欢迎使用 MyAgent',
   'onboarding.welcomeDesc': '本地多模型 AI 对话助手，会话与配置保存在本机。',
@@ -124,15 +133,20 @@ const zh: Record<string, string> = {
   'settings.form.cliArgs': '命令行参数（可选，每行一条）',
   'settings.form.cliArgsPh': '留空：不向进程传参数，仅用下方环境变量（MYAGENT_PROMPT、MYAGENT_OUTPUT_PATH 等）。\n示例（每行一条）：\n--prompt\n{{prompt}}\n-o\n{{outputPath}}',
   'settings.form.httpEndpoint': 'HTTP 接口地址 *',
-  'settings.form.httpEndpointPh': 'SD WebUI: http://127.0.0.1:7860/sdapi/v1/txt2img　Ollama: http://127.0.0.1:11434/api/generate',
+  'settings.form.httpEndpointPh':
+    'SD WebUI: http://127.0.0.1:7860/sdapi/v1/txt2img　Ollama: http://127.0.0.1:11434/api/generate　远端 OpenAI Images（方舟豆包）: https://……/api/v3/images/generations（依控制台接入点为准）',
   'settings.form.responseFormat': '响应格式',
-  'settings.form.format.auto': '自动识别（图片二进制 / SD WebUI JSON / Ollama）',
+  'settings.form.format.auto': '自动识别（二进制图 / SD / Ollama / OpenAI Images 兼容 URL）',
   'settings.form.format.sdwebui': 'Stable Diffusion WebUI（txt2img JSON）',
   'settings.form.format.ollama': 'Ollama（/api/generate）',
+  'settings.form.format.openai_images': 'OpenAI Images（…/images/generations，方舟豆包等兼容）',
   'settings.form.format.raw': '原始图片（整块响应即 PNG）',
   'settings.form.ollamaEnvHint': 'Ollama 生图请在下方环境变量填写',
+  'settings.form.imageGenHttpExtraHint':
+    '豆包方舟：REMOTE_IMAGE_MODEL=模型名；ARK_API_KEY；默认请求体带水印字段为关（不写或 ARK_WATERMARK=false）；需平台水印时设为 ARK_WATERMARK=true；文生多图：`ARK_SEQUENTIAL_IMAGE_GENERATION=auto`、`ARK_SEQUENTIAL_OPTIONS={"max_images":4}`（或 ARK_MAX_IMAGES=4），stream 在 auto 时默认开启；图生图：`ARK_IMAGE=单图 URL`，多参考：`ARK_IMAGES=["url1","url2"]`（JSON）；单图链路可设 sequential=disabled 且 ARK_STREAM=false。多张结果会并行拉取写入同一气泡。',
   'settings.form.envVars': '环境变量（可选，多行 KEY=value；CLI/HTTP 均会注入 MYAGENT_*）',
-  'settings.form.envPh': 'OLLAMA_MODEL=flux\n# 或与你的本地脚本约定变量',
+  'settings.form.envPh':
+    'ARK_API_KEY=…\nREMOTE_IMAGE_MODEL=doubao-seedream-4-5-251128\n# 文生多图：\nARK_SEQUENTIAL_IMAGE_GENERATION=auto\nARK_SEQUENTIAL_OPTIONS={"max_images":4}\n# 图生图（单参考）：\n# ARK_IMAGE=https://…png\n# 多参考：ARK_IMAGES=["https://…1.png","https://…2.png"]',
   'settings.form.save': '保存',
   'settings.form.cancel': '取消',
   'settings.form.required': '请填写必填项',
@@ -151,7 +165,7 @@ const zh: Record<string, string> = {
   'fileUploader.dropRelease': '松开鼠标上传',
   'fileUploader.dropHint': '拖拽文件到此处，或点击选择',
   'fileUploader.hint': '支持图片、文档、音频、视频（最大 {maxFiles} 个，每个 {maxSize}MB）',
-  'fileUploader.selected': '已选择 {n} 个文件：',
+  'fileUploader.selected': '已选择 {n} 个文件。',
   'fileUploader.removeFile': '移除文件',
   'settings.model': '模型',
   'settings.web': '联网搜索',
@@ -185,7 +199,7 @@ const zh: Record<string, string> = {
   'settings.knowledgeHintLocal': '已用本机默认：127.0.0.1:11434 与 nomic-embed-text。一般不用改，除非端口或模型不同（见「高级」）。',
   'settings.knowledgeHintCloud': '将使用云端的文本嵌入接口（与聊天模型独立）。先填 API Key 即可，地址与模型已按常见服务填好默认（见「高级」可改）。',
   'settings.cloudApiKey': 'API Key',
-  'settings.advanced': '高级（地址、模型、条数等）',
+  'settings.advanced': '高级（地址、模型、条数等）。',
   'settings.embedProvider': '嵌入服务',
   'settings.embedOff': '关（不索引 / 不召回）',
   'settings.embedOpenAI': 'OpenAI 或兼容 /v1/embeddings',
@@ -251,6 +265,7 @@ const en: Record<string, string> = {
   'message.resend': 'Resend',
   'message.resendTitle': 'Resend this message',
   'message.closePreview': 'Close',
+  'message.imagePreviewDownload': 'Save as…',
   'message.imageAlt': 'Image preview',
   'modelSelect.placeholder': 'Choose model',
   'modelSelect.empty': 'No models',
@@ -271,6 +286,8 @@ const en: Record<string, string> = {
   'chat.reasoningExpand': 'Expand',
   'chat.reasoningCollapse': 'Collapse',
   'chat.reasoningStreaming': 'Streaming…',
+  'chat.imageGenWorking': 'Generating image',
+  'chat.imageGenWorkingSub': ' ({current}/{total})',
   'chat.buildFailed': 'Failed to build the request: ',
   'chat.requestFailed': 'Request failed: ',
   'chat.stopped': '(Stopped)',
@@ -291,12 +308,18 @@ const en: Record<string, string> = {
   'chat.downloadXlsx': 'Save as Excel',
   'chat.downloadDocx': 'Save as Word',
   'chat.exportStripHint':
-    'This reply includes a Markdown-style table—you can export it below:',
+    'This reply includes a Markdown-style table—you can export it below.',
   'chat.ragStatusInjected':
     'This turn will use your local knowledge base ({used} chunk(s) selected by relevance; {total} chunk(s) in the index).',
   'chat.ragStatusEmpty':
     'No local knowledge was attached: nothing was close enough by relevance (or below the threshold). Try a more specific question if an index exists.',
   'chat.ragStatusError': 'Workspace vectors were not applied: {err}',
+  'chat.imageGenToolSystemPrompt':
+    '[MyAgent · Image generation] This client has an image-generation tool (local CLI or HTTP). When the user clearly asks for a drawing, image, poster, illustration, avatar, etc., you MUST include one machine-parseable tool invocation in your reply so the client can run it locally. Do not refuse with only “I cannot generate images” / “I have no image capability” / “I am a text-only model” without outputting the tool call.\n\n' +
+    'Use either form (must appear in the reply body):\n' +
+    '· Single-line JSON: {"myagent_tool":"generate_image","prompt":"Concrete description of the scene (Chinese, English, or mixed is fine)","width":512,"height":768}\n' +
+    '· Or XML: <GenerateImage prompt="Concrete Chinese or bilingual description of the scene" width="512" height="768" />\n\n' +
+    'Rules: prompt must be **specific** (subject, lighting, composition, style, etc.). **Language is not restricted**—Chinese is fully OK for Ark/Doubao and similar APIs; English is also fine especially for English-tuned local/SD backends. Width/height are optional; for lightweight local gens prefer 512×512, 512×768, or 768×512 unless the user asks for higher res. You may add a short note outside the tool line. **Do not** append a fenced English-only prompt dump. **Never** suggest copying prompts to Wenxin Yige, Tongyi Wanxiang, or any third‑party drawing site, nor “if keys/auth fail, paste elsewhere” fallbacks—keep all of that out of the visible reply.** On failures**, responses must stay brief and technical only. **Do not** invent “local tool broken” narratives—the client attaches the image here.',
   'postProcess.tag': '[post-process] ',
   'onboarding.welcome': 'Welcome to MyAgent',
   'onboarding.welcomeDesc': 'Local multi-model chat; sessions and settings stay on this device.',
@@ -346,15 +369,20 @@ const en: Record<string, string> = {
   'settings.form.cliArgs': 'CLI arguments (optional, one per line)',
   'settings.form.cliArgsPh': 'Empty: do not pass argv; use env (MYAGENT_PROMPT, MYAGENT_OUTPUT_PATH, …) below.\nExample (one per line):\n--prompt\n{{prompt}}\n-o\n{{outputPath}}',
   'settings.form.httpEndpoint': 'HTTP URL *',
-  'settings.form.httpEndpointPh': 'SD WebUI: http://127.0.0.1:7860/sdapi/v1/txt2img; Ollama: http://127.0.0.1:11434/api/generate',
+  'settings.form.httpEndpointPh':
+    'SD WebUI: …/txt2img; Ollama: …/api/generate; OpenAI-compatible images (Doubao Ark): …/api/v3/images/generations (exact URL from provider)',
   'settings.form.responseFormat': 'Response format',
-  'settings.form.format.auto': 'Auto (binary / SD WebUI JSON / Ollama)',
+  'settings.form.format.auto': 'Auto (binary / SD / Ollama / OpenAI Images URL)',
   'settings.form.format.sdwebui': 'Stable Diffusion WebUI (txt2img JSON)',
   'settings.form.format.ollama': 'Ollama (/api/generate)',
+  'settings.form.format.openai_images': 'OpenAI Images (…/images/generations incl. Ark/Doubao)',
   'settings.form.format.raw': 'Raw image (entire body is PNG)',
   'settings.form.ollamaEnvHint': 'For Ollama image gen, set in env below, e.g.',
+  'settings.form.imageGenHttpExtraHint':
+    'Doubao Ark: REMOTE_IMAGE_MODEL; ARK_API_KEY. Request body omits visible watermark by default (set ARK_WATERMARK=true only if you want the provider watermark). Multi from text: ARK_SEQUENTIAL_IMAGE_GENERATION=auto + ARK_SEQUENTIAL_OPTIONS={"max_images":4} (or ARK_MAX_IMAGES). Img2img: ARK_IMAGE=URL; multi ref: ARK_IMAGES=["url1","url2"]. With sequential=auto, stream defaults on. Multiple URLs in one response attach as multiple files.',
   'settings.form.envVars': 'Environment (optional, KEY=value lines; MYAGENT_* injected for both CLI and HTTP)',
-  'settings.form.envPh': 'OLLAMA_MODEL=flux\n# or variables your script expects',
+  'settings.form.envPh':
+    'ARK_API_KEY=…\nREMOTE_IMAGE_MODEL=doubao-seedream-…\nARK_SEQUENTIAL_IMAGE_GENERATION=auto\nARK_SEQUENTIAL_OPTIONS={"max_images":4}\n# ARK_IMAGE=https://…  or  ARK_IMAGES=["https://…","https://…"]',
   'settings.form.save': 'Save',
   'settings.form.cancel': 'Cancel',
   'settings.form.required': 'Please fill in required fields',
@@ -373,7 +401,7 @@ const en: Record<string, string> = {
   'fileUploader.dropRelease': 'Release to upload',
   'fileUploader.dropHint': 'Drop files here or click to choose',
   'fileUploader.hint': 'Images, documents, audio, or video (up to {maxFiles} files, {maxSize} MB each)',
-  'fileUploader.selected': '{n} file(s) selected:',
+  'fileUploader.selected': '{n} file(s) selected.',
   'fileUploader.removeFile': 'Remove file',
   'settings.model': 'Models',
   'settings.web': 'Web search',
@@ -409,7 +437,7 @@ const en: Record<string, string> = {
   'settings.knowledgeHintCloud':
     'Server-side text embeddings, separate from the chat model. Add your API key; URL and model have sensible defaults (change under “Advanced” if needed).',
   'settings.cloudApiKey': 'API key',
-  'settings.advanced': 'Advanced (URL, model, limits, …)',
+  'settings.advanced': 'Advanced (URL, model, limits, …).',
   'settings.embedProvider': 'Embedding',
   'settings.embedOff': 'Off',
   'settings.embedOpenAI': 'OpenAI-compatible /v1/embeddings',

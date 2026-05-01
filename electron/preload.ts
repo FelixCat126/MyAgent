@@ -21,4 +21,7 @@ contextBridge.exposeInMainWorld('electron', {
   generateImage: (params: unknown) => ipcRenderer.invoke('generate-image', cloneForIpc(params)),
 
   webSearch: (params: unknown) => ipcRenderer.invoke('web-search', cloneForIpc(params)),
+
+  saveLocalFileCopy: (params: unknown) =>
+    ipcRenderer.invoke('save-local-file-copy', cloneForIpc(params)),
 });

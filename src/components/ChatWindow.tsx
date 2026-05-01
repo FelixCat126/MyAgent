@@ -7,21 +7,36 @@ import { useI18n } from '../hooks/useI18n';
 import { useWorkspaceStore } from '../store/workspaceStore';
 import { useKnowledgeStore } from '../store/knowledgeStore';
 import { Message, ChatSession, FileInfo, ModelConfig, WebSearchProvider } from '../types';
-import { FiPaperclip, FiFile, FiImage, FiSquare, FiDownload, FiGlobe } from 'react-icons/fi';
+import { FiPaperclip, FiFile, FiImage, FiSquare, FiDownload, FiGlobe, FiLoader } from 'react-icons/fi';
 import MessageItem from './MessageItem';
 import ModelSelector from './ModelSelector';
 import { IosSwitch } from './IosSwitch';
 import { getWebSearchQueryIfTriggered } from '../utils/webSearchTrigger';
-import { extractLaunchAppNames, extractGenerateImageCalls } from '../utils/toolCalls';
+import {
+  extractLaunchAppNames,
+  extractGenerateImageCalls,
+  stripRedundantAssistantImagePromptBlocks,
+  stripGenerateImageArtifactsForDisplay,
+} from '../utils/toolCalls';
 import { sessionToHtml, sessionToMarkdown } from '../utils/exportChat';
 import { canUseSseStream, effectiveWebEnabled } from '../utils/chatModelPolicy';
 import { enrichMessagesForModel } from '../utils/enrichMessagesForModel';
+import { t as tUi } from '../i18n/ui';
+import type { Locale } from '../i18n/types';
 
 function userQueryTextForRag(m: Message): string {
   const t = (m.content || '').trim();
   if (t && t !== '（附件）') return t;
   if (m.files?.length) return m.files.map((f) => f.name).join(' ');
   return '';
+}
+
+/** 多次连续生图之间让渲染进程有机会打一帧 UI，减轻整窗卡顿观感 */
+async function yieldToMain(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    if (typeof requestAnimationFrame !== 'undefined') requestAnimationFrame(() => resolve());
+    else setTimeout(() => resolve(), 0);
+  });
 }
 
 /** 本次发送是否用到工作区向量（仅用于界面提示，不落盘） */
@@ -185,6 +200,28 @@ async function buildMessagesWithOptionalWebSearch(
   }
 }
 
+function storeHasUsableImageGenerator(): boolean {
+  return useModelStore.getState().models.some((m) => {
+    if (!m.isImageGenerator || !m.imageGeneratorConfig) return false;
+    const c = m.imageGeneratorConfig;
+    if (c.type === 'http') return Boolean(String(c.endpoint ?? '').trim());
+    return Boolean(String(c.command ?? '').trim());
+  });
+}
+
+/** 已配置生图工具时注入系统说明，否则模型（如豆包）会按常识声称「不能生图」 */
+function prependImageGenCapabilitySystem(messages: Message[], locale: Locale): Message[] {
+  if (!storeHasUsableImageGenerator()) return messages;
+  const inj: Message = {
+    id: `imggen-sys-${Date.now()}`,
+    role: 'system',
+    content: tUi(locale, 'chat.imageGenToolSystemPrompt'),
+    timestamp: Date.now(),
+    model: 'myagent-capabilities',
+  };
+  return [inj, ...messages];
+}
+
 async function buildOutgoingChain(
   historyWithoutUser: Message[],
   userMessage: Message,
@@ -201,11 +238,54 @@ async function buildOutgoingChain(
   return { chain, ragHint: vec.ragHint };
 }
 
+export type ImageGenProgressHooks = {
+  onBegin?: (p: { total: number }) => void;
+  onEachStart?: (p: { current: number; total: number }) => void;
+  onDone?: () => void;
+};
+
+/** 剥离 Electron IPC / 多层 Error 前缀，仅在气泡中展示可读原因 */
+function formatImageGenUserError(raw: string): string {
+  let m = raw.replace(/^Error invoking remote method\s+'[^']+':\s*/i, '').trim();
+  m = m.replace(/^Error:\s*/i, '').trim();
+  while (/^生图失败:\s*/i.test(m)) {
+    m = m.replace(/^生图失败:\s*/i, '').trim();
+  }
+  while (/^Error:\s*/i.test(m)) {
+    m = m.replace(/^Error:\s*/i, '').trim();
+  }
+  const readable = m || raw;
+  return readable.length > 1200 ? `${readable.slice(0, 1200)}\n\n[错误信息过长，已截断]` : readable;
+}
+
+/** 云端 HTTPS API（方舟/阿里云/通用 SaaS）不削减像素；仅 CLI、http:// 本地/内网减负 */
+function shouldClampDimensionsForHeavyLocalGen(c: NonNullable<ModelConfig['imageGeneratorConfig']>): boolean {
+  if (c.type === 'cli') return true;
+  const ep = (c.endpoint || '').trim();
+  if (!ep) return false;
+  return !/^https:\/\//i.test(ep);
+}
+
+function clampDimensionsForLocalImageGen(width?: number, height?: number, maxSide = 1024): { width?: number; height?: number } {
+  if (typeof width !== 'number' || typeof height !== 'number' || !Number.isFinite(width) || !Number.isFinite(height)) {
+    return { width, height };
+  }
+  if (width <= 0 || height <= 0) return { width, height };
+  const m = Math.max(width, height);
+  if (m <= maxSide) return { width: Math.round(width), height: Math.round(height) };
+  const scale = maxSide / m;
+  return {
+    width: Math.max(256, Math.round(width * scale)),
+    height: Math.max(256, Math.round(height * scale)),
+  };
+}
+
 async function postProcessAssistantContent(
   responseContent: string,
   activeModel: ModelConfig,
   imageIndexBase: number,
-  setInlineImageIndex: React.Dispatch<React.SetStateAction<number>>
+  setInlineImageIndex: React.Dispatch<React.SetStateAction<number>>,
+  opts?: { imageGenHooks?: ImageGenProgressHooks }
 ): Promise<{ content: string; files?: FileInfo[] }> {
   let text = responseContent;
 
@@ -225,8 +305,10 @@ async function postProcessAssistantContent(
     return useModelStore.getState().models.find((m) => m.isImageGenerator && m.imageGeneratorConfig);
   };
   const imgGenModel = resolveImageGeneratorModel();
-  const generatedFiles: Array<{ path: string; url: string; width: number; height: number }> = [];
+  const hooks = opts?.imageGenHooks;
 
+  type GenItem = { prompt: string; width?: number; height?: number; raw: string };
+  const toGenerate: GenItem[] = [];
   for (const match of imageCalls) {
     const { prompt, width, height, raw } = match;
     if (!imgGenModel?.imageGeneratorConfig) {
@@ -236,19 +318,50 @@ async function postProcessAssistantContent(
       );
       continue;
     }
-    try {
-      const result = await window.electron.generateImage({
-        prompt,
-        width,
-        height,
-        modelId: imgGenModel.id,
-        imageGeneratorConfig: imgGenModel.imageGeneratorConfig,
+    toGenerate.push({ prompt, width, height, raw });
+  }
+
+  const generatedFiles: Array<{ path: string; url: string; width: number; height: number }> = [];
+  if (toGenerate.length > 0) {
+    hooks?.onBegin?.({ total: toGenerate.length });
+  }
+  try {
+    for (let i = 0; i < toGenerate.length; i++) {
+      const { prompt, width, height, raw } = toGenerate[i];
+      hooks?.onEachStart?.({
+        current: i + 1,
+        total: toGenerate.length,
       });
-      generatedFiles.push(result);
-      text = text.replace(raw, `\n*[系统提示: 已为您生成图片，见下方附件]*\n`);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      text = text.replace(raw, `\n*[系统提示: 图片生成失败 - ${msg}]\n`);
+      try {
+        const m = imgGenModel!;
+        const cfg = m.imageGeneratorConfig!;
+        let widthOut = width;
+        let heightOut = height;
+        if (shouldClampDimensionsForHeavyLocalGen(cfg)) {
+          const clipped = clampDimensionsForLocalImageGen(width, height);
+          widthOut = clipped.width;
+          heightOut = clipped.height;
+        }
+        const imgs = await window.electron.generateImage({
+          prompt,
+          width: widthOut,
+          height: heightOut,
+          modelId: m.id,
+          imageGeneratorConfig: cfg,
+        });
+        for (const img of imgs) {
+          generatedFiles.push(img);
+        }
+        text = text.replace(raw, '');
+      } catch (e: unknown) {
+        const msg = formatImageGenUserError(e instanceof Error ? e.message : String(e));
+        text = text.replace(raw, `\n*[系统提示: 图片生成失败 - ${msg}]*\n`);
+      }
+      await yieldToMain();
+    }
+  } finally {
+    if (toGenerate.length > 0) {
+      hooks?.onDone?.();
     }
   }
 
@@ -269,6 +382,15 @@ async function postProcessAssistantContent(
     setInlineImageIndex((prev) => prev + generatedFiles.length);
     files = fileInfos;
   }
+
+  if (toGenerate.length > 0) {
+    text = stripRedundantAssistantImagePromptBlocks(
+      text,
+      toGenerate.map((g) => g.prompt)
+    );
+  }
+
+  text = stripGenerateImageArtifactsForDisplay(text);
 
   return { content: text, files };
 }
@@ -334,6 +456,11 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   const inlineImageIndexRef = useRef(0);
   inlineImageIndexRef.current = inlineImageIndex;
   const [isStreaming, setIsStreaming] = useState(false);
+  /** 本地/HTTP 生图进行中：对话区占位，避免长耗时无反馈 */
+  const [imageGenProgress, setImageGenProgress] = useState<{
+    current: number;
+    total: number;
+  } | null>(null);
   const [vectorRagStatus, setVectorRagStatus] = useState<{
     text: string;
     tone: 'success' | 'info' | 'error';
@@ -368,7 +495,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           provider: webState.provider,
           apiKey: webState.apiKey,
         });
-        chain = built.chain;
+        chain = prependImageGenCapabilitySystem(built.chain, uiLocale);
         ragHint = built.ragHint;
       } catch (e) {
         console.error(e);
@@ -469,11 +596,17 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                 let nextFiles = msg?.files as Message['files'] | undefined;
                 if (raw.trim()) {
                   try {
+                    const imageHooks: ImageGenProgressHooks = {
+                      onBegin: ({ total }) => setImageGenProgress({ current: 1, total }),
+                      onEachStart: ({ current, total }) => setImageGenProgress({ current, total }),
+                      onDone: () => setImageGenProgress(null),
+                    };
                     const { content, files } = await postProcessAssistantContent(
                       raw,
                       activeModel,
                       imgBase,
-                      setInlineImageIndex
+                      setInlineImageIndex,
+                      { imageGenHooks: imageHooks }
                     );
                     nextContent = content;
                     nextFiles = files as Message['files'];
@@ -508,11 +641,17 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           typeof (response as { reasoning?: unknown }).reasoning === 'string'
             ? String((response as { reasoning?: string }).reasoning).trim()
             : '';
+        const imageHooks: ImageGenProgressHooks = {
+          onBegin: ({ total }) => setImageGenProgress({ current: 1, total }),
+          onEachStart: ({ current, total }) => setImageGenProgress({ current, total }),
+          onDone: () => setImageGenProgress(null),
+        };
         const { content: c, files } = await postProcessAssistantContent(
           content0,
           activeModel,
           inlineImageIndexRef.current,
-          setInlineImageIndex
+          setInlineImageIndex,
+          { imageGenHooks: imageHooks }
         );
         addMessage(sendSessionId, {
           id: `${Date.now() + 1}-a`,
@@ -636,6 +775,14 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   useEffect(() => {
     stickToBottomRef.current = true;
   }, [currentSessionId]);
+
+  /** 出现生图占位时贴底，减少「卡住」体感 */
+  useLayoutEffect(() => {
+    if (!imageGenProgress || !stickToBottomRef.current) return;
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [imageGenProgress]);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
@@ -885,6 +1032,36 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
             />
           );
         })}
+
+        {imageGenProgress && (
+          <div className="flex justify-start" role="status" aria-live="polite">
+            <div className="flex max-w-[min(92%,560px)] flex-col overflow-hidden rounded-2xl rounded-tl-sm border border-stone-300/45 bg-stone-100 shadow-sm dark:border-white/10 dark:bg-slate-800">
+              <div className="flex items-center gap-2 border-b border-stone-200/80 px-4 py-2.5 dark:border-slate-600/45">
+                <FiLoader
+                  size={15}
+                  className="shrink-0 animate-spin text-primary-600 dark:text-primary-400"
+                  aria-hidden
+                />
+                <span className="text-sm font-medium text-stone-700 dark:text-slate-200">
+                  {t('chat.imageGenWorking')}
+                  <span className="ml-1.5 tabular-nums text-[13px] font-normal text-stone-500 dark:text-slate-400">
+                    {t('chat.imageGenWorkingSub', {
+                      current: imageGenProgress.current,
+                      total: imageGenProgress.total,
+                    })}
+                  </span>
+                </span>
+              </div>
+              <div className="relative myagent-image-gen-loading-shimmer mx-3 my-3 flex min-h-[140px] max-h-[272px] min-w-[240px] items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-stone-200/90 via-stone-100 to-primary-500/18 dark:from-slate-700 dark:via-slate-900/85 dark:to-primary-600/22">
+                <div
+                  className="pointer-events-none absolute inset-0 animate-pulse bg-[radial-gradient(ellipse_at_center,_rgba(255,255,255,0.42)_0%,_transparent_65%)] opacity-55 dark:bg-[radial-gradient(ellipse_at_center,_rgba(255,255,255,0.12)_0%,_transparent_60%)] dark:opacity-40"
+                  aria-hidden
+                />
+                <FiImage size={38} className="relative z-10 text-stone-400/95 dark:text-slate-600" aria-hidden />
+              </div>
+            </div>
+          </div>
+        )}
 
         {showTypingDots && (
           <div className="flex justify-start">

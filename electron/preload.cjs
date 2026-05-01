@@ -69,6 +69,7 @@ window.electron = {
   },
   closeModelStream: () => ipcRenderer.send('model-stream-abort'),
   saveTextFile: (arg) => ipcRenderer.invoke('save-text-file', cloneForIpc(arg)),
+  saveLocalFileCopy: (arg) => ipcRenderer.invoke('save-local-file-copy', cloneForIpc(arg)),
   importTextFile: () => ipcRenderer.invoke('import-text-file'),
   readTextFileAbsolute: (p) => ipcRenderer.invoke('read-text-file-absolute', cloneForIpc(p)),
   readWorkspaceHint: (arg) => ipcRenderer.invoke('read-workspace-hint', cloneForIpc(arg)),

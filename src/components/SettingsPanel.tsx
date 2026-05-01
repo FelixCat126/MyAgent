@@ -35,7 +35,7 @@ type EditingFormData = {
   imageGenCommand: string;
   imageGenEndpoint: string;
   imageGenEnv: string;
-  imageGenHttpFormat: 'auto' | 'sdwebui' | 'ollama' | 'raw';
+  imageGenHttpFormat: 'auto' | 'sdwebui' | 'ollama' | 'openai_images' | 'raw';
   imageGenCliArgLines: string;
 };
 
@@ -345,7 +345,7 @@ const SettingsPanel: React.FC = () => {
           </div>
 
           <div className="border-t border-stone-400/22 dark:border-gray-700 pt-4">
-            <h4 className="text-xs font-semibold text-stone-700 dark:text-gray-300">{t('settings.form.imageGenSection')}</h4>
+            <h4 className="mb-2 text-xs font-semibold text-stone-700 dark:text-gray-300">{t('settings.form.imageGenSection')}</h4>
             <div className="space-y-3">
               <div className="flex items-center gap-2">
                 <input
@@ -432,11 +432,15 @@ const SettingsPanel: React.FC = () => {
                           <option value="auto">{t('settings.form.format.auto')}</option>
                           <option value="sdwebui">{t('settings.form.format.sdwebui')}</option>
                           <option value="ollama">{t('settings.form.format.ollama')}</option>
+                          <option value="openai_images">{t('settings.form.format.openai_images')}</option>
                           <option value="raw">{t('settings.form.format.raw')}</option>
                         </select>
                         <p className="mt-1 text-[10px] text-stone-500 dark:text-slate-500">
                           {t('settings.form.ollamaEnvHint')}{' '}
                           <code className="text-[9px]">OLLAMA_MODEL=…</code>
+                        </p>
+                        <p className="mt-1 text-[10px] text-stone-500 dark:text-slate-500">
+                          {t('settings.form.imageGenHttpExtraHint')}
                         </p>
                       </div>
                     </>

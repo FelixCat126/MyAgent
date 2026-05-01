@@ -36,12 +36,17 @@ const App: React.FC = () => {
   }, [initializeDefaultModels]);
 
   useEffect(() => {
+    const win = window as Window & {
+      __MYAGENT_FLUSH_PERSIST__?: () => Promise<void>;
+    };
+    win.__MYAGENT_FLUSH_PERSIST__ = () => flushZustandFilePersist();
     const flush = () => {
       void flushZustandFilePersist();
     };
     window.addEventListener('beforeunload', flush);
     return () => {
       flush();
+      delete win.__MYAGENT_FLUSH_PERSIST__;
       window.removeEventListener('beforeunload', flush);
     };
   }, []);

@@ -30,6 +30,35 @@ ipcMain.handle(
   }
 );
 
+ipcMain.handle(
+  'save-local-file-copy',
+  async (_e, arg: { sourcePath: string; defaultFileName: string }) => {
+    const raw = String(arg?.sourcePath || '').trim();
+    if (!raw) return { ok: false as const, error: '路径为空' as const };
+    const src = path.resolve(expandUserPath(raw));
+    try {
+      await fs.stat(src);
+    } catch {
+      return { ok: false as const, error: '源文件不存在' as const };
+    }
+    const base = path.basename(String(arg.defaultFileName || '').trim()) || path.basename(src);
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      defaultPath: base,
+      filters: [
+        { name: 'PNG', extensions: ['png'] },
+        { name: 'JPEG', extensions: ['jpg', 'jpeg'] },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+    });
+    if (canceled || !filePath) {
+      return { ok: false as const };
+    }
+    const dst = path.resolve(filePath);
+    await fs.copyFile(src, dst);
+    return { ok: true as const, path: dst };
+  }
+);
+
 ipcMain.handle('import-text-file', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
     properties: ['openFile'],

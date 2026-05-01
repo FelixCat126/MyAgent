@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { pathToFileURL } from 'url';
 import { Message } from '../types';
 import { FiMessageSquare, FiRefreshCw, FiCopy, FiDownload, FiChevronDown, FiChevronRight } from 'react-icons/fi';
@@ -6,6 +6,10 @@ import { useI18n } from '../hooks/useI18n';
 import MarkdownContent from './MarkdownContent';
 import { markdownContainsPipeTable } from '../utils/markdownTableDetect';
 import { looksLikeStandaloneCodeSnippet } from '../utils/standaloneCodeDetect';
+import { stripGenerateImageArtifactsForDisplay } from '../utils/toolCalls';
+
+const MAX_MARKDOWN_RENDER_CHARS = 24_000;
+const MAX_ASSISTANT_PREPROCESS_CHARS = 28_000;
 
 interface MessageItemProps {
   message: Message;
@@ -101,22 +105,54 @@ function AssistantReasoningCollapsible(props: {
   );
 }
 
-export const ImagePreviewModal: React.FC<{ src: string; onClose: () => void; alt: string }> = ({ src, onClose, alt }) => {
+export const ImagePreviewModal: React.FC<{
+  src: string;
+  onClose: () => void;
+  alt: string;
+  /** 本机磁盘路径，用于「另存为」拷贝（无则隐藏下载按钮） */
+  localPath?: string;
+  defaultFileName?: string;
+}> = ({ src, onClose, alt, localPath, defaultFileName }) => {
   const { t } = useI18n();
+  const canDownload = Boolean(localPath);
+
+  const handleSaveCopy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!localPath) return;
+    await window.electron.saveLocalFileCopy({
+      sourcePath: localPath,
+      defaultFileName: defaultFileName || 'image.png',
+    });
+  };
+
   return (
     <div
       className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 backdrop-blur-sm transition-opacity"
       onClick={onClose}
     >
-      <div className="relative max-w-[90vw] max-h-[85vh] flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
-        <button
-          onClick={onClose}
-          className="absolute -top-10 right-0 text-white hover:text-primary-400 transition-colors text-xl"
-          title={t('message.closePreview')}
-        >
-          ×
-        </button>
-        <img src={src} alt={alt} className="max-h-[85vh] max-w-[90vw] object-contain shadow-2xl rounded-lg" />
+      <div className="relative max-w-[90vw] max-h-[85vh] flex flex-col items-center justify-center gap-4" onClick={(e) => e.stopPropagation()}>
+        <div className="absolute -top-10 right-0 flex items-center gap-3">
+          {canDownload ? (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2.5 py-1 text-sm text-white backdrop-blur-sm transition-colors hover:bg-white/20"
+              title={t('message.imagePreviewDownload')}
+              onClick={(e) => void handleSaveCopy(e)}
+            >
+              <FiDownload size={14} aria-hidden />
+              <span>{t('message.imagePreviewDownload')}</span>
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md bg-white/10 px-2 py-1 text-xl leading-none text-white hover:text-primary-300"
+            title={t('message.closePreview')}
+          >
+            ×
+          </button>
+        </div>
+        <img src={src} alt={alt} className="max-h-[85vh] max-w-[90vw] object-contain rounded-lg shadow-2xl" />
       </div>
     </div>
   );
@@ -137,7 +173,25 @@ const MessageItem: React.FC<MessageItemProps> = ({
 }) => {
   const { t } = useI18n();
   const isUser = message.role === 'user';
-  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{
+    src: string;
+    localPath?: string;
+    defaultFileName?: string;
+  } | null>(null);
+
+  const openAttachmentPreview = (fileName: string, displaySrc: string, localPath: string) => {
+    if (!displaySrc) return;
+    setPreview({ src: displaySrc, localPath, defaultFileName: fileName });
+  };
+
+  const downloadAttachmentCopy = async (e: React.MouseEvent, localPath: string, fileName: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    await window.electron.saveLocalFileCopy({
+      sourcePath: localPath,
+      defaultFileName: fileName,
+    });
+  };
 
   const isThoughtStreaming =
     message.role === 'assistant' &&
@@ -145,18 +199,36 @@ const MessageItem: React.FC<MessageItemProps> = ({
     !!streamingAssistantId &&
     message.id === streamingAssistantId;
 
+  const assistantDisplayBody = useMemo(
+    () => {
+      if (message.role !== 'assistant') return '';
+      const raw = message.content ?? '';
+      const capped =
+        raw.length > MAX_ASSISTANT_PREPROCESS_CHARS
+          ? `${raw.slice(0, MAX_ASSISTANT_PREPROCESS_CHARS)}\n\n[内容过长，已截断显示；复制按钮仍会复制完整内容]`
+          : raw;
+      return stripGenerateImageArtifactsForDisplay(capped);
+    },
+    [message.role, message.content]
+  );
+
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(message.content);
+      const text =
+        message.role === 'user'
+          ? (message.content ?? '')
+          : stripGenerateImageArtifactsForDisplay(message.content ?? '');
+      await navigator.clipboard.writeText(text);
     } catch {}
   };
 
   const handleSaveExport = async (format: 'md' | 'xlsx' | 'docx') => {
-    const safe = String(message.content ?? '').slice(0, 40).replace(/[\\/:"*?<>|\r\n]/g, '_');
+    const raw = message.role === 'assistant' ? assistantDisplayBody : (message.content ?? '');
+    const safe = String(raw).slice(0, 40).replace(/[\\/:"*?<>|\r\n]/g, '_');
     const base = safe || `reply-${message.timestamp}`;
     await window.electron.saveAssistantExport({
       format,
-      content: message.content,
+      content: raw,
       defaultBaseName: base,
     });
   };
@@ -164,7 +236,13 @@ const MessageItem: React.FC<MessageItemProps> = ({
   const standaloneCode =
     message.role !== 'user' &&
     !(message.files && message.files.length > 0) &&
-    looksLikeStandaloneCodeSnippet(message.content ?? '');
+    looksLikeStandaloneCodeSnippet(assistantDisplayBody);
+  const markdownBody =
+    assistantDisplayBody.length > MAX_MARKDOWN_RENDER_CHARS
+      ? `${assistantDisplayBody.slice(0, MAX_MARKDOWN_RENDER_CHARS)}\n\n[内容过长，已截断显示；复制按钮仍会复制完整内容]`
+      : assistantDisplayBody;
+
+  /** 以上为助手展示/导出正文（已剔除生图工具 JSON） */
 
   return (
     <>
@@ -209,12 +287,26 @@ const MessageItem: React.FC<MessageItemProps> = ({
                                 <img
                                   src={displaySrc}
                                   alt={file.name}
-                                  onClick={() => displaySrc && setPreviewSrc(displaySrc)}
+                                  onClick={() =>
+                                    displaySrc &&
+                                    openAttachmentPreview(file.name, displaySrc, file.path)
+                                  }
                                   className="max-h-[180px] max-w-[240px] cursor-zoom-in rounded-md object-contain shadow-sm transition-transform hover:scale-[1.02] border border-white/50 ring-1 ring-white/25"
                                 />
-                                <span className="max-w-[240px] truncate text-[11px] font-medium text-white/95">
-                                  {file.name}
-                                </span>
+                                <div className="flex max-w-[240px] items-center gap-1">
+                                  <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-white/95">
+                                    {file.name}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="shrink-0 rounded p-0.5 text-white/90 hover:bg-white/15"
+                                    title={t('message.imagePreviewDownload')}
+                                    aria-label={t('message.imagePreviewDownload')}
+                                    onClick={(e) => void downloadAttachmentCopy(e, file.path, file.name)}
+                                  >
+                                    <FiDownload size={12} aria-hidden />
+                                  </button>
+                                </div>
                               </div>
                             ) : (
                               <div className="inline-flex max-w-full items-center gap-1 rounded-md border border-white/40 bg-white/20 px-2.5 py-1 text-[11px] font-medium text-white shadow-sm">
@@ -265,47 +357,6 @@ const MessageItem: React.FC<MessageItemProps> = ({
             </div>
             <div className="flex min-w-0 max-w-full flex-1 flex-col items-stretch">
               <div className="max-w-full rounded-2xl rounded-tl-sm border border-stone-300/45 bg-stone-100 px-5 py-3.5 text-stone-800 shadow-sm leading-relaxed dark:border-white/5 dark:bg-slate-800 dark:text-slate-100">
-                {message.files && message.files.length > 0 && (
-                  <div className="mb-2 flex flex-wrap gap-2">
-                    {message.files.map((file, index) => {
-                      const isImage = file.type.startsWith('image/');
-                      const hasPreview = file.preview && file.preview.startsWith('data:');
-                      const displaySrc = hasPreview
-                        ? file.preview
-                        : isImage
-                          ? pathToFileURL(file.path).href.replace(/^file:/i, 'local-file:')
-                          : '';
-                      const canShowImage = isImage && (hasPreview || file.path);
-
-                      return (
-                        <div
-                          key={index}
-                          className="relative group/file max-w-full transition-all"
-                          title={file.name}
-                        >
-                          {canShowImage ? (
-                            <div className="flex flex-col gap-1">
-                              <img
-                                src={displaySrc}
-                                alt={file.name}
-                                onClick={() => displaySrc && setPreviewSrc(displaySrc)}
-                                className="max-h-[180px] max-w-[240px] cursor-zoom-in rounded-md object-contain border border-stone-300/60 shadow-sm transition-transform hover:scale-[1.02] dark:border-white/10"
-                              />
-                              <span className="max-w-[240px] truncate text-[11px] font-medium text-stone-700 dark:text-slate-300">
-                                {file.name}
-                              </span>
-                            </div>
-                          ) : (
-                            <div className="inline-flex max-w-full items-center gap-1 rounded-md border border-stone-300/70 bg-stone-200/90 px-2.5 py-1 text-[11px] font-medium text-stone-800 dark:border-white/10 dark:bg-slate-700 dark:text-slate-100">
-                              <span className="shrink-0 opacity-90">📎</span>
-                              <span className="min-w-0 truncate">{file.name}</span>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
                 {(isThoughtStreaming || (message.reasoning ?? '').trim().length > 0) && (
                   <AssistantReasoningCollapsible
                     reasoning={message.reasoning ?? ''}
@@ -332,15 +383,15 @@ const MessageItem: React.FC<MessageItemProps> = ({
                       </button>
                     </div>
                     <pre className="m-0 max-h-[min(70vh,520px)] overflow-auto whitespace-pre-wrap break-words px-3 py-2.5 font-mono text-[13px] leading-relaxed text-stone-900 dark:text-slate-100">
-                      {message.content}
+                      {assistantDisplayBody}
                     </pre>
                   </div>
                 ) : showInlineStreamPlaceholder ? null : (
-                  <MarkdownContent text={message.content} copyCodeLabel={t('message.copyCodeBlock')} />
+                  <MarkdownContent text={markdownBody} copyCodeLabel={t('message.copyCodeBlock')} />
                 )}
                 {!standaloneCode &&
-                message.content?.trim() &&
-                markdownContainsPipeTable(message.content) ? (
+                markdownBody.trim() &&
+                markdownContainsPipeTable(markdownBody) ? (
                   <div className="mt-3 flex flex-wrap gap-1.5 border-t border-stone-200/80 pt-2.5 dark:border-slate-600/50">
                     <p className="mb-0.5 text-[10px] leading-snug text-stone-500 dark:text-slate-400">
                       {t('chat.exportStripHint')}
@@ -371,6 +422,72 @@ const MessageItem: React.FC<MessageItemProps> = ({
                     </button>
                   </div>
                 ) : null}
+                {message.files && message.files.length > 0 && (
+                  <div
+                    className={
+                      !(showInlineStreamPlaceholder ||
+                        standaloneCode ||
+                        markdownBody.trim() ||
+                        (isThoughtStreaming || (message.reasoning ?? '').trim().length > 0))
+                        ? ''
+                        : 'mt-3'
+                    }
+                  >
+                    <div className="flex flex-wrap gap-2">
+                      {message.files.map((file, index) => {
+                        const isImage = file.type.startsWith('image/');
+                        const hasPreview = file.preview && file.preview.startsWith('data:');
+                        const displaySrc = hasPreview
+                          ? file.preview
+                          : isImage
+                            ? pathToFileURL(file.path).href.replace(/^file:/i, 'local-file:')
+                            : '';
+                        const canShowImage = isImage && (hasPreview || file.path);
+
+                        return (
+                          <div
+                            key={index}
+                            className="relative group/file max-w-full transition-all"
+                            title={file.name}
+                          >
+                            {canShowImage ? (
+                              <div className="flex flex-col gap-1">
+                                <img
+                                  src={displaySrc}
+                                  alt={file.name}
+                                  onClick={() =>
+                                    displaySrc &&
+                                    openAttachmentPreview(file.name, displaySrc, file.path)
+                                  }
+                                  className="max-h-[180px] max-w-[240px] cursor-zoom-in rounded-md object-contain border border-stone-300/60 shadow-sm transition-transform hover:scale-[1.02] dark:border-white/10"
+                                />
+                                <div className="flex max-w-[240px] items-center gap-1">
+                                  <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-stone-700 dark:text-slate-300">
+                                    {file.name}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="shrink-0 rounded p-0.5 text-stone-600 hover:bg-stone-200 dark:text-slate-300 dark:hover:bg-slate-600"
+                                    title={t('message.imagePreviewDownload')}
+                                    aria-label={t('message.imagePreviewDownload')}
+                                    onClick={(e) => void downloadAttachmentCopy(e, file.path, file.name)}
+                                  >
+                                    <FiDownload size={12} aria-hidden />
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="inline-flex max-w-full items-center gap-1 rounded-md border border-stone-300/70 bg-stone-200/90 px-2.5 py-1 text-[11px] font-medium text-stone-800 dark:border-white/10 dark:bg-slate-700 dark:text-slate-100">
+                                <span className="shrink-0 opacity-90">📎</span>
+                                <span className="min-w-0 truncate">{file.name}</span>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
               {/** AI：日期/模型居左，复制在日期右侧，悬停显示复制 */}
               <div className="mt-1.5 flex w-full min-w-0 items-center justify-start gap-2 px-1 text-[10px] text-stone-500/85 dark:text-slate-500">
@@ -394,8 +511,14 @@ const MessageItem: React.FC<MessageItemProps> = ({
           </div>
         )}
       </div>
-      {previewSrc && (
-        <ImagePreviewModal src={previewSrc} onClose={() => setPreviewSrc(null)} alt={t('message.imageAlt')} />
+      {preview && (
+        <ImagePreviewModal
+          src={preview.src}
+          onClose={() => setPreview(null)}
+          alt={t('message.imageAlt')}
+          localPath={preview.localPath}
+          defaultFileName={preview.defaultFileName}
+        />
       )}
     </>
   );
