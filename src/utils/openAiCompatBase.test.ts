@@ -4,7 +4,10 @@ import { resolveOpenAiCompatibleBaseUrl } from './openAiCompatBase';
 describe('resolveOpenAiCompatibleBaseUrl', () => {
   it('Ollama 根地址自动补 /v1', () => {
     expect(resolveOpenAiCompatibleBaseUrl('http://127.0.0.1:11434', 'ollama')).toBe('http://127.0.0.1:11434/v1');
-    expect(resolveOpenAiCompatibleBaseUrl('http://localhost:11434/', 'ollama')).toBe('http://localhost:11434/v1');
+    expect(resolveOpenAiCompatibleBaseUrl('http://localhost:11434/', 'ollama')).toBe('http://127.0.0.1:11434/v1');
+  });
+  it('Ollama 将 localhost / IPv6 loopback 规范为 127.0.0.1', () => {
+    expect(resolveOpenAiCompatibleBaseUrl('http://[::1]:11434', 'ollama')).toBe('http://127.0.0.1:11434/v1');
   });
   it('已含 v1 不重复', () => {
     expect(resolveOpenAiCompatibleBaseUrl('http://127.0.0.1:11434/v1', 'ollama')).toBe('http://127.0.0.1:11434/v1');

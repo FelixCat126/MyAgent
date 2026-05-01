@@ -93,6 +93,8 @@ const SettingsPanel: React.FC = () => {
   const [knowledgeBlockExpanded, setKnowledgeBlockExpanded] = useState(true);
   const [appBlockExpanded, setAppBlockExpanded] = useState(true);
   const [indexBusy, setIndexBusy] = useState(false);
+  const [incrementalIndexBusy, setIncrementalIndexBusy] = useState(false);
+  const knowledgeIndexLocked = indexBusy || incrementalIndexBusy;
   const [indexMeta, setIndexMeta] = useState<{
     chunkCount: number;
     root: string | null;
@@ -806,7 +808,7 @@ const SettingsPanel: React.FC = () => {
               </p>
               <button
                 type="button"
-                disabled={indexBusy}
+                disabled={knowledgeIndexLocked}
                 onClick={async () => {
                   const root = rootPath.trim();
                   if (!root) {
@@ -820,7 +822,7 @@ const SettingsPanel: React.FC = () => {
                   }
                   setIndexBusy(true);
                   try {
-                    const r = await window.electron.knowledgeIndexWorkspace({ root, embed });
+                    const r = await window.electron.knowledgeIndexWorkspace({ root, embed, mode: 'full' });
                     if (!r.ok) {
                       alert(r.error || 'index failed');
                       return;
@@ -836,6 +838,46 @@ const SettingsPanel: React.FC = () => {
                 className="w-full rounded-lg bg-primary-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {indexBusy ? t('settings.reindexing') : t('settings.reindex')}
+              </button>
+              <p className="text-[9px] leading-snug text-stone-500 dark:text-slate-500">
+                {t('settings.indexIncrementalHint')}
+              </p>
+              <button
+                type="button"
+                disabled={knowledgeIndexLocked}
+                onClick={async () => {
+                  const root = rootPath.trim();
+                  if (!root) {
+                    alert(t('settings.indexRootMissing'));
+                    return;
+                  }
+                  const embed = getEmbedConfigForIpc();
+                  if (!embed) {
+                    alert(t('settings.indexEmbedOff'));
+                    return;
+                  }
+                  setIncrementalIndexBusy(true);
+                  try {
+                    const r = await window.electron.knowledgeIndexWorkspace({
+                      root,
+                      embed,
+                      mode: 'incremental',
+                    });
+                    if (!r.ok) {
+                      alert(r.error || 'index failed');
+                      return;
+                    }
+                    if (r.truncated) {
+                      alert(t('settings.indexTruncated'));
+                    }
+                    await refreshIndexStatus();
+                  } finally {
+                    setIncrementalIndexBusy(false);
+                  }
+                }}
+                className="w-full rounded-lg border border-stone-400/38 bg-stone-100/90 px-3 py-2 text-xs font-medium text-stone-800 transition-colors hover:bg-stone-200/95 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-500/40 dark:bg-slate-800/85 dark:text-slate-100 dark:hover:bg-slate-700"
+              >
+                {incrementalIndexBusy ? t('settings.indexIncrementalBusy') : t('settings.indexIncremental')}
               </button>
             </div>
           )}

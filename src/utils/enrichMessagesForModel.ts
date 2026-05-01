@@ -1,7 +1,11 @@
 import type { Message } from '../types';
 import type { Locale } from '../i18n/types';
+import { t } from '../i18n/ui';
 
 const DOC_EXTS = /\.(xlsx|xlsm|xls|docx|doc|md|markdown|txt|csv)$/i;
+
+/** 与 electron/ipc/documents 中正文字数上限一致 */
+const ATTACH_DOCUMENT_MAX_TEXT_CHARS = 600_000;
 
 function isDocumentAttachment(f: { type: string; name: string }): boolean {
   if (f.type.startsWith('image/')) return false;
@@ -39,8 +43,15 @@ export async function enrichMessagesForModel(
     for (const f of docFiles) {
       try {
         const r = await window.electron.extractDocumentText({ path: f.path, name: f.name });
+        const approxBadge =
+          _locale === 'en'
+            ? `${Math.round(ATTACH_DOCUMENT_MAX_TEXT_CHARS / 1000)}k`
+            : `${ATTACH_DOCUMENT_MAX_TEXT_CHARS / 10000}万`;
         if (r.ok && r.text) {
           chunks.push(`\n\n【附加文档: ${f.name}】\n${r.text}`);
+          if (r.truncated) {
+            chunks.push(`\n${t(_locale, 'attachment.docTruncNotice', { approx: approxBadge })}\n`);
+          }
         } else if (!r.ok) {
           chunks.push(`\n\n【附加文档 ${f.name} 读取失败】${r.error || ''}`);
         }

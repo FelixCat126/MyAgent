@@ -59,7 +59,14 @@ export function mapModelCallError(err: unknown, locale: Locale = 'zh'): string {
   if (e?.code === 'ECONNABORTED' || e?.code === 'ETIMEDOUT') {
     return L.timeout;
   }
-  if (e?.code === 'ECONNREFUSED' || e?.code === 'ENOTFOUND') {
+  if (
+    e?.code === 'ECONNREFUSED' ||
+    e?.code === 'ENOTFOUND' ||
+    e?.code === 'ERR_NETWORK' ||
+    e?.code === 'ECONNRESET' ||
+    e?.code === 'EPIPE' ||
+    e?.code === 'EPROTO'
+  ) {
     return L.conn;
   }
   if (e?.code === 'ENOENT') {

@@ -109,6 +109,15 @@ describe('chatStore', () => {
     expect(useChatStore.getState().sessions[0].messages[0].content).toBe('bc');
   });
 
+  it('removeMessage 删除会话内气泡', () => {
+    const sid = useChatStore.getState().createSession();
+    useChatStore.getState().addMessage(sid, userMsg('u1', 'a'));
+    useChatStore.getState().addMessage(sid, asstMsg('a1', 'b'));
+    useChatStore.getState().removeMessage(sid, 'a1');
+    expect(useChatStore.getState().sessions[0].messages).toHaveLength(1);
+    expect(useChatStore.getState().sessions[0].messages[0].id).toBe('u1');
+  });
+
   it('setSessionWebOverride 与 updateSessionTitle', () => {
     const sid = useChatStore.getState().createSession();
     useChatStore.getState().setSessionWebOverride(sid, 'on');

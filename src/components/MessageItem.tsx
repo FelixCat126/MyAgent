@@ -1,14 +1,104 @@
-import React, { useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { pathToFileURL } from 'url';
 import { Message } from '../types';
-import { FiMessageSquare, FiRefreshCw, FiCopy, FiDownload } from 'react-icons/fi';
+import { FiMessageSquare, FiRefreshCw, FiCopy, FiDownload, FiChevronDown, FiChevronRight } from 'react-icons/fi';
 import { useI18n } from '../hooks/useI18n';
 import MarkdownContent from './MarkdownContent';
 import { markdownContainsPipeTable } from '../utils/markdownTableDetect';
+import { looksLikeStandaloneCodeSnippet } from '../utils/standaloneCodeDetect';
 
 interface MessageItemProps {
   message: Message;
   onResend?: (message: Message) => void;
+  /** 会话是否仍处于流式生成中（由 ChatWindow 传入） */
+  conversationStreaming?: boolean;
+  /** 当前流式输出绑定的助手消息 id */
+  streamingAssistantId?: string | null;
+  /** 流式已开始输出思考且正文仍未到时，在主气泡内显示「···」（避免下方再出现一个气泡） */
+  showInlineStreamPlaceholder?: boolean;
+}
+
+function InlineStreamDots() {
+  return (
+    <div className="flex gap-1 text-stone-500 dark:text-slate-500 text-sm" aria-hidden>
+      <span className="animate-bounce" style={{ animationDelay: '0ms' }}>
+        ·
+      </span>
+      <span className="animate-bounce" style={{ animationDelay: '150ms' }}>
+        ·
+      </span>
+      <span className="animate-bounce" style={{ animationDelay: '300ms' }}>
+        ·
+      </span>
+    </div>
+  );
+}
+
+function AssistantReasoningCollapsible(props: {
+  reasoning: string;
+  isThoughtStreaming: boolean;
+  t: (key: string) => string;
+}) {
+  const { reasoning, isThoughtStreaming, t } = props;
+  const [expanded, setExpanded] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isThoughtStreaming) setExpanded(false);
+  }, [isThoughtStreaming]);
+
+  const showBody = isThoughtStreaming || expanded;
+
+  const handleToggle = () => {
+    if (isThoughtStreaming) return;
+    setExpanded((v) => !v);
+  };
+
+  useLayoutEffect(() => {
+    if (!showBody) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [reasoning, showBody]);
+
+  return (
+    <div
+      className={
+        (showBody ? 'mb-2 border-b border-stone-200/80 pb-2.5 ' : 'mb-1.5 ') +
+        'dark:border-slate-600/45 text-stone-700 dark:text-slate-300'
+      }
+    >
+      <button
+        type="button"
+        disabled={isThoughtStreaming}
+        onClick={handleToggle}
+        className={`flex w-full items-center gap-1.5 -mx-0.5 px-0.5 py-1 text-left text-[11px] font-medium text-stone-600 dark:text-slate-400 ${
+          isThoughtStreaming ? 'cursor-default' : 'cursor-pointer hover:text-stone-800 dark:hover:text-slate-200'
+        }`}
+        aria-expanded={showBody}
+      >
+        {showBody ? (
+          <FiChevronDown size={14} className="shrink-0 opacity-80" aria-hidden />
+        ) : (
+          <FiChevronRight size={14} className="shrink-0 opacity-80" aria-hidden />
+        )}
+        <span className="min-w-0 flex-1">{t('chat.reasoningSection')}</span>
+        <span className="shrink-0 text-[10px] font-normal opacity-75 tabular-nums">
+          {isThoughtStreaming ? t('chat.reasoningStreaming') : showBody ? t('chat.reasoningCollapse') : t('chat.reasoningExpand')}
+        </span>
+      </button>
+      {showBody ? (
+        <div
+          ref={scrollRef}
+          className="mt-1 max-h-[min(22vh,140px)] overflow-y-auto overflow-x-hidden rounded-md bg-stone-200/35 px-2 py-1.5 dark:bg-slate-900/50"
+        >
+          <pre className="m-0 whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-stone-800 dark:text-slate-200">
+            {reasoning}
+          </pre>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 export const ImagePreviewModal: React.FC<{ src: string; onClose: () => void; alt: string }> = ({ src, onClose, alt }) => {
@@ -38,10 +128,22 @@ function formatMessageTime(ts: number) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-const MessageItem: React.FC<MessageItemProps> = ({ message, onResend }) => {
+const MessageItem: React.FC<MessageItemProps> = ({
+  message,
+  onResend,
+  conversationStreaming = false,
+  streamingAssistantId = null,
+  showInlineStreamPlaceholder = false,
+}) => {
   const { t } = useI18n();
   const isUser = message.role === 'user';
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+
+  const isThoughtStreaming =
+    message.role === 'assistant' &&
+    conversationStreaming &&
+    !!streamingAssistantId &&
+    message.id === streamingAssistantId;
 
   const handleCopy = async () => {
     try {
@@ -58,6 +160,11 @@ const MessageItem: React.FC<MessageItemProps> = ({ message, onResend }) => {
       defaultBaseName: base,
     });
   };
+
+  const standaloneCode =
+    message.role !== 'user' &&
+    !(message.files && message.files.length > 0) &&
+    looksLikeStandaloneCodeSnippet(message.content ?? '');
 
   return (
     <>
@@ -199,8 +306,41 @@ const MessageItem: React.FC<MessageItemProps> = ({ message, onResend }) => {
                     })}
                   </div>
                 )}
-                <MarkdownContent text={message.content} />
-                {message.content?.trim() && markdownContainsPipeTable(message.content) ? (
+                {(isThoughtStreaming || (message.reasoning ?? '').trim().length > 0) && (
+                  <AssistantReasoningCollapsible
+                    reasoning={message.reasoning ?? ''}
+                    isThoughtStreaming={isThoughtStreaming}
+                    t={t}
+                  />
+                )}
+                {showInlineStreamPlaceholder ? (
+                  <div className="pt-0.5">
+                    <InlineStreamDots />
+                  </div>
+                ) : null}
+                {standaloneCode ? (
+                  <div className="overflow-hidden rounded-lg border border-stone-300/60 bg-[#faf8f5] shadow-inner dark:border-slate-600/50 dark:bg-slate-900/90">
+                    <div className="flex items-center justify-between border-b border-stone-300/50 bg-stone-200/85 px-3 py-1.5 text-[11px] text-stone-600 dark:border-slate-600/50 dark:bg-slate-800/90 dark:text-slate-400">
+                      <span className="font-medium opacity-90">{t('message.codeSnippetBadge')}</span>
+                      <button
+                        type="button"
+                        className="rounded px-2 py-0.5 font-medium text-primary-700 hover:bg-white/70 dark:text-primary-300 dark:hover:bg-slate-700/85"
+                        title={t('message.copyCodeBlock')}
+                        onClick={() => void handleCopy()}
+                      >
+                        {t('message.copyCodeBlock')}
+                      </button>
+                    </div>
+                    <pre className="m-0 max-h-[min(70vh,520px)] overflow-auto whitespace-pre-wrap break-words px-3 py-2.5 font-mono text-[13px] leading-relaxed text-stone-900 dark:text-slate-100">
+                      {message.content}
+                    </pre>
+                  </div>
+                ) : showInlineStreamPlaceholder ? null : (
+                  <MarkdownContent text={message.content} copyCodeLabel={t('message.copyCodeBlock')} />
+                )}
+                {!standaloneCode &&
+                message.content?.trim() &&
+                markdownContainsPipeTable(message.content) ? (
                   <div className="mt-3 flex flex-wrap gap-1.5 border-t border-stone-200/80 pt-2.5 dark:border-slate-600/50">
                     <p className="mb-0.5 text-[10px] leading-snug text-stone-500 dark:text-slate-400">
                       {t('chat.exportStripHint')}

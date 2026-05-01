@@ -301,8 +301,10 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     currentSessionId,
     sessions,
     addMessage,
+    removeMessage,
     updateMessage,
     appendToMessage,
+    appendReasoningToMessage,
     loadingSessionId,
     setLoadingSession,
     clearLoadingForSession,
@@ -322,11 +324,13 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const inputAreaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   /** 距底部小于该值视为「在底部」，流式输出时可自动跟随滚动 */
   const SCROLL_STICK_BOTTOM_PX = 72;
   const stickToBottomRef = useRef(true);
   const [inlineImageIndex, setInlineImageIndex] = useState(0);
+  const [streamingTargetAssistantId, setStreamingTargetAssistantId] = useState<string | null>(null);
   const inlineImageIndexRef = useRef(0);
   inlineImageIndexRef.current = inlineImageIndex;
   const [isStreaming, setIsStreaming] = useState(false);
@@ -336,6 +340,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   } | null>(null);
   const streamUnsubRef = useRef<(() => void) | null>(null);
   const streamHadErrorRef = useRef(false);
+  /** 用户点击中止后 onEnd 中用于区分「无输出取消」（删气泡）与「有错结束」 */
+  const streamCancelledByUserRef = useRef(false);
   const streamingAssistantIdRef = useRef<string | null>(null);
   /** 中文/日文等 IME 组字中为 true，避免 Enter 上屏时被当成发送 */
   const imeComposingRef = useRef(false);
@@ -401,8 +407,10 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
 
       if (useStream) {
         streamHadErrorRef.current = false;
+        streamCancelledByUserRef.current = false;
         const assistantId = `${Date.now()}-a`;
         streamingAssistantIdRef.current = assistantId;
+        setStreamingTargetAssistantId(assistantId);
         setIsStreaming(true);
         addMessage(sendSessionId, {
           id: assistantId,
@@ -415,40 +423,76 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         const imgBase = inlineImageIndexRef.current;
         const unsub = window.electron.subscribeModelStream(plainMessages, plainModel, {
           onDelta: (d) => appendToMessage(sendSessionId, assistantId, d),
+          onThinkingDelta: (th) => {
+            if (th) appendReasoningToMessage(sendSessionId, assistantId, th);
+          },
           onError: (m) => {
             streamHadErrorRef.current = true;
-            updateMessage(sendSessionId, assistantId, { content: m });
+            const sess = useChatStore.getState().sessions.find((s) => s.id === sendSessionId);
+            const prior = sess?.messages.find((x) => x.id === assistantId)?.content?.trimEnd() ?? '';
+            const injected = prior
+              ? `${prior}\n\n---\n\n${t('chat.streamInterrupted')}\n${m}`
+              : `${t('chat.streamInterrupted')}\n${m}`;
+            updateMessage(sendSessionId, assistantId, { content: injected });
           },
           locale: uiLocale,
           onEnd: () => {
             void (async () => {
               streamUnsubRef.current = null;
-              if (streamHadErrorRef.current) {
-                setIsStreaming(false);
-                clearLoadingForSession(sendSessionId);
-                streamingAssistantIdRef.current = null;
-                return;
-              }
-              const msg = useChatStore.getState()
-                .sessions.find((s) => s.id === sendSessionId)
-                ?.messages.find((m) => m.id === assistantId);
-              const raw = msg?.content ?? '';
+              const aborted = streamCancelledByUserRef.current;
+              streamCancelledByUserRef.current = false;
+
               try {
-                const { content, files } = await postProcessAssistantContent(
-                  raw,
-                  activeModel,
-                  imgBase,
-                  setInlineImageIndex
-                );
-                updateMessage(sendSessionId, assistantId, { content, files: files as Message['files'] });
-              } catch (e) {
-                updateMessage(sendSessionId, assistantId, {
-                  content: raw + '\n\n' + t('postProcess.tag') + (e instanceof Error ? e.message : String(e)),
-                });
+                if (streamHadErrorRef.current) {
+                  setIsStreaming(false);
+                  clearLoadingForSession(sendSessionId);
+                  streamingAssistantIdRef.current = null;
+                  setStreamingTargetAssistantId(null);
+                  return;
+                }
+
+                const msg = useChatStore.getState()
+                  .sessions.find((s) => s.id === sendSessionId)
+                  ?.messages.find((m) => m.id === assistantId);
+                const raw = msg?.content ?? '';
+
+                if (aborted && !raw.trim()) {
+                  removeMessage(sendSessionId, assistantId);
+                  setIsStreaming(false);
+                  clearLoadingForSession(sendSessionId);
+                  streamingAssistantIdRef.current = null;
+                  setStreamingTargetAssistantId(null);
+                  return;
+                }
+
+                let nextContent = raw;
+                let nextFiles = msg?.files as Message['files'] | undefined;
+                if (raw.trim()) {
+                  try {
+                    const { content, files } = await postProcessAssistantContent(
+                      raw,
+                      activeModel,
+                      imgBase,
+                      setInlineImageIndex
+                    );
+                    nextContent = content;
+                    nextFiles = files as Message['files'];
+                  } catch (e) {
+                    nextContent =
+                      raw + '\n\n' + t('postProcess.tag') + (e instanceof Error ? e.message : String(e));
+                  }
+                  if (aborted) {
+                    nextContent =
+                      `${nextContent}\n\n---\n\n${t('chat.stoppedBanner')}`;
+                  }
+                }
+
+                updateMessage(sendSessionId, assistantId, { content: nextContent, files: nextFiles });
               } finally {
                 setIsStreaming(false);
                 clearLoadingForSession(sendSessionId);
                 streamingAssistantIdRef.current = null;
+                setStreamingTargetAssistantId(null);
               }
             })();
           },
@@ -460,6 +504,10 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
       try {
         const response = await window.electron.callModel(plainMessages, plainModel, { locale: uiLocale });
         const content0 = response.content || t('chat.fallbackReply');
+        const reasoningIn =
+          typeof (response as { reasoning?: unknown }).reasoning === 'string'
+            ? String((response as { reasoning?: string }).reasoning).trim()
+            : '';
         const { content: c, files } = await postProcessAssistantContent(
           content0,
           activeModel,
@@ -470,6 +518,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           id: `${Date.now() + 1}-a`,
           role: 'assistant',
           content: c,
+          ...(reasoningIn ? { reasoning: reasoningIn } : {}),
           files: files as Message['files'],
           timestamp: Date.now(),
           model: activeModel.name,
@@ -487,26 +536,27 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         clearLoadingForSession(sendSessionId);
       }
     },
-    [addMessage, appendToMessage, clearLoadingForSession, updateMessage, t, uiLocale]
+    [
+      addMessage,
+      appendReasoningToMessage,
+      appendToMessage,
+      clearLoadingForSession,
+      removeMessage,
+      updateMessage,
+      t,
+      uiLocale,
+    ]
   );
 
   const handleStop = () => {
+    streamCancelledByUserRef.current = true;
     window.electron.closeModelStream();
     streamUnsubRef.current?.();
     streamUnsubRef.current = null;
     setIsStreaming(false);
     const sid = currentSessionId;
-    const aid = streamingAssistantIdRef.current;
-    if (sid && aid) {
-      const msg = useChatStore.getState().sessions.find((s) => s.id === sid)?.messages.find((m) => m.id === aid);
-      if (msg) {
-        updateMessage(sid, aid, {
-          content: msg.content ? `${msg.content}\n\n${t('chat.stopped')}` : t('chat.stopped'),
-        });
-      }
-      streamingAssistantIdRef.current = null;
-    }
     if (sid) clearLoadingForSession(sid);
+    /** streamingAssistantIdRef 由 onEnd 清理，便于识别待删空气泡 */
   };
 
   const handleResend = async (message: Message) => {
@@ -600,6 +650,17 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   }, [currentSessionId]);
 
   useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      if (!stickToBottomRef.current) return;
+      el.scrollTop = el.scrollHeight;
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [currentSessionId]);
+
+  useEffect(() => {
     return () => {
       Object.values(attachmentPreviews).forEach((url) => URL.revokeObjectURL(url));
     };
@@ -687,6 +748,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     setInput('');
     setAttachments([]);
     setAttachmentPreviews({});
+    requestAnimationFrame(() => inputAreaRef.current?.focus());
 
     await runModelReply(sendSessionId, priorMessages, userMessage, activeModel);
   };
@@ -708,12 +770,17 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
 
   const attachmentStripH = 80;
 
-  /** 非流式：最后一条是用户时显示；流式：插入空助手后最后一条是助手且无正文时也要显示，直到首包到达 */
   const lastMsg = messages.length > 0 ? messages[messages.length - 1] : undefined;
+
+  /** 流式：最后是助手且无正文时需要「···」，但若已有思考内容则在主气泡内显示，避免双重气泡 */
+  const assistantNeedsDots =
+    isStreaming && lastMsg?.role === 'assistant' && !(lastMsg.content ?? '').trim().length;
+  const thinkingVisibleWhileWaiting =
+    assistantNeedsDots && !!(lastMsg?.reasoning ?? '').trim().length;
+
   const showTypingDots =
     isCurrentSessionLoading &&
-    (lastMsg?.role === 'user' ||
-      (isStreaming && lastMsg?.role === 'assistant' && !(lastMsg.content ?? '').trim().length));
+    (lastMsg?.role === 'user' || (assistantNeedsDots && !thinkingVisibleWhileWaiting));
 
   useLayoutEffect(() => {
     if (!stickToBottomRef.current) return;
@@ -793,17 +860,28 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         )}
 
         {messages.map((message) => {
+          const reasoningTrim = (message.reasoning ?? '').trim();
           const hideEmptyStreamBubble =
             isStreaming &&
             message.role === 'assistant' &&
             message.id === streamingAssistantIdRef.current &&
-            !(message.content ?? '').trim().length;
+            !(message.content ?? '').trim().length &&
+            !reasoningTrim.length;
           if (hideEmptyStreamBubble) return <React.Fragment key={message.id} />;
           return (
             <MessageItem
               key={message.id}
               message={message}
               onResend={message.role === 'user' ? handleResend : undefined}
+              conversationStreaming={isStreaming}
+              streamingAssistantId={streamingTargetAssistantId}
+              showInlineStreamPlaceholder={
+                !!isStreaming &&
+                message.role === 'assistant' &&
+                message.id === streamingTargetAssistantId &&
+                !(message.content ?? '').trim().length &&
+                !!(message.reasoning ?? '').trim().length
+              }
             />
           );
         })}
@@ -922,6 +1000,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                 <FiPaperclip size={14} />
               </button>
               <textarea
+                ref={inputAreaRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onCompositionStart={() => {

@@ -38,17 +38,25 @@ window.electron = {
     ipcRenderer.invoke('call-model', cloneForIpc(messages), cloneForIpc(config), cloneForIpc(options ?? null)),
   subscribeModelStream: (messages, config, handlers) => {
     const d = (_e, t) => handlers.onDelta(t);
+    const think = (_e, t) => {
+      if (handlers.onThinkingDelta) handlers.onThinkingDelta(t);
+    };
     const err = (_e, m) => handlers.onError(m);
+    let ended = false;
+    const cleanup = () => {
+      if (ended) return;
+      ended = true;
+      ipcRenderer.removeListener('model-stream-delta', d);
+      ipcRenderer.removeListener('model-stream-thinking-delta', think);
+      ipcRenderer.removeListener('model-stream-error', err);
+      ipcRenderer.removeListener('model-stream-end', end);
+    };
     const end = () => {
       cleanup();
       handlers.onEnd();
     };
-    function cleanup() {
-      ipcRenderer.removeListener('model-stream-delta', d);
-      ipcRenderer.removeListener('model-stream-error', err);
-      ipcRenderer.removeListener('model-stream-end', end);
-    }
     ipcRenderer.on('model-stream-delta', d);
+    ipcRenderer.on('model-stream-thinking-delta', think);
     ipcRenderer.on('model-stream-error', err);
     ipcRenderer.on('model-stream-end', end);
     ipcRenderer.send(
@@ -57,7 +65,6 @@ window.electron = {
     );
     return () => {
       ipcRenderer.send('model-stream-abort');
-      cleanup();
     };
   },
   closeModelStream: () => ipcRenderer.send('model-stream-abort'),

@@ -10,12 +10,18 @@ import {
   messagesHaveImageFiles,
   resolveOpenAiCompatibleBaseUrl,
 } from './openai-adapters';
+import { extractContentAndReasoningFromSseDataLine } from '../utils/streamChatCompletionDelta';
 
 const abortByStream = new Map<number, AbortController>();
 
 function sendDelta(wc: WebContents, text: string) {
   if (!text) return;
   wc.send('model-stream-delta', text);
+}
+
+function sendThinkingDelta(wc: WebContents, text: string) {
+  if (!text) return;
+  wc.send('model-stream-thinking-delta', text);
 }
 
 function sendEnd(wc: WebContents) {
@@ -26,27 +32,7 @@ function sendErr(wc: WebContents, message: string) {
   wc.send('model-stream-error', message);
 }
 
-/**
- * 解析 OpenAI 兼容 / Ollama 流式 SSE 行
- */
-function extractDeltaFromSseLine(line: string): string {
-  const trimmed = line.trim();
-  if (!trimmed.startsWith('data:')) return '';
-  const data = trimmed.slice(5).trim();
-  if (data === '[DONE]') return '';
-  try {
-    const j = JSON.parse(data) as {
-      message?: { content?: string };
-      choices?: Array<{ delta?: { content?: string } }>;
-    };
-    const c = j.choices?.[0]?.delta?.content ?? j.message?.content;
-    return typeof c === 'string' ? c : '';
-  } catch {
-    return '';
-  }
-}
-
-export function registerModelStreamIpc() {
+function registerModelStreamIpc() {
   ipcMain.on('model-stream-start', (event, payload: { messages: Message[]; config: ModelConfig; locale?: 'zh' | 'en' }) => {
     const { messages, config, locale: loc } = payload;
     const locale = loc === 'en' ? 'en' : 'zh';
@@ -119,16 +105,20 @@ export function registerModelStreamIpc() {
           const parts = buffer.split('\n');
           buffer = parts.pop() || '';
           for (const line of parts) {
-            const d = extractDeltaFromSseLine(line);
-            sendDelta(wc, d);
+            const trimmed = line.replace(/\r$/, '').trim();
+            const { content, reasoning } = extractContentAndReasoningFromSseDataLine(trimmed);
+            sendDelta(wc, content);
+            sendThinkingDelta(wc, reasoning);
           }
         });
         await new Promise<void>((resolve, reject) => {
           stream.on('end', () => {
             if (buffer.trim()) {
-              for (const line of buffer.split('\n')) {
-                const d = extractDeltaFromSseLine(line);
-                sendDelta(wc, d);
+              for (const ln of buffer.split('\n')) {
+                const trimmed = ln.replace(/\r$/, '').trim();
+                const { content, reasoning } = extractContentAndReasoningFromSseDataLine(trimmed);
+                sendDelta(wc, content);
+                sendThinkingDelta(wc, reasoning);
               }
             }
             resolve();

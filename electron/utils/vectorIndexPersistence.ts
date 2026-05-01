@@ -12,6 +12,9 @@ export type VectorChunkV1 = {
   emb: number[];
 };
 
+/** 单文件指纹：用于增量建索引，避免整库反复全文读取与重嵌入 */
+export type VectorFileFingerprintV1 = { mtimeMs: number; size: number };
+
 export type VectorIndexFileV1 = {
   v: 1;
   root: string;
@@ -20,6 +23,8 @@ export type VectorIndexFileV1 = {
   updatedAt: number;
   dim: number;
   chunks: VectorChunkV1[];
+  /** 相对工作区路径（POSIX）→ 指纹；旧索引无此字段时首次「增量」会退化为全文重建 */
+  fingerprints?: Record<string, VectorFileFingerprintV1>;
 };
 
 function knowledgeDir(): string {

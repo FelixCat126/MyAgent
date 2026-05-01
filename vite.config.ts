@@ -40,6 +40,16 @@ export default defineConfig({
         vite: {
           build: {
             outDir: 'dist-electron',
+            rollupOptions: {
+              output: {
+                manualChunks(id: string) {
+                  if (id.includes('node_modules/exceljs')) return 'vendor-excel';
+                  if (id.includes('node_modules/mammoth')) return 'vendor-mammoth';
+                  if (id.includes('node_modules/axios')) return 'vendor-http';
+                  return undefined;
+                },
+              },
+            },
           },
         },
         onstart(options) {

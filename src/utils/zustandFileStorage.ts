@@ -15,37 +15,87 @@ function hasFilePersist(e: unknown): e is PersistApi {
   );
 }
 
+const DEBOUNCE_MS = 420;
+
 let singleton: StateStorage | undefined;
+
+const pendingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const pendingValues = new Map<string, string>();
+let pinnedPersistApi: PersistApi | null = null;
+
+async function persistNow(name: string, value: string): Promise<void> {
+  pinnedPersistApi?.persistSet(name, value);
+}
+
+/**
+ * 在页面卸载或切应用前尽最大努力落盘，减少 debounce 期间的数据丢失窗口
+ */
+export async function flushZustandFilePersist(): Promise<void> {
+  if (!pinnedPersistApi) return;
+  const pairs = [...pendingValues.entries()];
+  for (const [name] of pairs) {
+    const tmr = pendingTimers.get(name);
+    if (tmr) clearTimeout(tmr);
+    pendingTimers.delete(name);
+  }
+  await Promise.all(
+    pairs.map(([name, value]) =>
+      pinnedPersistApi!.persistSet(name, value).then(() => {
+        pendingValues.delete(name);
+      })
+    )
+  );
+}
+
+function wrapElectronStorage(e: PersistApi): StateStorage {
+  pinnedPersistApi = e;
+  return {
+    getItem: async (name) => {
+      const fromFile = await e.persistGet(name);
+      if (fromFile != null && fromFile.length > 0) {
+        return fromFile;
+      }
+      try {
+        const fromLs = localStorage.getItem(name);
+        if (fromLs) {
+          await e.persistSet(name, fromLs);
+          localStorage.removeItem(name);
+          return fromLs;
+        }
+      } catch {
+        /* ignore */
+      }
+      return null;
+    },
+    setItem: async (name, value) => {
+      pendingValues.set(name, value);
+      const prev = pendingTimers.get(name);
+      if (prev) clearTimeout(prev);
+      pendingTimers.set(
+        name,
+        setTimeout(() => {
+          pendingTimers.delete(name);
+          const v = pendingValues.get(name);
+          if (v === undefined) return;
+          void persistNow(name, v);
+        }, DEBOUNCE_MS)
+      );
+    },
+    removeItem: async (name) => {
+      const tmr = pendingTimers.get(name);
+      if (tmr) clearTimeout(tmr);
+      pendingTimers.delete(name);
+      pendingValues.delete(name);
+      await e.persistRemove(name);
+    },
+  };
+}
 
 function getSingleton(): StateStorage {
   if (singleton) return singleton;
   if (typeof window !== 'undefined' && hasFilePersist((window as unknown as { electron?: unknown }).electron)) {
     const e = (window as unknown as { electron: PersistApi }).electron;
-    singleton = {
-      getItem: async (name) => {
-        const fromFile = await e.persistGet(name);
-        if (fromFile != null && fromFile.length > 0) {
-          return fromFile;
-        }
-        try {
-          const fromLs = localStorage.getItem(name);
-          if (fromLs) {
-            await e.persistSet(name, fromLs);
-            localStorage.removeItem(name);
-            return fromLs;
-          }
-        } catch {
-          /* ignore */
-        }
-        return null;
-      },
-      setItem: async (name, value) => {
-        await e.persistSet(name, value);
-      },
-      removeItem: async (name) => {
-        await e.persistRemove(name);
-      },
-    };
+    singleton = wrapElectronStorage(e);
   } else {
     singleton = localStorage;
   }

@@ -16,8 +16,10 @@ interface ChatStore {
   switchSession: (sessionId: string) => void;
   deleteSession: (sessionId: string) => void;
   addMessage: (sessionId: string, message: Message) => void;
+  removeMessage: (sessionId: string, messageId: string) => void;
   updateMessage: (sessionId: string, messageId: string, patch: Partial<Message>) => void;
   appendToMessage: (sessionId: string, messageId: string, chunk: string) => void;
+  appendReasoningToMessage: (sessionId: string, messageId: string, chunk: string) => void;
   setSessionWebOverride: (sessionId: string, mode: 'default' | 'on' | 'off') => void;
   updateSessionTitle: (sessionId: string, title: string) => void;
   setLoadingSession: (sessionId: string | null) => void;
@@ -89,6 +91,20 @@ export const useChatStore = create<ChatStore>()(
         }));
       },
 
+      removeMessage: (sessionId: string, messageId: string) => {
+        set((state: ChatStore) => ({
+          sessions: state.sessions.map((session: ChatSession) =>
+            session.id === sessionId
+              ? {
+                  ...session,
+                  updatedAt: Date.now(),
+                  messages: session.messages.filter((m) => m.id !== messageId),
+                }
+              : session
+          ),
+        }));
+      },
+
       updateMessage: (sessionId: string, messageId: string, patch: Partial<Message>) => {
         set((state: ChatStore) => ({
           sessions: state.sessions.map((session: ChatSession) =>
@@ -114,6 +130,25 @@ export const useChatStore = create<ChatStore>()(
                   updatedAt: Date.now(),
                   messages: session.messages.map((m) =>
                     m.id === messageId ? { ...m, content: m.content + chunk } : m
+                  ),
+                }
+              : session
+          ),
+        }));
+      },
+
+      appendReasoningToMessage: (sessionId: string, messageId: string, chunk: string) => {
+        if (!chunk) return;
+        set((state: ChatStore) => ({
+          sessions: state.sessions.map((session: ChatSession) =>
+            session.id === sessionId
+              ? {
+                  ...session,
+                  updatedAt: Date.now(),
+                  messages: session.messages.map((m) =>
+                    m.id === messageId
+                      ? { ...m, reasoning: `${m.reasoning ?? ''}${chunk}` }
+                      : m
                   ),
                 }
               : session

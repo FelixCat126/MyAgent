@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mapModelCallError } from '../../electron/utils/modelErrors';
+import { mapModelCallError } from './modelErrors';
 
 describe('mapModelCallError', () => {
   it('超时', () => {
@@ -7,6 +7,7 @@ describe('mapModelCallError', () => {
   });
   it('无法连接', () => {
     expect(mapModelCallError({ code: 'ECONNREFUSED' })).toContain('无法连接');
+    expect(mapModelCallError({ code: 'ERR_NETWORK', message: 'Network Error' })).toContain('无法连接');
   });
   it('ENOENT 无附件文案时用通用提示', () => {
     expect(mapModelCallError({ code: 'ENOENT', message: 'missing' })).toContain('不存在');

@@ -41,6 +41,7 @@ export interface ElectronAPI {
     config: ModelConfig,
     handlers: {
       onDelta: (t: string) => void;
+      onThinkingDelta?: (t: string) => void;
       onEnd: () => void;
       onError: (m: string) => void;
       locale?: 'zh' | 'en';
@@ -77,6 +78,8 @@ export interface ElectronAPI {
     text?: string;
     kind?: string;
     error?: string;
+    /** 正文因上限被裁剪（仍可阅读部分） */
+    truncated?: boolean;
   }>;
   /** 将助手消息全文导出为 md / xlsx(表格) / docx */
   saveAssistantExport: (arg: {
@@ -85,12 +88,18 @@ export interface ElectronAPI {
     defaultBaseName: string;
   }) => Promise<{ ok: boolean; path?: string }>;
   /** 为工作区构建向量索引（需先配置嵌入服务与模型） */
-  knowledgeIndexWorkspace: (arg: { root: string; embed: KnowledgeEmbedConfig }) => Promise<{
+  knowledgeIndexWorkspace: (arg: {
+    root: string;
+    embed: KnowledgeEmbedConfig;
+    mode?: 'full' | 'incremental';
+  }) => Promise<{
     ok: boolean;
     fileCount?: number;
     chunkCount?: number;
     truncated?: boolean;
     root?: string;
+    reusedChunks?: number;
+    rebuiltFiles?: number;
     error?: string;
   }>;
   /** 按用户问题在索引中做向量检索，返回用于注入模型的文本 */
@@ -160,6 +169,8 @@ export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  /** 模型的链式推理/思考文本（若有），与正文分离展示并可折叠 */
+  reasoning?: string;
   files?: FileInfo[];
   timestamp: number;
   model: string;

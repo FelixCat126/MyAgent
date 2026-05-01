@@ -3,6 +3,11 @@ import fs from 'fs/promises';
 import { extractTextFromPath } from '../utils/documentText';
 import { markdownToXlsxBuffer, plainMarkdownToDocxBuffer } from '../utils/markdownExport';
 
+/** 单次提取注入模型的正文上限；须与前端 enrichMessages 提示一致（约几十万字级别） */
+const ATTACH_DOCUMENT_MAX_STATS_BYTES = 80 * 1024 * 1024;
+/** 与中文字符量级同阶的 JS 字符串长度上限（非严格 Unicode 语义） */
+const ATTACH_DOCUMENT_MAX_TEXT_CHARS = 600_000;
+
 ipcMain.handle(
   'extract-document-text',
   async (_e, arg: { path: string; name?: string }) => {
@@ -10,11 +15,21 @@ ipcMain.handle(
     if (!p) return { ok: false as const, error: '路径为空' };
     try {
       const st = await fs.stat(p);
-      if (st.size > 40 * 1024 * 1024) {
-        return { ok: false as const, error: '文件过大（>40MB）' };
+      if (st.size > ATTACH_DOCUMENT_MAX_STATS_BYTES) {
+        return {
+          ok: false as const,
+          error:
+            `文件过大（>${Math.round(ATTACH_DOCUMENT_MAX_STATS_BYTES / (1024 * 1024))}MB）；请压缩、拆分或使用较小附件。`,
+        };
       }
-      const { text, kind } = await extractTextFromPath(p, arg.name);
-      return { ok: true as const, text, kind };
+      const { text: rawText, kind } = await extractTextFromPath(p, arg.name);
+      let text = rawText;
+      let truncated = false;
+      if (text.length > ATTACH_DOCUMENT_MAX_TEXT_CHARS) {
+        text = text.slice(0, ATTACH_DOCUMENT_MAX_TEXT_CHARS);
+        truncated = true;
+      }
+      return { ok: true as const, text, kind, truncated };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       return { ok: false as const, error: msg };

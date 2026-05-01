@@ -22,10 +22,34 @@ function splitSystemMessages(messages: Message[]): { systemText: string; convo: 
   return { systemText, convo };
 }
 
-function parseOpenAIChatResponse(responseData: { choices?: Array<{ message?: { content?: string } }> }) {
-  if (responseData.choices?.[0]?.message?.content != null) {
+function parseOpenAIMessageBlock(msg?: {
+  content?: unknown;
+  reasoning_content?: unknown;
+  reasoning?: unknown;
+  thinking?: unknown;
+}): { content: string; reasoning?: string } {
+  const content =
+    typeof msg?.content === 'string' ? msg.content : '';
+  let reasoning = '';
+  for (const k of ['reasoning_content', 'reasoning', 'thinking'] as const) {
+    const v = msg?.[k];
+    if (typeof v === 'string' && v) {
+      reasoning = v;
+      break;
+    }
+  }
+  return reasoning ? { content, reasoning } : { content };
+}
+
+function parseOpenAIChatResponse(responseData: {
+  choices?: Array<{ message?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown; thinking?: unknown } }>;
+}) {
+  const msg = responseData.choices?.[0]?.message;
+  if (msg != null && msg.content != null) {
+    const { content, reasoning } = parseOpenAIMessageBlock(msg);
     return {
-      content: responseData.choices[0].message.content as string,
+      content,
+      ...(reasoning?.trim() ? { reasoning } : {}),
       usage: (responseData as { usage?: unknown }).usage,
     };
   }

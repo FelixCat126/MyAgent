@@ -46,22 +46,24 @@ const electronStub: ElectronAPI = {
   },
 };
 
-Object.defineProperty(window, 'electron', {
-  writable: true,
-  configurable: true,
-  value: electronStub,
-});
+if (typeof window !== 'undefined') {
+  Object.defineProperty(window, 'electron', {
+    writable: true,
+    configurable: true,
+    value: electronStub,
+  });
 
-Object.defineProperty(window, 'matchMedia', {
-  writable: true,
-  value: (query: string) => ({
-    matches: false,
-    media: query,
-    onchange: null,
-    addListener: () => {},
-    removeListener: () => {},
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    dispatchEvent: () => false,
-  }),
-});
+  Object.defineProperty(window, 'matchMedia', {
+    writable: true,
+    value: (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }),
+  });
+}

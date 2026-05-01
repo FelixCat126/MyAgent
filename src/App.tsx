@@ -10,6 +10,7 @@ import { FiSettings, FiPlus, FiMoon, FiSun, FiMessageSquare, FiX, FiMonitor } fr
 import { useResolvedTheme } from './hooks/useResolvedTheme';
 import { useI18n } from './hooks/useI18n';
 import type { AppTheme } from './store/settingStore';
+import { flushZustandFilePersist } from './utils/zustandFileStorage';
 
 const TITLEBAR_H = 44;
 /** 底部输入区：输入条（内含模型）+ 发送，单行紧凑高度 */
@@ -33,6 +34,17 @@ const App: React.FC = () => {
   useEffect(() => {
     initializeDefaultModels();
   }, [initializeDefaultModels]);
+
+  useEffect(() => {
+    const flush = () => {
+      void flushZustandFilePersist();
+    };
+    window.addEventListener('beforeunload', flush);
+    return () => {
+      flush();
+      window.removeEventListener('beforeunload', flush);
+    };
+  }, []);
 
   const handleNewChat = () => createSession();
 
