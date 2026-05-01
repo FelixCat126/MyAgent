@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react';
 import { useChatStore } from '../store/chatStore';
 import { useModelStore } from '../store/modelStore';
 import { useWebSearchStore } from '../store/webSearchStore';
@@ -323,7 +323,9 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const prevMsgCountRef = useRef(0);
+  /** 距底部小于该值视为「在底部」，流式输出时可自动跟随滚动 */
+  const SCROLL_STICK_BOTTOM_PX = 72;
+  const stickToBottomRef = useRef(true);
   const [inlineImageIndex, setInlineImageIndex] = useState(0);
   const inlineImageIndexRef = useRef(0);
   inlineImageIndexRef.current = inlineImageIndex;
@@ -335,6 +337,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   const streamUnsubRef = useRef<(() => void) | null>(null);
   const streamHadErrorRef = useRef(false);
   const streamingAssistantIdRef = useRef<string | null>(null);
+  /** 中文/日文等 IME 组字中为 true，避免 Enter 上屏时被当成发送 */
+  const imeComposingRef = useRef(false);
 
   const currentSession = sessions.find((s: ChatSession) => s.id === currentSessionId);
   const messages = currentSession?.messages || [];
@@ -580,11 +584,20 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   };
 
   useEffect(() => {
-    if (messages.length > prevMsgCountRef.current) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }
-    prevMsgCountRef.current = messages.length;
-  }, [messages]);
+    stickToBottomRef.current = true;
+  }, [currentSessionId]);
+
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const syncStickToBottom = () => {
+      stickToBottomRef.current =
+        el.scrollHeight - el.scrollTop - el.clientHeight <= SCROLL_STICK_BOTTOM_PX;
+    };
+    el.addEventListener('scroll', syncStickToBottom, { passive: true });
+    syncStickToBottom();
+    return () => el.removeEventListener('scroll', syncStickToBottom);
+  }, [currentSessionId]);
 
   useEffect(() => {
     return () => {
@@ -681,6 +694,9 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   const handleInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key !== 'Enter') return;
     if (e.shiftKey) return;
+    const native = e.nativeEvent;
+    if (native.isComposing || imeComposingRef.current) return;
+    if ((native as KeyboardEvent).keyCode === 229) return;
     e.preventDefault();
     void handleSend();
   };
@@ -698,6 +714,13 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     isCurrentSessionLoading &&
     (lastMsg?.role === 'user' ||
       (isStreaming && lastMsg?.role === 'assistant' && !(lastMsg.content ?? '').trim().length));
+
+  useLayoutEffect(() => {
+    if (!stickToBottomRef.current) return;
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages, currentSessionId, showTypingDots, vectorRagStatus, footerH, attachments.length]);
 
   return (
     <div
@@ -901,6 +924,12 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
               <textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
+                onCompositionStart={() => {
+                  imeComposingRef.current = true;
+                }}
+                onCompositionEnd={() => {
+                  imeComposingRef.current = false;
+                }}
                 onKeyDown={handleInputKeyDown}
                 placeholder={t('chat.inputPlaceholder')}
                 className="box-border min-h-10 w-full min-w-0 flex-1 resize-none bg-transparent py-2.5 pl-1 pr-0.5 leading-5 text-stone-800 placeholder-stone-500/70 focus:outline-none dark:text-slate-100 text-[clamp(0.8125rem,0.55vw+0.68rem,0.9375rem)]"
