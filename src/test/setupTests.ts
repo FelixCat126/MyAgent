@@ -45,6 +45,7 @@ const electronStub: ElectronAPI = {
   persistSetSync: (name, value) => {
     localStorage.setItem(name, value);
   },
+  listMediaLibraryImages: async () => ({ ok: true, items: [] }),
 };
 
 if (typeof window !== 'undefined') {

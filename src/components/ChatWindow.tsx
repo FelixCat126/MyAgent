@@ -1,4 +1,11 @@
-import React, { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react';
+import React, {
+  useState,
+  useRef,
+  useEffect,
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+} from 'react';
 import { useChatStore } from '../store/chatStore';
 import { useModelStore } from '../store/modelStore';
 import { useWebSearchStore } from '../store/webSearchStore';
@@ -8,7 +15,11 @@ import { useWorkspaceStore } from '../store/workspaceStore';
 import { useKnowledgeStore } from '../store/knowledgeStore';
 import { Message, ChatSession, FileInfo, ModelConfig, WebSearchProvider } from '../types';
 import { FiPaperclip, FiFile, FiImage, FiSquare, FiDownload, FiGlobe, FiLoader } from 'react-icons/fi';
-import MessageItem from './MessageItem';
+import MessageItem, { ConversationImageGalleryModal } from './MessageItem';
+import {
+  buildConversationImageGallery,
+  findConversationGalleryIndex,
+} from '@/utils/conversationImageGallery';
 import ModelSelector from './ModelSelector';
 import { IosSwitch } from './IosSwitch';
 import { getWebSearchQueryIfTriggered } from '../utils/webSearchTrigger';
@@ -475,8 +486,13 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
 
   const currentSession = sessions.find((s: ChatSession) => s.id === currentSessionId);
   const messages = currentSession?.messages || [];
+  const conversationGallery = useMemo(() => buildConversationImageGallery(messages), [messages]);
+  const [conversationGalleryIdx, setConversationGalleryIdx] = useState<number | null>(null);
+  const [conversationGalleryNonce, setConversationGalleryNonce] = useState(0);
 
   useEffect(() => {
+    setConversationGalleryIdx(null);
+    setConversationGalleryNonce(0);
     setVectorRagStatus(null);
   }, [currentSessionId]);
 
@@ -1029,6 +1045,14 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                 !(message.content ?? '').trim().length &&
                 !!(message.reasoning ?? '').trim().length
               }
+              conversationGallery={conversationGallery}
+              onOpenConversationGallery={(messageId, fileIndex) => {
+                const idx = findConversationGalleryIndex(conversationGallery, messageId, fileIndex);
+                if (idx >= 0) {
+                  setConversationGalleryIdx(idx);
+                  setConversationGalleryNonce((n) => n + 1);
+                }
+              }}
             />
           );
         })}
@@ -1224,6 +1248,14 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           </div>
         </div>
       </div>
+      {conversationGalleryIdx !== null && conversationGallery.length > 0 ? (
+        <ConversationImageGalleryModal
+          key={`${currentSessionId ?? 'sess'}-${conversationGalleryNonce}`}
+          slides={conversationGallery}
+          startIndex={conversationGalleryIdx}
+          onClose={() => setConversationGalleryIdx(null)}
+        />
+      ) : null}
     </div>
   );
 };

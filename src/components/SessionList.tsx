@@ -2,11 +2,13 @@ import React, { useMemo, useState } from 'react';
 import { useChatStore } from '../store/chatStore';
 import { ChatSession } from '../types';
 import { filterSessionsByQuery } from '../utils/sessionFilter';
-import { FiTrash2, FiEdit2, FiSearch, FiDownload } from 'react-icons/fi';
+import { FiTrash2, FiEdit2, FiSearch, FiDownload, FiImage } from 'react-icons/fi';
 import { useI18n } from '../hooks/useI18n';
+import { useImageLibraryOpener } from '../context/ImageLibraryContext';
 
 const SessionList: React.FC = () => {
   const { t, locale } = useI18n();
+  const openImageLibrary = useImageLibraryOpener();
   const { sessions, currentSessionId, switchSession, deleteSession, updateSessionTitle } = useChatStore();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
@@ -75,17 +77,30 @@ const SessionList: React.FC = () => {
             className="w-full rounded-lg border border-stone-400/30 bg-stone-100/80 py-1.5 pl-8 pr-2 text-xs text-stone-800 placeholder-stone-400 focus:border-primary-500/60 focus:outline-none focus:ring-1 focus:ring-primary-500/50 dark:border-slate-600 dark:bg-slate-800/80 dark:text-slate-100"
           />
         </div>
-        {sessions.length > 0 && (
+        <div className="flex w-full gap-1.5">
+          {sessions.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => void exportAllJson()}
+              className="flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg border border-stone-400/25 bg-stone-100/60 py-1.5 text-xs font-medium text-stone-600 hover:bg-stone-200/80 dark:border-slate-600 dark:bg-slate-800/50 dark:text-slate-300 dark:hover:bg-slate-800"
+              title={t('sessionList.exportAllTitle')}
+            >
+              <FiDownload size={14} />
+              {t('sessionList.exportAll')}
+            </button>
+          ) : null}
           <button
             type="button"
-            onClick={() => void exportAllJson()}
-            className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-stone-400/25 bg-stone-100/60 py-1.5 text-xs font-medium text-stone-600 hover:bg-stone-200/80 dark:border-slate-600 dark:bg-slate-800/50 dark:text-slate-300 dark:hover:bg-slate-800"
-            title={t('sessionList.exportAllTitle')}
+            onClick={() => openImageLibrary()}
+            className={`flex min-w-0 items-center justify-center gap-1.5 rounded-lg border border-stone-400/25 bg-stone-100/60 py-1.5 text-xs font-medium text-stone-600 hover:bg-stone-200/80 dark:border-slate-600 dark:bg-slate-800/50 dark:text-slate-300 dark:hover:bg-slate-800 ${
+              sessions.length > 0 ? 'flex-1' : 'w-full'
+            }`}
+            title={t('sessionList.imageLibraryTitle')}
           >
-            <FiDownload size={14} />
-            {t('sessionList.exportAll')}
+            <FiImage size={14} />
+            {t('sessionList.imageLibrary')}
           </button>
-        )}
+        </div>
       </div>
       {sessions.length === 0 ? (
         <div className="flex-1 flex items-center justify-center text-stone-500 dark:text-slate-500 p-4">

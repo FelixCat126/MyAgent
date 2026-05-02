@@ -138,6 +138,14 @@ export interface ElectronAPI {
   /** 小字段首屏用：引导是否已关 */
   persistGetSync: (name: string) => string | null;
   persistSetSync: (name: string, value: string) => void;
+  /** 扫描生图目录、附件目录与会话中出现的图片路径合并去重（已删对话仍可保留磁盘文件） */
+  listMediaLibraryImages: (payload?: {
+    extraPaths?: string[];
+  }) => Promise<{
+    ok: boolean;
+    items?: Array<{ absolutePath: string; mtimeMs: number }>;
+    error?: string;
+  }>;
 }
 
 // 模型配置类型

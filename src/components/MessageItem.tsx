@@ -1,15 +1,29 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { pathToFileURL } from 'url';
 import { Message } from '../types';
-import { FiMessageSquare, FiRefreshCw, FiCopy, FiDownload, FiChevronDown, FiChevronRight } from 'react-icons/fi';
+import { FiMessageSquare, FiRefreshCw, FiCopy, FiDownload, FiChevronDown, FiChevronRight, FiChevronLeft, FiX } from 'react-icons/fi';
 import { useI18n } from '../hooks/useI18n';
 import MarkdownContent from './MarkdownContent';
 import { markdownContainsPipeTable } from '../utils/markdownTableDetect';
 import { looksLikeStandaloneCodeSnippet } from '../utils/standaloneCodeDetect';
 import { stripGenerateImageArtifactsForDisplay } from '../utils/toolCalls';
+import {
+  findConversationGalleryIndex,
+  type ConversationImageGalleryItem,
+} from '@/utils/conversationImageGallery';
 
 const MAX_MARKDOWN_RENDER_CHARS = 24_000;
 const MAX_ASSISTANT_PREPROCESS_CHARS = 28_000;
+
+/** 对应 App.tsx 顶栏拖拽区 TITLEBAR_H(44)，避免按钮落在 Electron drag 带上被吞点击 */
+const MODAL_CLEAR_TITLEBAR_PT = 'pt-[52px]';
+
+const MODAL_PORTAL_LAYER_CLASS = 'fixed inset-0 z-[10010] flex items-center justify-center bg-black/70 backdrop-blur-sm transition-opacity';
+
+const modalPortalShellStyle: React.CSSProperties & { WebkitAppRegion?: string } = {
+  WebkitAppRegion: 'no-drag',
+};
 
 interface MessageItemProps {
   message: Message;
@@ -20,6 +34,10 @@ interface MessageItemProps {
   streamingAssistantId?: string | null;
   /** 流式已开始输出思考且正文仍未到时，在主气泡内显示「···」（避免下方再出现一个气泡） */
   showInlineStreamPlaceholder?: boolean;
+  /** 当前会话内全部可预览图片（用于大图左右切换） */
+  conversationGallery?: ConversationImageGalleryItem[];
+  /** 在会话级画廊中打开指定附件（messageId + 该消息 files 数组下标） */
+  onOpenConversationGallery?: (messageId: string, fileIndex: number) => void;
 }
 
 function InlineStreamDots() {
@@ -125,17 +143,21 @@ export const ImagePreviewModal: React.FC<{
     });
   };
 
-  return (
+  const node = (
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 backdrop-blur-sm transition-opacity"
+      className={MODAL_PORTAL_LAYER_CLASS}
+      style={modalPortalShellStyle}
       onClick={onClose}
     >
-      <div className="relative max-w-[90vw] max-h-[85vh] flex flex-col items-center justify-center gap-4" onClick={(e) => e.stopPropagation()}>
-        <div className="absolute -top-10 right-0 flex items-center gap-3">
+      <div
+        className="relative isolate flex max-h-[85vh] w-full max-w-[90vw] flex-col gap-4"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="pointer-events-auto relative z-[210] flex shrink-0 justify-end gap-3 [&_svg]:pointer-events-none">
           {canDownload ? (
             <button
               type="button"
-              className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2.5 py-1 text-sm text-white backdrop-blur-sm transition-colors hover:bg-white/20"
+              className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2.5 py-1 text-sm text-white backdrop-blur-sm transition-colors hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
               title={t('message.imagePreviewDownload')}
               onClick={(e) => void handleSaveCopy(e)}
             >
@@ -146,16 +168,154 @@ export const ImagePreviewModal: React.FC<{
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md bg-white/10 px-2 py-1 text-xl leading-none text-white hover:text-primary-300"
+            className="inline-flex items-center justify-center rounded-md bg-white/10 px-2 py-1 text-white backdrop-blur-sm transition-colors hover:bg-white/20 hover:text-primary-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
             title={t('message.closePreview')}
+            aria-label={t('message.closePreview')}
           >
-            ×
+            <FiX size={18} aria-hidden />
           </button>
         </div>
-        <img src={src} alt={alt} className="max-h-[85vh] max-w-[90vw] object-contain rounded-lg shadow-2xl" />
+        <img
+          src={src}
+          alt={alt}
+          className="relative z-0 mx-auto block max-h-[min(calc(85vh-120px),80vh)] max-w-full object-contain rounded-lg shadow-2xl"
+        />
       </div>
     </div>
   );
+
+  return typeof document !== 'undefined' ? createPortal(node, document.body) : null;
+};
+
+export const ConversationImageGalleryModal: React.FC<{
+  slides: ConversationImageGalleryItem[];
+  startIndex: number;
+  onClose: () => void;
+}> = ({ slides, startIndex, onClose }) => {
+  const { t } = useI18n();
+  const [idx, setIdx] = useState(() =>
+    slides.length ? Math.min(Math.max(0, startIndex), slides.length - 1) : 0
+  );
+
+  useEffect(() => {
+    setIdx((i) => Math.min(i, Math.max(0, slides.length - 1)));
+  }, [slides.length]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        setIdx((i) => Math.max(0, i - 1));
+      }
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        setIdx((i) => Math.min(slides.length - 1, i + 1));
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [slides.length, onClose]);
+
+  if (!slides.length) return null;
+
+  const slide = slides[idx]!;
+  const canPrev = idx > 0;
+  const canNext = idx < slides.length - 1;
+
+  const handleSaveCopy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    await window.electron.saveLocalFileCopy({
+      sourcePath: slide.localPath,
+      defaultFileName: slide.defaultFileName || 'image.png',
+    });
+  };
+
+  const node = (
+    <div
+      className={MODAL_PORTAL_LAYER_CLASS}
+      style={modalPortalShellStyle}
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label={t('message.imageAlt')}
+    >
+      <div
+        className="relative isolate flex h-full max-h-screen min-h-0 w-full max-w-[100vw] flex-col px-12 sm:px-16"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div
+          className={`pointer-events-auto relative z-[210] flex w-full shrink-0 justify-end gap-3 pb-4 [&_svg]:pointer-events-none sm:pb-5 ${MODAL_CLEAR_TITLEBAR_PT}`}
+        >
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2.5 py-1 text-sm text-white backdrop-blur-sm transition-colors hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
+            title={t('message.imagePreviewDownload')}
+            onClick={(e) => void handleSaveCopy(e)}
+          >
+            <FiDownload size={14} aria-hidden />
+            <span>{t('message.imagePreviewDownload')}</span>
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex items-center justify-center rounded-md bg-white/10 px-2 py-1 text-white backdrop-blur-sm transition-colors hover:bg-white/20 hover:text-primary-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
+            title={t('message.closePreview')}
+            aria-label={t('message.closePreview')}
+          >
+            <FiX size={18} aria-hidden />
+          </button>
+        </div>
+
+        <div className="pointer-events-none relative z-0 flex min-h-0 w-full max-w-[min(96vw,1400px)] flex-1 items-center justify-center gap-1 self-center sm:gap-2">
+          <button
+            type="button"
+            disabled={!canPrev}
+            onClick={(e) => {
+              e.stopPropagation();
+              setIdx((i) => Math.max(0, i - 1));
+            }}
+            className={`pointer-events-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/25 bg-white/10 text-white transition-colors sm:h-12 sm:w-12 [&_svg]:pointer-events-none ${
+              canPrev ? 'hover:bg-white/20' : 'cursor-not-allowed opacity-35'
+            }`}
+            title={t('message.imageGalleryPrev')}
+            aria-label={t('message.imageGalleryPrev')}
+          >
+            <FiChevronLeft size={22} aria-hidden />
+          </button>
+
+          <div className="pointer-events-auto flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-3">
+            <img
+              src={slide.src}
+              alt={slide.defaultFileName || t('message.imageAlt')}
+              className="max-h-[min(72vh,880px)] max-w-full object-contain rounded-lg shadow-2xl"
+            />
+            <p className="text-center text-sm text-white/90 tabular-nums">
+              {t('message.imageGalleryPosition', { current: idx + 1, total: slides.length })}
+            </p>
+          </div>
+
+          <button
+            type="button"
+            disabled={!canNext}
+            onClick={(e) => {
+              e.stopPropagation();
+              setIdx((i) => Math.min(slides.length - 1, i + 1));
+            }}
+            className={`pointer-events-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/25 bg-white/10 text-white transition-colors sm:h-12 sm:w-12 [&_svg]:pointer-events-none ${
+              canNext ? 'hover:bg-white/20' : 'cursor-not-allowed opacity-35'
+            }`}
+            title={t('message.imageGalleryNext')}
+            aria-label={t('message.imageGalleryNext')}
+          >
+            <FiChevronRight size={22} aria-hidden />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  return typeof document !== 'undefined' ? createPortal(node, document.body) : null;
 };
 
 function formatMessageTime(ts: number) {
@@ -170,6 +330,8 @@ const MessageItem: React.FC<MessageItemProps> = ({
   conversationStreaming = false,
   streamingAssistantId = null,
   showInlineStreamPlaceholder = false,
+  conversationGallery,
+  onOpenConversationGallery,
 }) => {
   const { t } = useI18n();
   const isUser = message.role === 'user';
@@ -179,8 +341,21 @@ const MessageItem: React.FC<MessageItemProps> = ({
     defaultFileName?: string;
   } | null>(null);
 
-  const openAttachmentPreview = (fileName: string, displaySrc: string, localPath: string) => {
+  const openAttachmentPreview = (
+    fileName: string,
+    displaySrc: string,
+    localPath: string,
+    fileIndex: number
+  ) => {
     if (!displaySrc) return;
+    const gIdx =
+      conversationGallery && onOpenConversationGallery
+        ? findConversationGalleryIndex(conversationGallery, message.id, fileIndex)
+        : -1;
+    if (gIdx >= 0) {
+      onOpenConversationGallery!(message.id, fileIndex);
+      return;
+    }
     setPreview({ src: displaySrc, localPath, defaultFileName: fileName });
   };
 
@@ -289,7 +464,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
                                   alt={file.name}
                                   onClick={() =>
                                     displaySrc &&
-                                    openAttachmentPreview(file.name, displaySrc, file.path)
+                                    openAttachmentPreview(file.name, displaySrc, file.path, index)
                                   }
                                   className="max-h-[180px] max-w-[240px] cursor-zoom-in rounded-md object-contain shadow-sm transition-transform hover:scale-[1.02] border border-white/50 ring-1 ring-white/25"
                                 />
@@ -457,7 +632,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
                                   alt={file.name}
                                   onClick={() =>
                                     displaySrc &&
-                                    openAttachmentPreview(file.name, displaySrc, file.path)
+                                    openAttachmentPreview(file.name, displaySrc, file.path, index)
                                   }
                                   className="max-h-[180px] max-w-[240px] cursor-zoom-in rounded-md object-contain border border-stone-300/60 shadow-sm transition-transform hover:scale-[1.02] dark:border-white/10"
                                 />

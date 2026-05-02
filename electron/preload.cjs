@@ -96,4 +96,6 @@ window.electron = {
   persistSetSync: (name, value) => {
     ipcRenderer.send('persist-state-set-sync', name, value);
   },
+  listMediaLibraryImages: (arg) =>
+    ipcRenderer.invoke('list-media-library-images', cloneForIpc(arg ?? null)),
 };

@@ -15,6 +15,7 @@ import './ipc/documents';
 import './ipc/image-gen';
 import './ipc/web-search';
 import './ipc/persist';
+import './ipc/media-library';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

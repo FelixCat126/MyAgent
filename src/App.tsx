@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback } from 'react';
 import { useChatStore } from './store/chatStore';
 import { useModelStore } from './store/modelStore';
 import { useSettingStore } from './store/settingStore';
@@ -6,18 +6,20 @@ import ChatWindow from './components/ChatWindow';
 import SessionList from './components/SessionList';
 import SettingsPanel from './components/SettingsPanel';
 import OnboardingSteps from './components/OnboardingSteps';
+import ImageLibraryDrawer from './components/ImageLibraryDrawer';
 import { FiSettings, FiPlus, FiMoon, FiSun, FiMessageSquare, FiX, FiMonitor } from 'react-icons/fi';
 import { useResolvedTheme } from './hooks/useResolvedTheme';
 import { useI18n } from './hooks/useI18n';
 import type { AppTheme } from './store/settingStore';
 import { flushZustandFilePersist } from './utils/zustandFileStorage';
+import { ImageLibraryContext } from './context/ImageLibraryContext';
 
 const TITLEBAR_H = 44;
 /** 底部输入区：输入条（内含模型）+ 发送，单行紧凑高度 */
 const FOOTER_H = 76;
 
 const App: React.FC = () => {
-  const { createSession, currentSessionId } = useChatStore();
+  const { createSession, currentSessionId, sessions } = useChatStore();
   const { initializeDefaultModels } = useModelStore();
   const theme = useSettingStore((s) => s.theme);
   const setTheme = useSettingStore((s) => s.setTheme);
@@ -26,6 +28,8 @@ const App: React.FC = () => {
   const { t } = useI18n();
   const resolved = useResolvedTheme();
   const [showSettings, setShowSettings] = useState(false);
+  const [imageLibraryOpen, setImageLibraryOpen] = useState(false);
+  const openImageLibrary = useCallback(() => setImageLibraryOpen(true), []);
 
   useLayoutEffect(() => {
     document.body.classList.toggle('dark', resolved === 'dark');
@@ -65,6 +69,7 @@ const App: React.FC = () => {
   }`;
 
   return (
+    <ImageLibraryContext.Provider value={{ openImageLibrary }}>
     <div
       className="h-screen w-screen overflow-hidden"
       style={{
@@ -105,25 +110,30 @@ const App: React.FC = () => {
 
       {/* 行2右：对话窗口 — flex col, overflow hidden, ChatWindow fills it */}
       <div
-        className="overflow-hidden flex flex-col"
+        className="relative flex min-h-0 flex-col overflow-hidden"
         style={{ background: resolved === 'dark' ? '#18181c' : 'var(--shell-chat)' }}
       >
         {currentSessionId ? (
           <ChatWindow footerH={FOOTER_H} />
         ) : (
-          <div className="flex-1 flex items-center justify-center text-stone-500 dark:text-slate-500">
+          <div className="flex flex-1 items-center justify-center text-stone-500 dark:text-slate-500">
             <div
-              className="text-center p-10 rounded-3xl border border-stone-600/38 dark:border-white/10 shadow-xl transition-all hover:scale-105"
+              className="rounded-3xl border border-stone-600/38 p-10 text-center shadow-xl transition-all hover:scale-105 dark:border-white/10"
               style={{ background: resolved === 'dark' ? 'rgba(30,30,36,0.8)' : 'var(--shell-elevated)', backdropFilter: 'blur(20px)' }}
             >
-              <div className="w-16 h-16 mx-auto bg-gradient-to-br from-primary-400 to-teal-500 rounded-2xl flex items-center justify-center mb-6 shadow-lg shadow-primary-500/30">
+              <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-primary-400 to-teal-500 shadow-lg shadow-primary-500/30">
                 <FiMessageSquare className="text-white" size={28} />
               </div>
-              <h2 className="text-2xl font-display font-semibold text-stone-800 dark:text-white mb-2">{t('app.brand')}</h2>
+              <h2 className="mb-2 font-display text-2xl font-semibold text-stone-800 dark:text-white">{t('app.brand')}</h2>
               <p className="text-sm text-stone-600 dark:text-slate-400">{t('app.emptyHint')}</p>
             </div>
           </div>
         )}
+        <ImageLibraryDrawer
+          open={imageLibraryOpen}
+          sessions={sessions}
+          onClose={() => setImageLibraryOpen(false)}
+        />
       </div>
 
       {/* 行3左：底部操作栏 */}
@@ -214,6 +224,7 @@ const App: React.FC = () => {
 
       <OnboardingSteps />
     </div>
+    </ImageLibraryContext.Provider>
   );
 };
 

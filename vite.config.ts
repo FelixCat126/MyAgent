@@ -71,5 +71,9 @@ export default defineConfig({
   server: {
     port: 5180,
     strictPort: true,
+    /** electron-builder 输出目录在仓库内时会触发刷屏式热重载（如 LICENSES.chromium.html），开发时忽略 */
+    watch: {
+      ignored: ['**/release/**'],
+    },
   },
 });
