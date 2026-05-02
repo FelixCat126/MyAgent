@@ -12,12 +12,15 @@ import {
   FiEdit2,
   FiChevronDown,
   FiChevronUp,
+  FiChevronRight,
   FiGlobe,
   FiCpu,
+  FiActivity,
   FiZap,
   FiFolder,
   FiShield,
   FiLayers,
+  FiMic,
 } from 'react-icons/fi';
 import { IosSwitch } from './IosSwitch';
 import { useI18n } from '../hooks/useI18n';
@@ -57,7 +60,7 @@ const defaultFormData: EditingFormData = {
 };
 
 const SettingsPanel: React.FC = () => {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { models, addModel, removeModel, updateModel } = useModelStore();
   const {
     enabled: webSearchEnabled,
@@ -67,7 +70,18 @@ const SettingsPanel: React.FC = () => {
     setProvider: setWebSearchProvider,
     setApiKey: setWebSearchApiKey,
   } = useWebSearchStore();
-  const { streamResponses, setStreamResponses } = useSettingStore();
+  const {
+    streamResponses,
+    setStreamResponses,
+    speechInputEnabled,
+    setSpeechInputEnabled,
+    volcAsrAppKey,
+    setVolcAsrAppKey,
+    volcAsrAccessKey,
+    setVolcAsrAccessKey,
+    volcAsrResourceId,
+    setVolcAsrResourceId,
+  } = useSettingStore();
   const { rootPath, maxChars, setRootPath, setMaxChars } = useWorkspaceStore();
   const {
     vectorRagEnabled,
@@ -88,13 +102,12 @@ const SettingsPanel: React.FC = () => {
     setEmbeddingVolcMultimodal,
     getEmbedConfigForIpc,
   } = useKnowledgeStore();
-  const [modelBlockExpanded, setModelBlockExpanded] = useState(true);
-  const [webSearchBlockExpanded, setWebSearchBlockExpanded] = useState(true);
-  const [knowledgeBlockExpanded, setKnowledgeBlockExpanded] = useState(true);
-  const [appBlockExpanded, setAppBlockExpanded] = useState(true);
+  const [modelBlockExpanded, setModelBlockExpanded] = useState(false);
+  const [webSearchBlockExpanded, setWebSearchBlockExpanded] = useState(false);
+  const [knowledgeBlockExpanded, setKnowledgeBlockExpanded] = useState(false);
+  const [appBlockExpanded, setAppBlockExpanded] = useState(false);
   const [indexBusy, setIndexBusy] = useState(false);
-  const [incrementalIndexBusy, setIncrementalIndexBusy] = useState(false);
-  const knowledgeIndexLocked = indexBusy || incrementalIndexBusy;
+  const knowledgeIndexLocked = indexBusy;
   const [indexMeta, setIndexMeta] = useState<{
     chunkCount: number;
     root: string | null;
@@ -331,33 +344,25 @@ const SettingsPanel: React.FC = () => {
             />
           </div>
 
-          <div className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              id="isLocal"
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-xs text-stone-700 dark:text-gray-300">{t('settings.form.localModel')}</span>
+            <IosSwitch
               checked={formData.isLocal}
-              onChange={(e) => setFormData({ ...formData, isLocal: e.target.checked })}
-              className="rounded"
+              aria-label={t('settings.form.localModel')}
+              onChange={(next) => setFormData({ ...formData, isLocal: next })}
             />
-            <label htmlFor="isLocal" className="text-xs text-stone-700 dark:text-gray-300">
-              {t('settings.form.localModel')}
-            </label>
           </div>
 
           <div className="border-t border-stone-400/22 dark:border-gray-700 pt-4">
             <h4 className="mb-2 text-xs font-semibold text-stone-700 dark:text-gray-300">{t('settings.form.imageGenSection')}</h4>
             <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  id="isImageGenerator"
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs text-stone-700 dark:text-gray-300">{t('settings.form.useAsImageTool')}</span>
+                <IosSwitch
                   checked={formData.isImageGenerator}
-                  onChange={(e) => setFormData({ ...formData, isImageGenerator: e.target.checked })}
-                  className="rounded"
+                  aria-label={t('settings.form.useAsImageTool')}
+                  onChange={(next) => setFormData({ ...formData, isImageGenerator: next })}
                 />
-                <label htmlFor="isImageGenerator" className="text-xs text-stone-700 dark:text-gray-300">
-                  {t('settings.form.useAsImageTool')}
-                </label>
               </div>
 
               {formData.isImageGenerator ? (
@@ -715,8 +720,13 @@ const SettingsPanel: React.FC = () => {
                   </div>
                 </>
               )}
-              <details className="rounded-lg border border-stone-300/38 bg-stone-100/70 px-2 py-1.5 dark:border-white/10 dark:bg-slate-900/55">
-                <summary className="cursor-pointer select-none list-none text-[10px] font-medium text-stone-600 dark:text-slate-400 [&::-webkit-details-marker]:hidden">
+              <details className="group/details rounded-lg border border-stone-300/38 bg-stone-100/70 px-2 py-1.5 dark:border-white/10 dark:bg-slate-900/55">
+                <summary className="flex cursor-pointer items-center gap-1 select-none text-[10px] font-medium text-stone-600 dark:text-slate-400 list-none [&::-webkit-details-marker]:hidden">
+                  <FiChevronRight
+                    size={12}
+                    className="shrink-0 text-stone-400 transition-transform duration-200 group-open/details:rotate-90 dark:text-slate-500"
+                    aria-hidden
+                  />
                   {t('settings.advanced')}
                 </summary>
                 <div className="mt-2 space-y-2 border-t border-stone-300/35 pt-2 dark:border-white/8">
@@ -826,7 +836,7 @@ const SettingsPanel: React.FC = () => {
                   }
                   setIndexBusy(true);
                   try {
-                    const r = await window.electron.knowledgeIndexWorkspace({ root, embed, mode: 'full' });
+                    const r = await window.electron.knowledgeIndexWorkspace({ root, embed });
                     if (!r.ok) {
                       alert(r.error || 'index failed');
                       return;
@@ -842,46 +852,6 @@ const SettingsPanel: React.FC = () => {
                 className="w-full rounded-lg bg-primary-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {indexBusy ? t('settings.reindexing') : t('settings.reindex')}
-              </button>
-              <p className="text-[9px] leading-snug text-stone-500 dark:text-slate-500">
-                {t('settings.indexIncrementalHint')}
-              </p>
-              <button
-                type="button"
-                disabled={knowledgeIndexLocked}
-                onClick={async () => {
-                  const root = rootPath.trim();
-                  if (!root) {
-                    alert(t('settings.indexRootMissing'));
-                    return;
-                  }
-                  const embed = getEmbedConfigForIpc();
-                  if (!embed) {
-                    alert(t('settings.indexEmbedOff'));
-                    return;
-                  }
-                  setIncrementalIndexBusy(true);
-                  try {
-                    const r = await window.electron.knowledgeIndexWorkspace({
-                      root,
-                      embed,
-                      mode: 'incremental',
-                    });
-                    if (!r.ok) {
-                      alert(r.error || 'index failed');
-                      return;
-                    }
-                    if (r.truncated) {
-                      alert(t('settings.indexTruncated'));
-                    }
-                    await refreshIndexStatus();
-                  } finally {
-                    setIncrementalIndexBusy(false);
-                  }
-                }}
-                className="w-full rounded-lg border border-stone-400/38 bg-stone-100/90 px-3 py-2 text-xs font-medium text-stone-800 transition-colors hover:bg-stone-200/95 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-500/40 dark:bg-slate-800/85 dark:text-slate-100 dark:hover:bg-slate-700"
-              >
-                {incrementalIndexBusy ? t('settings.indexIncrementalBusy') : t('settings.indexIncremental')}
               </button>
             </div>
           )}
@@ -910,22 +880,96 @@ const SettingsPanel: React.FC = () => {
           {appBlockExpanded && (
             <div className="space-y-3 px-3 pb-3 pt-3">
               <div>
-                <label className="flex cursor-pointer items-center gap-2">
-                  <input
-                    type="checkbox"
+                <div className="mb-2.5 flex items-center gap-1.5 text-xs font-medium text-stone-700 dark:text-slate-300">
+                  <FiActivity size={14} className="text-stone-500" aria-hidden />
+                  {t('settings.streaming.sectionTitle')}
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-xs text-stone-700 dark:text-slate-300">{t('settings.stream')}</span>
+                  <IosSwitch
                     checked={streamResponses}
-                    onChange={(e) => setStreamResponses(e.target.checked)}
-                    className="shrink-0 rounded border-stone-400"
+                    aria-label={t('settings.stream')}
+                    onChange={setStreamResponses}
                   />
-                  <span className="shrink-0 text-xs text-stone-700 dark:text-slate-300 whitespace-nowrap">
-                    {t('settings.stream')}
-                  </span>
-                </label>
-                <p className="mt-1.5 pl-6 text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
+                </div>
+                <p className="mt-1.5 text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
                   {t('settings.streamDesc')}
                 </p>
               </div>
-              <div>
+              <div className="border-t border-stone-300/35 pt-3 dark:border-white/8">
+                <div className="mb-2.5 flex items-center gap-1.5 text-xs font-medium text-stone-700 dark:text-slate-300">
+                  <FiMic size={14} className="text-stone-500" aria-hidden />
+                  {t('settings.speech.sectionTitle')}
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-xs text-stone-700 dark:text-slate-300">
+                    {t('settings.speech.enableMicUi')}
+                  </span>
+                  <IosSwitch
+                    checked={speechInputEnabled}
+                    aria-label={t('settings.speech.enableMicUi')}
+                    onChange={setSpeechInputEnabled}
+                  />
+                </div>
+                {speechInputEnabled && (
+                  <div className="mt-2 space-y-2">
+                    <p className="text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
+                      {t('settings.streamingAsr.volcOnly')}{' '}
+                      <a
+                        className="text-primary-600 underline dark:text-primary-400"
+                        href={
+                          locale === 'en'
+                            ? 'https://www.volcengine.com/docs/6561/1354869?lang=en'
+                            : 'https://www.volcengine.com/docs/6561/1354869?lang=zh'
+                        }
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        {t('settings.streamingAsr.docVolcExample')}
+                      </a>
+                    </p>
+                    <div className="space-y-2">
+                      <div>
+                        <label className="mb-0.5 block text-[10px] font-medium text-stone-600 dark:text-gray-400">
+                          {t('settings.streamingAsr.fieldAppKey')}
+                        </label>
+                        <input
+                          type="password"
+                          autoComplete="off"
+                          value={volcAsrAppKey}
+                          onChange={(e) => setVolcAsrAppKey(e.target.value)}
+                          className="w-full rounded-md border border-stone-400/25 bg-stone-100/90 px-2 py-1.5 font-mono text-xs text-stone-900 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-slate-700 dark:text-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-0.5 block text-[10px] font-medium text-stone-600 dark:text-gray-400">
+                          {t('settings.streamingAsr.fieldAccess')}
+                        </label>
+                        <input
+                          type="password"
+                          autoComplete="off"
+                          value={volcAsrAccessKey}
+                          onChange={(e) => setVolcAsrAccessKey(e.target.value)}
+                          className="w-full rounded-md border border-stone-400/25 bg-stone-100/90 px-2 py-1.5 font-mono text-xs text-stone-900 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-slate-700 dark:text-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-0.5 block text-[10px] font-medium text-stone-600 dark:text-gray-400">
+                          {t('settings.streamingAsr.fieldResource')}
+                        </label>
+                        <input
+                          type="text"
+                          autoComplete="off"
+                          value={volcAsrResourceId}
+                          onChange={(e) => setVolcAsrResourceId(e.target.value)}
+                          className="w-full rounded-md border border-stone-400/25 bg-stone-100/90 px-2 py-1.5 font-mono text-xs text-stone-900 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-slate-700 dark:text-white"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div className="border-t border-stone-300/35 pt-3 dark:border-white/8">
                 <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-stone-700 dark:text-slate-300">
                   <FiFolder size={14} className="text-stone-500" aria-hidden />
                   {t('settings.workspace')}

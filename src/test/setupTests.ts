@@ -46,6 +46,11 @@ const electronStub: ElectronAPI = {
     localStorage.setItem(name, value);
   },
   listMediaLibraryImages: async () => ({ ok: true, items: [] }),
+  transcribeAudio: async () => ({ ok: false, error: 'stub' }),
+  volcAsrStart: async () => ({ ok: false, error: 'stub' }),
+  volcAsrPushChunk: async () => ({ ok: false }),
+  volcAsrFinish: async () => ({ ok: false }),
+  volcAsrAbort: async () => ({ ok: false }),
 };
 
 if (typeof window !== 'undefined') {

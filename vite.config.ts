@@ -41,6 +41,8 @@ export default defineConfig({
           build: {
             outDir: 'dist-electron',
             rollupOptions: {
+              /** ws 会通过 try/catch 加载可选原生模块；若不 external，打包会变成无法解析的静态 import */
+              external: ['ws', 'bufferutil', 'utf-8-validate'],
               output: {
                 manualChunks(id: string) {
                   if (id.includes('node_modules/exceljs')) return 'vendor-excel';

@@ -72,6 +72,19 @@ const zh: Record<string, string> = {
   'chat.configureModel': '请先配置模型',
   'chat.inputPlaceholder': '请输入…',
   'chat.stopTitle': '停止生成',
+  'chat.voiceInput': '语音输入',
+  'chat.voiceStarting': '正在启动语音识别…',
+  'chat.voiceListening': '正在识别语音，点此停止',
+  'chat.voiceStopTitle': '停止语音识别',
+  'chat.speechNotSupported': '当前环境不支持语音识别',
+  'chat.speechNeedMic': '需要麦克风权限，请在系统隐私设置中为本应用开启麦克风。',
+  'chat.speechStartFailed': '语音识别未能启动。',
+  'chat.speechNetwork':
+    '浏览器语音识别依赖云端服务时可能不可用（例如网络受限）。若为当前选中模型配置了 OpenAI 兼容地址与 API Key（类型 openai/custom），会自动改用麦克风录音并经该接口转文字。',
+  'chat.speechNoSpeech': '未检测到语音，请重试。',
+  'chat.speechGenericError': '语音识别出错',
+  'chat.speechTranscribeFailed': '语音转写失败',
+  'chat.speechMicDenied': '麦克风不可用，请在系统隐私设置中为本应用开启麦克风。',
   'chat.attachment': '（附件）',
   'chat.attachmentTitle': '附件',
   'chat.docModelHint':
@@ -180,7 +193,8 @@ const zh: Record<string, string> = {
   'settings.web': '联网搜索',
   'settings.app': '应用与隐私',
   'settings.appearance': '外观与显示',
-  'settings.stream': '流式输出',
+  'settings.stream': '启用流式输出',
+  'settings.streaming.sectionTitle': '流式输出',
   'settings.streamDesc':
     '仅当当前模型为 OpenAI / 自定义兼容 / Ollama / 智谱（OpenAI 兼容端点）时逐字输出；Claude、Gemini 在应用内仍为整段返回，与是否勾选无关。',
   'settings.webDesc':
@@ -193,7 +207,7 @@ const zh: Record<string, string> = {
     '请填「专门放笔记与资料」的文件夹，不要填开发仓库或 .app 所在目录。若其中有 MYAGENT_KNOWLEDGE.md、knowledge.md 或 README.md，发送时会节选注入。开发态与 DMG 安装版共用同一份本地配置（含本路径与向量索引元数据，索引文件在应用数据目录）。',
   'settings.workspacePlaceholder': '~/Documents/MyAgent知识库',
   'settings.maxChars': '最多读取字符',
-  'settings.knowledge': '工作区知识（向量）',
+  'settings.knowledge': '工作区知识',
   'settings.knowledgeDesc':
     '为工作区内的文档建立本地向量索引后，按用户问题从索引中取出相关片段并注入为系统说明（不写入聊天列表）。与对话模型、联网搜索独立；嵌入服务可用 OpenAI 兼容 API 或本机 Ollama。',
   'settings.knowledgeDescShort':
@@ -208,7 +222,7 @@ const zh: Record<string, string> = {
   'settings.knowledgeHintLocal': '已用本机默认：127.0.0.1:11434 与 nomic-embed-text。一般不用改，除非端口或模型不同（见「高级」）。',
   'settings.knowledgeHintCloud': '将使用云端的文本嵌入接口（与聊天模型独立）。先填 API Key 即可，地址与模型已按常见服务填好默认（见「高级」可改）。',
   'settings.cloudApiKey': 'API Key',
-  'settings.advanced': '高级（地址、模型、条数等）。',
+  'settings.advanced': '高级（地址、模型、条数等）',
   'settings.embedProvider': '嵌入服务',
   'settings.embedOff': '关（不索引 / 不召回）',
   'settings.embedOpenAI': 'OpenAI 或兼容 /v1/embeddings',
@@ -225,9 +239,6 @@ const zh: Record<string, string> = {
   'settings.ragMaxInject': '注入总字数上限',
   'settings.reindex': '为当前工作区建索引',
   'settings.reindexing': '正在建立索引…',
-  'settings.indexIncremental': '增量更新索引',
-  'settings.indexIncrementalBusy': '正在增量更新索引…',
-  'settings.indexIncrementalHint': '仅对变更或未索引过的文件重新分块并请求嵌入；未改过的大文件向量会复用以省时省接口。',
   'settings.indexStatus': '当前索引：{chunks} 条分块，更新于 {time}',
   'settings.indexTruncated': '因文件/分块数量上限，本次索引可能不完整。',
   'settings.indexNone': '尚未建立索引',
@@ -240,7 +251,14 @@ const zh: Record<string, string> = {
   'settings.clearConfirm': '将清除本机已保存的聊天记录、设置与模型配置并刷新。确定继续？',
   'settings.font': '字体大小',
   'settings.autosave': '自动保存对话',
-  'settings.streamToggle': '流式输出',
+  'settings.streamToggle': '启用流式输出',
+  'settings.speech.sectionTitle': '语音输入',
+  'settings.speech.enableMicUi': '启用语音输入',
+  'settings.streamingAsr.volcOnly': '仅限火山引擎。',
+  'settings.streamingAsr.docVolcExample': '说明文档',
+  'settings.streamingAsr.fieldAppKey': 'App Key',
+  'settings.streamingAsr.fieldAccess': 'Access Key',
+  'settings.streamingAsr.fieldResource': 'Resource Id',
 };
 
 const en: Record<string, string> = {
@@ -316,6 +334,19 @@ const en: Record<string, string> = {
   'chat.configureModel': 'Add a model in Settings first',
   'chat.inputPlaceholder': 'Type a message…',
   'chat.stopTitle': 'Stop generation',
+  'chat.voiceInput': 'Voice input',
+  'chat.voiceStarting': 'Starting voice recognition…',
+  'chat.voiceListening': 'Listening… tap to stop',
+  'chat.voiceStopTitle': 'Stop voice recognition',
+  'chat.speechNotSupported': 'Speech recognition is not available in this environment',
+  'chat.speechNeedMic': 'Microphone access is required. Allow it for this app in system privacy settings.',
+  'chat.speechStartFailed': 'Could not start speech recognition.',
+  'chat.speechNetwork':
+    'Built-in speech recognition needs a network path to a cloud service (may fail in some regions). If your selected model uses an OpenAI-compatible base URL and API key (openai/custom), we will record from the mic and transcribe via that API instead.',
+  'chat.speechNoSpeech': 'No speech detected. Try again.',
+  'chat.speechGenericError': 'Speech recognition error',
+  'chat.speechTranscribeFailed': 'Transcription failed',
+  'chat.speechMicDenied': 'Microphone access was denied. Allow it in system privacy settings.',
   'chat.attachment': '(attachment)',
   'chat.attachmentTitle': 'Attachment',
   'chat.docModelHint':
@@ -425,7 +456,8 @@ const en: Record<string, string> = {
   'settings.web': 'Web search',
   'settings.app': 'App & privacy',
   'settings.appearance': 'Appearance',
-  'settings.stream': 'Streaming',
+  'settings.stream': 'Enable streaming output',
+  'settings.streaming.sectionTitle': 'Streaming output',
   'settings.streamDesc':
     'Token streaming works for OpenAI-compatible, Ollama, and Zhipu-compatible APIs. Claude and Gemini still return a full block in this app.',
   'settings.webDesc':
@@ -438,7 +470,7 @@ const en: Record<string, string> = {
     'Use a folder dedicated to your notes (not your dev tree or the .app bundle). If it contains MYAGENT_KNOWLEDGE.md, knowledge.md, or README.md, a short excerpt is injected. Dev and DMG builds share the same local settings (including this path and index metadata; index files live under app data).',
   'settings.workspacePlaceholder': '~/Documents/MyAgentKnowledge',
   'settings.maxChars': 'Max characters to read',
-  'settings.knowledge': 'Workspace knowledge (vector)',
+  'settings.knowledge': 'Workspace knowledge',
   'settings.knowledgeDesc':
     'Build a local vector index of documents under the workspace, then at send time inject top related chunks as a system message (not saved in the chat). Separate from the chat model and web search. Use an OpenAI-compatible /v1/embeddings endpoint or local Ollama /api/embeddings.',
   'settings.knowledgeDescShort':
@@ -455,7 +487,7 @@ const en: Record<string, string> = {
   'settings.knowledgeHintCloud':
     'Server-side text embeddings, separate from the chat model. Add your API key; URL and model have sensible defaults (change under “Advanced” if needed).',
   'settings.cloudApiKey': 'API key',
-  'settings.advanced': 'Advanced (URL, model, limits, …).',
+  'settings.advanced': 'Advanced (URL, model, limits, …)',
   'settings.embedProvider': 'Embedding',
   'settings.embedOff': 'Off',
   'settings.embedOpenAI': 'OpenAI-compatible /v1/embeddings',
@@ -472,10 +504,6 @@ const en: Record<string, string> = {
   'settings.ragMaxInject': 'Max characters for injected text',
   'settings.reindex': 'Build index for this workspace',
   'settings.reindexing': 'Indexing…',
-  'settings.indexIncremental': 'Incremental index update',
-  'settings.indexIncrementalBusy': 'Running incremental indexing…',
-  'settings.indexIncrementalHint':
-    'Only re-reads and embeds changed or new files; unchanged files reuse stored vectors.',
   'settings.indexStatus': 'Index: {chunks} chunk(s), updated {time}',
   'settings.indexTruncated': 'Indexing may be incomplete because file or chunk limits were hit.',
   'settings.indexNone': 'No index yet',
@@ -488,7 +516,14 @@ const en: Record<string, string> = {
   'settings.clearConfirm': 'This removes saved chats, settings, and model list. Continue?',
   'settings.font': 'Font size',
   'settings.autosave': 'Auto-save chats',
-  'settings.streamToggle': 'Stream responses',
+  'settings.streamToggle': 'Enable streaming output',
+  'settings.speech.sectionTitle': 'Speech input',
+  'settings.speech.enableMicUi': 'Enable speech input',
+  'settings.streamingAsr.volcOnly': 'Volcengine only.',
+  'settings.streamingAsr.docVolcExample': 'Docs',
+  'settings.streamingAsr.fieldAppKey': 'App key',
+  'settings.streamingAsr.fieldAccess': 'Access key',
+  'settings.streamingAsr.fieldResource': 'Resource Id',
 };
 
 const tables: Record<Locale, Record<string, string>> = { zh, en };

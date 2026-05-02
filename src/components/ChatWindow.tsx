@@ -14,7 +14,7 @@ import { useI18n } from '../hooks/useI18n';
 import { useWorkspaceStore } from '../store/workspaceStore';
 import { useKnowledgeStore } from '../store/knowledgeStore';
 import { Message, ChatSession, FileInfo, ModelConfig, WebSearchProvider } from '../types';
-import { FiPaperclip, FiFile, FiImage, FiSquare, FiDownload, FiGlobe, FiLoader } from 'react-icons/fi';
+import { FiPaperclip, FiFile, FiImage, FiSquare, FiDownload, FiGlobe, FiLoader, FiMic } from 'react-icons/fi';
 import MessageItem, { ConversationImageGalleryModal } from './MessageItem';
 import {
   buildConversationImageGallery,
@@ -29,6 +29,7 @@ import {
   stripRedundantAssistantImagePromptBlocks,
   stripGenerateImageArtifactsForDisplay,
 } from '../utils/toolCalls';
+import { useWebSpeechDictation, type SpeechApiTranscribeConfig } from '@/hooks/useWebSpeechDictation';
 import { sessionToHtml, sessionToMarkdown } from '../utils/exportChat';
 import { canUseSseStream, effectiveWebEnabled } from '../utils/chatModelPolicy';
 import { enrichMessagesForModel } from '../utils/enrichMessagesForModel';
@@ -446,6 +447,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   } = useChatStore();
 
   const webSearchEnabled = useWebSearchStore((s) => s.enabled);
+  const speechInputEnabled = useSettingStore((s) => s.speechInputEnabled);
   const { t, locale: uiLocale } = useI18n();
 
   const isCurrentSessionLoading =
@@ -484,6 +486,57 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   /** 中文/日文等 IME 组字中为 true，避免 Enter 上屏时被当成发送 */
   const imeComposingRef = useRef(false);
 
+  /** 语音识别：与 input 同步，避免 onresult 闭包陈旧 */
+  const inputSyncRef = useRef('');
+  inputSyncRef.current = input;
+
+  const speechLabels = useMemo(
+    () => ({
+      notSupported: t('chat.speechNotSupported'),
+      needMic: t('chat.speechNeedMic'),
+      startFailed: t('chat.speechStartFailed'),
+      networkOrService: t('chat.speechNetwork'),
+      noSpeech: t('chat.speechNoSpeech'),
+      genericError: t('chat.speechGenericError'),
+      transcribeFailed: t('chat.speechTranscribeFailed'),
+      transcribeDenied: t('chat.speechMicDenied'),
+    }),
+    [t]
+  );
+
+  const getApiTranscribeConfig = useCallback((): SpeechApiTranscribeConfig | null => {
+    const m = useModelStore.getState().getActiveModel();
+    if (!m) return null;
+    const key = (m.apiKey ?? '').trim();
+    if (!key) return null;
+    if (m.provider !== 'openai' && m.provider !== 'custom') return null;
+    return { apiUrl: m.apiUrl, apiKey: key, provider: m.provider };
+  }, []);
+
+  const speechDictation = useWebSpeechDictation({
+    inputValueRef: inputSyncRef,
+    textareaRef: inputAreaRef,
+    setInput,
+    uiLocale,
+    disabled: isCurrentSessionLoading || !speechInputEnabled,
+    isImeComposing: () => imeComposingRef.current,
+    labels: speechLabels,
+    getVolcAsrConfig: () => {
+      const s = useSettingStore.getState();
+      if (!s.speechInputEnabled) return null;
+      return {
+        appKey: s.volcAsrAppKey,
+        accessKey: s.volcAsrAccessKey,
+        resourceId: s.volcAsrResourceId,
+      };
+    },
+    getApiTranscribeConfig,
+  });
+
+  useEffect(() => {
+    if (!speechInputEnabled) speechDictation.abort();
+  }, [speechInputEnabled, speechDictation.abort]);
+
   const currentSession = sessions.find((s: ChatSession) => s.id === currentSessionId);
   const messages = currentSession?.messages || [];
   const conversationGallery = useMemo(() => buildConversationImageGallery(messages), [messages]);
@@ -494,7 +547,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     setConversationGalleryIdx(null);
     setConversationGalleryNonce(0);
     setVectorRagStatus(null);
-  }, [currentSessionId]);
+    speechDictation.abort();
+  }, [currentSessionId, speechDictation.abort]);
 
   const runModelReply = useCallback(
     async (sendSessionId: string, historyBeforeUser: Message[], userMessage: Message, activeModel: ModelConfig) => {
@@ -1159,9 +1213,22 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         )}
 
         <div
-          className="relative box-border flex min-h-0 w-full min-w-0 items-center border-t border-stone-600/38 bg-stone-200/92 px-6 py-2 backdrop-blur-xl dark:border-white/10 dark:bg-[#0B1120]/80"
+          className="relative box-border flex min-h-0 w-full min-w-0 flex-col gap-2 border-t border-stone-600/38 bg-stone-200/92 px-6 py-2 backdrop-blur-xl dark:border-white/10 dark:bg-[#0B1120]/80"
           style={{ minHeight: footerH }}
         >
+          {speechInputEnabled && speechDictation.banner ? (
+            <div className="flex shrink-0 items-center justify-between gap-2 rounded-lg border border-amber-400/35 bg-amber-50/90 px-3 py-1.5 text-xs text-amber-950 dark:border-amber-600/35 dark:bg-amber-950/45 dark:text-amber-50">
+              <span className="min-w-0 leading-snug">{speechDictation.banner}</span>
+              <button
+                type="button"
+                className="shrink-0 rounded px-1.5 py-0.5 text-amber-800 hover:bg-amber-200/70 dark:text-amber-100 dark:hover:bg-amber-900/55"
+                aria-label={t('app.close')}
+                onClick={() => speechDictation.clearBanner()}
+              >
+                ×
+              </button>
+            </div>
+          ) : null}
           {(() => {
             const totalLength = messages.reduce((acc, m) => acc + m.content.length, 0) + input.length;
             const limit = 20000;
@@ -1186,7 +1253,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
             accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.xlsm,.md,.markdown,.txt,.csv,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
           />
 
-          <div className="flex w-full min-w-0 items-center gap-2">
+          <div className="flex min-h-[2.5rem] w-full min-w-0 flex-1 items-center gap-2">
             <div className="flex min-h-10 min-w-0 flex-1 items-center gap-1 rounded-2xl border border-stone-400/28 bg-stone-100/95 py-0 pl-1.5 pr-1 shadow-sm transition-all focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-500/50 dark:border-slate-700 dark:bg-slate-800/80">
               <button
                 type="button"
@@ -1200,6 +1267,48 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
               >
                 <FiPaperclip size={14} />
               </button>
+              {speechInputEnabled ? (
+                <button
+                  type="button"
+                  aria-pressed={speechDictation.listening}
+                  aria-busy={speechDictation.starting}
+                  aria-label={
+                    speechDictation.listening
+                      ? t('chat.voiceStopTitle')
+                      : speechDictation.starting
+                        ? t('chat.voiceStarting')
+                        : t('chat.voiceInput')
+                  }
+                  disabled={
+                    isCurrentSessionLoading || !speechDictation.supported || speechDictation.starting
+                  }
+                  onClick={() => speechDictation.toggle()}
+                  title={
+                    speechDictation.listening
+                      ? t('chat.voiceListening')
+                      : speechDictation.starting
+                        ? t('chat.voiceStarting')
+                        : !speechDictation.supported
+                          ? t('chat.speechNotSupported')
+                          : t('chat.voiceInput')
+                  }
+                  className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-all [&_svg]:pointer-events-none ${
+                    speechDictation.listening
+                      ? 'bg-red-600 text-white shadow-sm shadow-red-500/25 animate-pulse'
+                      : speechDictation.starting
+                        ? 'cursor-wait text-primary-600 dark:text-primary-400'
+                        : isCurrentSessionLoading || !speechDictation.supported
+                          ? 'cursor-not-allowed text-stone-400 dark:text-slate-600'
+                          : 'text-stone-600 hover:bg-stone-300/55 dark:text-slate-400 dark:hover:bg-slate-700'
+                  }`}
+                >
+                  {speechDictation.starting ? (
+                    <FiLoader size={15} className="animate-spin" aria-hidden />
+                  ) : (
+                    <FiMic size={15} aria-hidden />
+                  )}
+                </button>
+              ) : null}
               <textarea
                 ref={inputAreaRef}
                 value={input}

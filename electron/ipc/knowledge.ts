@@ -36,7 +36,8 @@ ipcMain.handle(
     if (!rawRoot) return { ok: false as const, error: '工作区根路径为空' };
     const embed = coerceEmbedPayload((arg as { embed?: unknown }).embed);
     if (!embed) return { ok: false as const, error: '嵌入配置无效：请检查提供商、服务地址与模型名' };
-    const mode = (arg as { mode?: unknown }).mode === 'incremental' ? 'incremental' : 'full';
+    /** 省略或 incremental：能复用时只处理变更/新文件并嵌入，否则内部退化为全文；full 强制全文重建（一般无需） */
+    const mode = (arg as { mode?: unknown }).mode === 'full' ? 'full' : 'incremental';
 
     if (mode === 'incremental') {
       const r = await performIncrementalKnowledgeIndex(rawRoot, embed);

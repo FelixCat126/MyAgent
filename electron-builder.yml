@@ -10,6 +10,8 @@ files:
   - resources/**/*
 
 mac:
+  extendInfo:
+    NSMicrophoneUsageDescription: MyAgent 需要使用麦克风，将语音转为输入框文字。
   target:
     - dmg
     - zip

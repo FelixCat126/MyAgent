@@ -4,6 +4,7 @@ import { zustandPersistJson } from '../utils/zustandFileStorage';
 import { applyBodyClassForStoredTheme } from '../utils/themeDocument';
 import type { Locale } from '../i18n/types';
 
+
 export type AppTheme = 'light' | 'dark' | 'system';
 
 interface SettingStore {
@@ -13,11 +14,20 @@ interface SettingStore {
   autoSave: boolean;
   streamResponses: boolean;
   locale: Locale;
+  /** 启用后显示麦克风；火山密钥区仅在开启时展开，填齐且 Electron 下优先 OpenSpeech */
+  speechInputEnabled: boolean;
+  volcAsrAppKey: string;
+  volcAsrAccessKey: string;
+  volcAsrResourceId: string;
   setTheme: (theme: AppTheme) => void;
   setFontSize: (size: number) => void;
   setAutoSave: (autoSave: boolean) => void;
   setStreamResponses: (v: boolean) => void;
   setLocale: (locale: Locale) => void;
+  setSpeechInputEnabled: (v: boolean) => void;
+  setVolcAsrAppKey: (v: string) => void;
+  setVolcAsrAccessKey: (v: string) => void;
+  setVolcAsrResourceId: (v: string) => void;
 }
 
 export const useSettingStore = create<SettingStore>()(
@@ -28,6 +38,10 @@ export const useSettingStore = create<SettingStore>()(
       autoSave: true,
       streamResponses: true,
       locale: 'zh',
+      speechInputEnabled: true,
+      volcAsrAppKey: '',
+      volcAsrAccessKey: '',
+      volcAsrResourceId: '',
       setTheme: (theme: AppTheme) => {
         set({ theme });
         applyBodyClassForStoredTheme(theme);
@@ -44,20 +58,43 @@ export const useSettingStore = create<SettingStore>()(
       setLocale: (locale: Locale) => {
         set({ locale });
       },
+      setSpeechInputEnabled: (v: boolean) => set({ speechInputEnabled: v }),
+      setVolcAsrAppKey: (v: string) => set({ volcAsrAppKey: v }),
+      setVolcAsrAccessKey: (v: string) => set({ volcAsrAccessKey: v }),
+      setVolcAsrResourceId: (v: string) => set({ volcAsrResourceId: v }),
     }),
     {
       name: 'setting-storage',
-      version: 2,
+      version: 6,
       storage: zustandPersistJson,
       migrate: (persisted, version) => {
-        if (version >= 2) return persisted as object;
-        const s = (persisted || {}) as Partial<SettingStore> & { theme?: string; locale?: string };
-        return {
-          ...s,
-          theme:
-            s.theme === 'light' || s.theme === 'dark' ? s.theme : ((s.theme as string) || 'system'),
-          locale: s.locale === 'en' || s.locale === 'zh' ? s.locale : 'zh',
-        } as object;
+        const baseMerged =
+          version >= 2
+            ? ({ ...(persisted as object) } as Record<string, unknown>)
+            : {
+                ...(persisted as object),
+                locale: 'zh',
+                theme:
+                  (persisted as { theme?: string })?.theme === 'light' ||
+                  (persisted as { theme?: string })?.theme === 'dark'
+                    ? (persisted as { theme?: string }).theme
+                    : 'system',
+              };
+        delete baseMerged.volcAsrWakePhrase;
+        delete baseMerged.volcAsrStopPhrases;
+        delete baseMerged.volcAsrEnabled;
+
+        const s = baseMerged as Partial<SettingStore> & Partial<{ speechInputEnabled: boolean }>;
+        const speechIn =
+          typeof s.speechInputEnabled === 'boolean' ? s.speechInputEnabled : true;
+        const volcMerged = {
+          ...baseMerged,
+          speechInputEnabled: speechIn,
+          volcAsrAppKey: typeof s.volcAsrAppKey === 'string' ? s.volcAsrAppKey : '',
+          volcAsrAccessKey: typeof s.volcAsrAccessKey === 'string' ? s.volcAsrAccessKey : '',
+          volcAsrResourceId: typeof s.volcAsrResourceId === 'string' ? s.volcAsrResourceId : '',
+        };
+        return volcMerged as object;
       },
       onRehydrateStorage: () => (state, error) => {
         if (error || !state) return;

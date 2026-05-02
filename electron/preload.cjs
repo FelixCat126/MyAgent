@@ -96,6 +96,11 @@ window.electron = {
   persistSetSync: (name, value) => {
     ipcRenderer.send('persist-state-set-sync', name, value);
   },
+  transcribeAudio: (arg) => ipcRenderer.invoke('transcribe-audio-openai', cloneForIpc(arg)),
+  volcAsrStart: (arg) => ipcRenderer.invoke('volc-asr-start', cloneForIpc(arg)),
+  volcAsrPushChunk: (arr) => ipcRenderer.invoke('volc-asr-chunk', cloneForIpc(arr)),
+  volcAsrFinish: () => ipcRenderer.invoke('volc-asr-finish'),
+  volcAsrAbort: () => ipcRenderer.invoke('volc-asr-abort'),
   listMediaLibraryImages: (arg) =>
     ipcRenderer.invoke('list-media-library-images', cloneForIpc(arg ?? null)),
 };

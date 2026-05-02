@@ -95,7 +95,7 @@ export interface ElectronAPI {
     content: string;
     defaultBaseName: string;
   }) => Promise<{ ok: boolean; path?: string }>;
-  /** 为工作区构建向量索引（需先配置嵌入服务与模型） */
+  /** 为工作区构建向量索引（需先配置嵌入服务与模型）；省略 mode 或与 incremental 等效时：能复用指纹则仅处理变更/新文件，否则内部全文重建；mode: 'full' 强制全文 */
   knowledgeIndexWorkspace: (arg: {
     root: string;
     embed: KnowledgeEmbedConfig;
@@ -146,6 +146,23 @@ export interface ElectronAPI {
     items?: Array<{ absolutePath: string; mtimeMs: number }>;
     error?: string;
   }>;
+  transcribeAudio: (arg: {
+    audio: number[];
+    mimeType?: string;
+    apiUrl: string;
+    apiKey: string;
+    provider: 'openai' | 'claude' | 'gemini' | 'ollama' | 'custom';
+    whisperModel?: string;
+    language?: string;
+  }) => Promise<{ ok: true; text: string } | { ok: false; error?: string }>;
+  volcAsrStart: (arg: {
+    appKey: string;
+    accessKey: string;
+    resourceId: string;
+  }) => Promise<{ ok: true } | { ok: false; error?: string }>;
+  volcAsrPushChunk: (pcmInt16AsNumbers: number[]) => Promise<{ ok: boolean }>;
+  volcAsrFinish: () => Promise<{ ok: boolean }>;
+  volcAsrAbort: () => Promise<{ ok: boolean }>;
 }
 
 // 模型配置类型

@@ -1,7 +1,7 @@
 import './utils/userDataPath';
 /** 须尽早注册：若置于其它 ipc 之后，同目录其它模块在 import 阶段抛错会导致本段 handler 未执行 */
 import './ipc/knowledge';
-import { app, BrowserWindow, clipboard, globalShortcut, protocol } from 'electron';
+import { app, BrowserWindow, clipboard, globalShortcut, protocol, session } from 'electron';
 import path from 'path';
 import fsSync from 'fs';
 import { fileURLToPath } from 'url';
@@ -16,6 +16,8 @@ import './ipc/image-gen';
 import './ipc/web-search';
 import './ipc/persist';
 import './ipc/media-library';
+import './ipc/speech-transcribe';
+import './ipc/volc-stream-asr';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -96,6 +98,15 @@ if (PRIMARY_INSTANCE) {
   });
 
   app.whenReady().then(() => {
+    /** 语音识别：放行麦克风权限（否则 Web Speech API 不可用）*/
+    session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+      if (permission === 'media') {
+        callback(true);
+      } else {
+        callback(false);
+      }
+    });
+
     protocol.handle('local-file', async (request) => {
       try {
         /** 与 pathToFileURL 成对解析，避免手写 replace 在编码/Windows 盘符下出错 */
