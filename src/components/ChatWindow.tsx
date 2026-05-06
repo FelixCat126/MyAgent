@@ -305,18 +305,7 @@ function inferRequestedImageCount(prompt: string, explicit?: number, context?: s
     return Math.max(1, Math.min(12, Math.round(explicit)));
   }
   const text = [context, prompt].filter(Boolean).join('\n');
-  const plannedCount = inferImageCountFromText(text);
-  if (plannedCount) return plannedCount;
-  const listedOnePieceCrew = [
-    '路飞', '索隆', '娜美', '乌索普', '山治', '乔巴', '罗宾', '弗兰奇', '布鲁克', '甚平',
-    'luffy', 'zoro', 'nami', 'usopp', 'sanji', 'chopper', 'robin', 'franky', 'brook', 'jinbe', 'jimbei',
-  ];
-  const lower = text.toLowerCase();
-  const matchedCrew = listedOnePieceCrew.filter((name) => lower.includes(name.toLowerCase()));
-  if (matchedCrew.length >= 2 && /(?:每人|每个|每位|各自|分别|单人|同风格|统一风格|一张|one\s+(?:image|picture|portrait)\s+(?:for|per)\s+(?:each|every))/i.test(text)) {
-    return Math.min(12, matchedCrew.length);
-  }
-  return undefined;
+  return inferImageCountFromText(text);
 }
 
 function enhancePromptForMultiImage(prompt: string, count?: number): string {
@@ -331,16 +320,12 @@ function enhancePromptForMultiImage(prompt: string, count?: number): string {
   return `${p}\n${diversityHint}`;
 }
 
-function userExplicitlyAskedForImage(text?: string): boolean {
-  return planImageIntent({ userText: String(text ?? ''), historyBeforeUser: [] }).shouldGenerate;
-}
-
 async function postProcessAssistantContent(
   responseContent: string,
   activeModel: ModelConfig,
   imageIndexBase: number,
   setInlineImageIndex: React.Dispatch<React.SetStateAction<number>>,
-  opts?: { imageGenHooks?: ImageGenProgressHooks; referenceImages?: string[]; userPromptContext?: string; plannedIntent?: ImageIntent }
+  opts?: { imageGenHooks?: ImageGenProgressHooks; referenceImages?: string[]; userPromptContext?: string; plannedIntent?: ImageIntent; shouldCancel?: () => boolean }
 ): Promise<{ content: string; files?: FileInfo[] }> {
   let text = responseContent;
 
@@ -377,7 +362,7 @@ async function postProcessAssistantContent(
   }
 
   const planned = opts?.plannedIntent;
-  if (toGenerate.length === 0 && imgGenModel?.imageGeneratorConfig && (planned?.shouldGenerate || userExplicitlyAskedForImage(opts?.userPromptContext))) {
+  if (toGenerate.length === 0 && imgGenModel?.imageGeneratorConfig && planned?.shouldGenerate) {
     toGenerate.push({
       prompt: planned?.prompt?.trim() || opts?.userPromptContext?.trim() || text.trim(),
       count: planned?.count ?? inferRequestedImageCount(text, undefined, opts?.userPromptContext),
@@ -396,6 +381,7 @@ async function postProcessAssistantContent(
   try {
     let expectedDone = 0;
     for (let i = 0; i < toGenerate.length; i++) {
+      if (opts?.shouldCancel?.()) break;
       const { prompt, width, height, raw } = toGenerate[i];
       hooks?.onEachStart?.({
         current: Math.min(expectedDone + 1, expectedTotal),
@@ -421,6 +407,7 @@ async function postProcessAssistantContent(
           modelId: m.id,
           imageGeneratorConfig: cfg,
         });
+        if (opts?.shouldCancel?.()) break;
         for (const img of imgs) {
           generatedFiles.push(img);
         }
@@ -542,6 +529,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   } | null>(null);
   const streamUnsubRef = useRef<(() => void) | null>(null);
   const streamHadErrorRef = useRef(false);
+  const imageGenCancelledRef = useRef(false);
   /** 用户点击中止后 onEnd 中用于区分「无输出取消」（删气泡）与「有错结束」 */
   const streamCancelledByUserRef = useRef(false);
   const streamingAssistantIdRef = useRef<string | null>(null);
@@ -735,7 +723,10 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                       toolCallCount: extractGenerateImageCalls(raw).length,
                     });
                     const imageHooks: ImageGenProgressHooks = {
-                      onBegin: ({ total }) => setImageGenProgress({ current: 1, total }),
+                      onBegin: ({ total }) => {
+                        imageGenCancelledRef.current = false;
+                        setImageGenProgress({ current: 1, total });
+                      },
                       onEachStart: ({ current, total }) => setImageGenProgress({ current, total }),
                       onEachDone: ({ done, total }) =>
                         setImageGenProgress(done >= total ? { current: total, total } : { current: done + 1, total }),
@@ -751,6 +742,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                         referenceImages: imageReferencePathsFromFiles(userMessage.files),
                         userPromptContext: userMessage.content,
                         plannedIntent,
+                        shouldCancel: () => imageGenCancelledRef.current,
                       }
                     );
                     nextContent = content;
@@ -787,7 +779,10 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
             ? String((response as { reasoning?: string }).reasoning).trim()
             : '';
         const imageHooks: ImageGenProgressHooks = {
-          onBegin: ({ total }) => setImageGenProgress({ current: 1, total }),
+          onBegin: ({ total }) => {
+            imageGenCancelledRef.current = false;
+            setImageGenProgress({ current: 1, total });
+          },
           onEachStart: ({ current, total }) => setImageGenProgress({ current, total }),
           onEachDone: ({ done, total }) =>
             setImageGenProgress(done >= total ? { current: total, total } : { current: done + 1, total }),
@@ -809,6 +804,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
             referenceImages: imageReferencePathsFromFiles(userMessage.files),
             userPromptContext: userMessage.content,
             plannedIntent,
+            shouldCancel: () => imageGenCancelledRef.current,
           }
         );
         addMessage(sendSessionId, {
@@ -847,6 +843,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
 
   const handleStop = () => {
     streamCancelledByUserRef.current = true;
+    imageGenCancelledRef.current = true;
+    setImageGenProgress(null);
     window.electron.closeModelStream();
     streamUnsubRef.current?.();
     streamUnsubRef.current = null;
@@ -1439,7 +1437,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                 <ModelSelector compact />
               </div>
             </div>
-            {isCurrentSessionLoading && isStreaming ? (
+            {isCurrentSessionLoading && (isStreaming || imageGenProgress) ? (
               <button
                 type="button"
                 onClick={handleStop}

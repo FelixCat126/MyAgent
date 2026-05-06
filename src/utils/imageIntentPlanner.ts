@@ -23,7 +23,16 @@ const ZH_DIGITS: Record<string, number> = {
 const IMAGE_NOUN_RE =
   /图|图片|照片|海报|插画|头像|商品图|主图|形象|壁纸|展示图|模特图|成品图|image|picture|poster|avatar|photo/i;
 
-const CREATE_RE = /画|绘制|生成|生|出|做|来|制作|设计|重新|再|继续|换|改|调整|generate|create|make/i;
+const CREATE_RE = /画|绘制|生成|生|出|做|制作|设计|generate|create|make/i;
+const REVISION_RE = /(?:重新|再|继续|还是|按照|按|沿用|基于|之前|刚才|上次|同样|换|改|调整|不要|不是|而是|更|偏)/;
+const NON_IMAGE_OUTPUT_RE =
+  /(?:表格|表单|清单|列表|大纲|文档|文本|文字|代码|公式|JSON|Markdown|Excel|CSV|Word|PPT|思维导图|流程图|mermaid|解释|分析|总结|翻译|润色|改写|提取|归纳)/i;
+const IMAGE_NEGATION_RE = /(?:不是|不要|无需|不用|别|不需要|禁止|停止).{0,8}(?:图|图片|照片|生图|生成图片|image|picture|photo)/i;
+const VISUAL_OUTPUT_RE = /(?:展示|视觉|画面|构图|镜头|风格|款式|动作|模特|主体|背景|成品|素材|物料|variant|visual)/i;
+const PER_ITEM_RE =
+  /每(?:人|个|位|张|款|件|套|种|项).{0,12}(?:一张|1\s*张|一幅|1\s*幅|一版|1\s*版)|(?:每人|一人|各自|分别).{0,12}(?:一张|一幅|一个)|one\s+(?:image|picture|portrait)\s+(?:for|per)\s+(?:each|every)/i;
+const GROUP_SCOPE_RE =
+  /(?:所有|全部|每个|每位|各个|各位).{0,16}(?:角色|人物|成员|对象|主体|款式|方案|版本|物料|素材|item|subject|character|person)|(?:角色|人物|成员|对象|主体|款式|方案|版本|物料|素材|item|subject|character|person).{0,16}(?:每人|每个|每位|各自|分别|逐个)/i;
 
 export function inferImageCountFromText(text: string): number | undefined {
   const t = String(text || '');
@@ -37,18 +46,24 @@ export function inferImageCountFromText(text: string): number | undefined {
     const n = ZH_DIGITS[zh[1]];
     if (n > 1) return Math.min(12, n);
   }
-  const everyOne =
-    /每(?:人|个|位|张|款).{0,12}(?:一张|1\s*张|一幅|1\s*幅|一版|1\s*版)|(?:每人|一人).{0,12}(?:一张|一幅|一个)|one\s+(?:image|picture|portrait)\s+(?:for|per)\s+(?:each|every)/i.test(t);
-  const allItems =
-    /(?:所有|全部|每个|每位).{0,16}(?:伙伴|角色|人物|船员|成员|款式|方案)|(?:伙伴|角色|人物|船员|成员|款式|方案).{0,16}(?:每人|每个|每位|各自|分别)/.test(t);
-  if (everyOne || allItems) return 8;
+  if (PER_ITEM_RE.test(t) || GROUP_SCOPE_RE.test(t)) return 8;
   return undefined;
+}
+
+function textPrefersNonImageOutput(text: string): boolean {
+  const t = String(text || '').trim();
+  if (!t) return false;
+  if (IMAGE_NEGATION_RE.test(t)) return true;
+  return NON_IMAGE_OUTPUT_RE.test(t) && !IMAGE_NOUN_RE.test(t);
 }
 
 function looksLikeImageRequest(text: string): boolean {
   const t = String(text || '').trim();
   if (!t) return false;
+  if (textPrefersNonImageOutput(t)) return false;
   if (CREATE_RE.test(t) && IMAGE_NOUN_RE.test(t)) return true;
+  if (IMAGE_NOUN_RE.test(t) && inferImageCountFromText(t) && (PER_ITEM_RE.test(t) || GROUP_SCOPE_RE.test(t) || VISUAL_OUTPUT_RE.test(t))) return true;
+  if (inferImageCountFromText(t) && VISUAL_OUTPUT_RE.test(t) && CREATE_RE.test(t)) return true;
   if (/(?:多张|几张|一组|几版|几套|多套).{0,18}(?:不同|方案|款式|风格|动作|模特|展示)/.test(t)) return true;
   if (/(?:再|继续|重新|另|多).{0,12}(?:生成|生|出|做|来|换|改).{0,16}(?:\d+\s*张|几张|多张|一组|几版|几个|一些|variants?|images?)/i.test(t)) return true;
   return false;
@@ -65,7 +80,7 @@ function lastUserImageRequest(history: Message[]): string {
 }
 
 function isRevisionRequest(text: string): boolean {
-  return /(?:重新|再|继续|还是|按照|按|沿用|基于|之前|刚才|上次|同样|换|改|调整|不要|不是|而是|更|偏)/.test(text);
+  return REVISION_RE.test(text);
 }
 
 export function planImageIntent(input: {
@@ -78,14 +93,23 @@ export function planImageIntent(input: {
   const assistantText = String(input.assistantText || '').trim();
   const combined = [userText, assistantText].filter(Boolean).join('\n');
   const count = inferImageCountFromText(combined);
-  const explicitImage = looksLikeImageRequest(userText) || looksLikeImageRequest(assistantText);
+  const explicitImage = looksLikeImageRequest(userText);
   const hasToolCall = (input.toolCallCount ?? 0) > 0;
+  const previous = isRevisionRequest(userText) ? lastUserImageRequest(input.historyBeforeUser) : '';
+  const nonImageOutput = textPrefersNonImageOutput(userText);
+  const revisionOfPreviousImage =
+    Boolean(previous) &&
+    isRevisionRequest(userText) &&
+    !nonImageOutput &&
+    (IMAGE_NOUN_RE.test(userText) ||
+      count !== undefined ||
+      (CREATE_RE.test(userText) && VISUAL_OUTPUT_RE.test(userText)) ||
+      /(?:重新|再|继续).{0,12}(?:生成|生|出|做|来)/.test(userText));
 
-  if (!explicitImage && !hasToolCall) {
+  if (!hasToolCall && !explicitImage && !revisionOfPreviousImage) {
     return { shouldGenerate: false, prompt: userText, count };
   }
 
-  const previous = isRevisionRequest(userText) ? lastUserImageRequest(input.historyBeforeUser) : '';
   const prompt =
     previous && previous !== userText
       ? `延续上一轮生图需求与风格：${previous}\n本轮修改要求：${userText}`
