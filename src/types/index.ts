@@ -223,6 +223,10 @@ export interface ImageGenerationParams {
   prompt: string;
   width?: number;
   height?: number;
+  /** 期望生成张数；火山 Seedream 等多图接口会据此自动组 sequential 参数 */
+  count?: number;
+  /** 参考图：可为本地上传文件路径、远端 URL、data URL */
+  referenceImages?: string[];
   modelId?: string;
   /** 必须由渲染进程传入：主进程无法读取 zustand 持久化（localStorage）里的模型列表 */
   imageGeneratorConfig?: ModelConfig['imageGeneratorConfig'];

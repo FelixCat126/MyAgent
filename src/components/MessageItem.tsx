@@ -388,13 +388,19 @@ const MessageItem: React.FC<MessageItemProps> = ({
   );
 
   const handleCopy = async () => {
+    const text =
+      message.role === 'user'
+        ? (message.content ?? '')
+        : stripGenerateImageArtifactsForDisplay(message.content ?? '');
     try {
-      const text =
-        message.role === 'user'
-          ? (message.content ?? '')
-          : stripGenerateImageArtifactsForDisplay(message.content ?? '');
       await navigator.clipboard.writeText(text);
-    } catch {}
+    } catch {
+      try {
+        await window.electron.setClipboardText(text);
+      } catch (e) {
+        console.warn('复制失败', e);
+      }
+    }
   };
 
   const handleSaveExport = async (format: 'md' | 'xlsx' | 'docx') => {

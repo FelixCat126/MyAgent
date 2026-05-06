@@ -99,7 +99,7 @@ function collectGenerateImageJsonSpans(text: string): { start: number; end: numb
 
 function parseGenerateImageFields(
   raw: string
-): { prompt: string; width?: number; height?: number } | null {
+): { prompt: string; width?: number; height?: number; count?: number } | null {
   let obj: Record<string, unknown>;
   try {
     obj = JSON.parse(raw) as Record<string, unknown>;
@@ -112,6 +112,7 @@ function parseGenerateImageFields(
   if (typeof prompt !== 'string') return null;
   const width = obj.width;
   const height = obj.height;
+  const count = obj.count ?? obj.n ?? obj.num_images ?? obj.max_images;
   const num = (v: unknown): number | undefined => {
     if (typeof v === 'number' && Number.isFinite(v)) return v;
     if (typeof v === 'string' && /^\d+$/.test(v.trim())) return parseInt(v.trim(), 10);
@@ -121,6 +122,7 @@ function parseGenerateImageFields(
     prompt,
     width: num(width),
     height: num(height),
+    count: num(count),
   };
 }
 
@@ -284,15 +286,16 @@ export function stripGenerateImageToolPresentation(text: string): string {
 
 export function extractGenerateImageCalls(
   text: string
-): { prompt: string; width?: number; height?: number; raw: string }[] {
-  const out: { prompt: string; width?: number; height?: number; raw: string }[] = [];
+): { prompt: string; width?: number; height?: number; count?: number; raw: string }[] {
+  const out: { prompt: string; width?: number; height?: number; count?: number; raw: string }[] = [];
   const reXml =
-    /<GenerateImage\s+prompt="([^"]+)"(?:\s+width="(\d+)"(?:\s+height="(\d+)"?)?)?\s*\/>/g;
+    /<GenerateImage\s+prompt="([^"]+)"(?:\s+width="(\d+)"(?:\s+height="(\d+)"?)?)?(?:\s+(?:count|n|num_images)="(\d+)")?\s*\/>/g;
   for (const m of text.matchAll(reXml)) {
     out.push({
       prompt: m[1],
       width: m[2] ? parseInt(m[2], 10) : undefined,
       height: m[3] ? parseInt(m[3], 10) : undefined,
+      count: m[4] ? parseInt(m[4], 10) : undefined,
       raw: m[0],
     });
   }
@@ -301,7 +304,7 @@ export function extractGenerateImageCalls(
     if (out.some((o) => o.raw === raw)) continue;
     const parsed = parseGenerateImageFields(raw);
     if (!parsed) continue;
-    out.push({ prompt: parsed.prompt, width: parsed.width, height: parsed.height, raw });
+    out.push({ prompt: parsed.prompt, width: parsed.width, height: parsed.height, count: parsed.count, raw });
   }
   return out;
 }

@@ -1,6 +1,6 @@
 import { ipcMain } from 'electron';
 import { spawn } from 'child_process';
-import { join } from 'path';
+import { extname, join } from 'path';
 import { randomUUID } from 'crypto';
 import fs from 'fs/promises';
 import http from 'node:http';
@@ -257,12 +257,14 @@ function applyCliPlaceholders(
 ): string {
   const w = String(params.width ?? 512);
   const h = String(params.height ?? 512);
+  const count = String(params.count ?? 1);
   const p = params.prompt ?? '';
   return line
     .replace(/\{\{prompt\}\}/g, p)
     .replace(/\{\{outputPath\}\}/g, outputPath)
     .replace(/\{\{width\}\}/g, w)
-    .replace(/\{\{height\}\}/g, h);
+    .replace(/\{\{height\}\}/g, h)
+    .replace(/\{\{count\}\}/g, count);
 }
 
 /** 整块响应已为 PNG/JPEG/WebP（避免 JSON 误判或「原始格式」误判） */
@@ -454,6 +456,34 @@ function parseArkImageFieldFromEnv(env: Record<string, string> | undefined): str
   return raw;
 }
 
+function imageMimeFromPath(p: string): string {
+  const ext = extname(p).toLowerCase();
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.webp') return 'image/webp';
+  if (ext === '.gif') return 'image/gif';
+  return 'image/png';
+}
+
+async function normalizeReferenceImageForApi(ref: string): Promise<string | null> {
+  const s = String(ref || '').trim();
+  if (!s) return null;
+  if (/^(https?:|data:)/i.test(s)) return s;
+  try {
+    const buf = await fs.readFile(s);
+    return `data:${imageMimeFromPath(s)};base64,${buf.toString('base64')}`;
+  } catch (e) {
+    console.warn('[生图 HTTP] 参考图读取失败，已跳过:', s, e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
+async function normalizeReferenceImagesForApi(params: ImageGenerationParams): Promise<string[]> {
+  /** 火山组图约束：参考图 + 输出图总数最多 15；保留至少 1 个输出名额 */
+  const refs = Array.isArray(params.referenceImages) ? params.referenceImages.slice(0, 14) : [];
+  const normalized = await Promise.all(refs.map((r) => normalizeReferenceImageForApi(r)));
+  return normalized.filter((r): r is string => Boolean(r));
+}
+
 /**
  * 火山方舟豆包 images/generations 的 `size` 常为 1K/2K/4K 或 WxH（视模型文档）。
  * 无显式环境变量时按请求宽高推断档位，避免写死 2K。
@@ -489,29 +519,35 @@ function inferArkStreamFlag(env: Record<string, string> | undefined, sequential:
   return s === 'auto';
 }
 
-function arkVolcDoubaoCompatibleRequestBody(
+async function arkVolcDoubaoCompatibleRequestBody(
   env: Record<string, string> | undefined,
   model: string,
   params: ImageGenerationParams
-): Record<string, unknown> {
-  const imgEarly = parseArkImageFieldFromEnv(env);
+): Promise<Record<string, unknown>> {
+  const refImages = await normalizeReferenceImagesForApi(params);
+  const imgEarly = refImages.length > 0
+    ? refImages
+    : parseArkImageFieldFromEnv(env);
 
   const explicitSeqRaw = (
     env?.SEQUENTIAL_IMAGE_GENERATION ||
     env?.ARK_SEQUENTIAL_IMAGE_GENERATION ||
     ''
   ).trim();
-  const seqWasExplicit = explicitSeqRaw.length > 0;
 
   let seq = explicitSeqRaw;
-  const maxParsedRaw = env?.ARK_MAX_IMAGES ?? env?.MAX_IMAGES ?? '';
-  const maxParsed = parseInt(String(maxParsedRaw), 10);
+  const requestedCount =
+    typeof params.count === 'number' && Number.isFinite(params.count) && params.count > 0
+      ? Math.round(params.count)
+      : 1;
+  /** ARK_MAX_IMAGES/MAX_IMAGES 作为上限，不再作为“默认生成多图”的开关 */
+  const configuredMaxRaw = env?.ARK_MAX_IMAGES ?? env?.MAX_IMAGES ?? '';
+  const configuredMax = parseInt(String(configuredMaxRaw), 10);
 
-  const multiRefs = Array.isArray(imgEarly) && imgEarly.filter(Boolean).length > 1;
-  const wantsMultiOutputs = Number.isFinite(maxParsed) && maxParsed > 1;
+  const wantsMultiOutputs = requestedCount > 1;
 
   if (!seq) {
-    if (wantsMultiOutputs || multiRefs) seq = 'auto';
+    if (wantsMultiOutputs) seq = 'auto';
     else seq = 'disabled';
   }
 
@@ -539,16 +575,14 @@ function arkVolcDoubaoCompatibleRequestBody(
       /* ignore */
     }
   }
-  if ((!seqOptions || Object.keys(seqOptions).length === 0) && Number.isFinite(maxParsed) && maxParsed > 0) {
-    seqOptions = { max_images: maxParsed };
-  } else if (
-    !seqWasExplicit &&
+  if (
     seq.trim().toLowerCase() === 'auto' &&
-    (!seqOptions || Object.keys(seqOptions).length === 0) &&
-    String(maxParsedRaw).trim() === ''
+    (!seqOptions || Object.keys(seqOptions).length === 0)
   ) {
-    /** 仅当服务端未显式要求且由本客户端推断 auto 时补 max_images */
-    seqOptions = { max_images: multiRefs ? 4 : 2 };
+    const refCount = Array.isArray(imgEarly) ? imgEarly.filter(Boolean).length : imgEarly ? 1 : 0;
+    const envCap = Number.isFinite(configuredMax) && configuredMax > 0 ? configuredMax : 8;
+    const cappedMax = Math.max(1, Math.min(requestedCount, envCap, 15 - refCount));
+    seqOptions = { max_images: cappedMax };
   }
 
   const stream = inferArkStreamFlag(env, seq);
@@ -568,10 +602,222 @@ function arkVolcDoubaoCompatibleRequestBody(
   }
 
   if (imgEarly !== undefined) {
-    body.image = imgEarly;
+    body.image = Array.isArray(imgEarly) && imgEarly.length === 1 ? imgEarly[0] : imgEarly;
   }
 
   return body;
+}
+
+type HttpImageMode = 'sdwebui' | 'ollama' | 'raw' | 'openai_images' | 'auto';
+
+type UnifiedImageRequest = {
+  prompt: string;
+  width?: number;
+  height?: number;
+  count: number;
+  referenceImages: string[];
+  params: ImageGenerationParams;
+};
+
+type BuiltImageHttpRequest = {
+  provider: string;
+  mode: HttpImageMode;
+  endpoint: string;
+  body: Record<string, unknown>;
+  headers?: Record<string, string>;
+  readBodyAsStreamingText?: boolean;
+  volcOpenAi?: boolean;
+  ollamaModel?: string;
+};
+
+type HttpImageProviderAdapter = {
+  id: string;
+  match: (ctx: {
+    mode: HttpImageMode;
+    endpoint: string;
+    config: NonNullable<ModelConfig['imageGeneratorConfig']>;
+  }) => boolean;
+  build: (ctx: {
+    endpoint: string;
+    config: NonNullable<ModelConfig['imageGeneratorConfig']>;
+    env: Record<string, string> | undefined;
+    request: UnifiedImageRequest;
+    headers: Record<string, string>;
+  }) => Promise<BuiltImageHttpRequest> | BuiltImageHttpRequest;
+};
+
+function buildUnifiedImageRequest(params: ImageGenerationParams): UnifiedImageRequest {
+  const count =
+    typeof params.count === 'number' && Number.isFinite(params.count) && params.count > 0
+      ? Math.max(1, Math.round(params.count))
+      : 1;
+  return {
+    prompt: params.prompt ?? '',
+    width: params.width,
+    height: params.height,
+    count,
+    referenceImages: Array.isArray(params.referenceImages) ? params.referenceImages : [],
+    params,
+  };
+}
+
+function resolveOpenAiCompatibleImageModel(
+  env: Record<string, string> | undefined,
+  volcArk: boolean
+): string {
+  const modelEnv =
+    env?.REMOTE_IMAGE_MODEL ||
+    env?.IMAGE_MODEL ||
+    env?.ARK_IMAGE_MODEL ||
+    env?.DOUBAO_IMAGE_MODEL ||
+    '';
+  const model =
+    typeof modelEnv === 'string' ? modelEnv.trim() : String(modelEnv ?? '').trim();
+  if (!model) {
+    const example = volcArk ? 'doubao-seedream-4-5-251128' : 'gpt-image-1';
+    throw new Error(
+      `OpenAI Images 请在环境变量中填写模型名：\`REMOTE_IMAGE_MODEL\` 或 \`IMAGE_MODEL\`（例：${example}）。鉴权可用 \`ARK_API_KEY=…\` 或 \`HEADER_AUTHORIZATION=Bearer …\`。`
+    );
+  }
+  return model;
+}
+
+const volcSeedreamAdapter: HttpImageProviderAdapter = {
+  id: 'volc-seedream',
+  match: ({ mode, endpoint }) =>
+    mode === 'openai_images' && isVolcArkImageGenerationsEndpoint(endpoint),
+  async build({ endpoint, env, request, headers }) {
+    if (!hasExplicitAuthorizationHeader(headers)) {
+      throw new Error(
+        '火山方舟返回 401 多为鉴权未带上：请在生图模型「环境变量」中填写 `ARK_API_KEY=你的密钥`（等价于 curl 的 Bearer），或填写 `HEADER_AUTHORIZATION=Bearer 你的密钥`；不要使用对话模型的 Key 占位。'
+      );
+    }
+    const model = resolveOpenAiCompatibleImageModel(env, true);
+    const body = await arkVolcDoubaoCompatibleRequestBody(env, model, request.params);
+    return {
+      provider: 'volc-seedream',
+      mode: 'openai_images',
+      endpoint,
+      body,
+      readBodyAsStreamingText: Boolean(body.stream),
+      volcOpenAi: true,
+    };
+  },
+};
+
+const openAiImagesAdapter: HttpImageProviderAdapter = {
+  id: 'openai-images',
+  match: ({ mode }) => mode === 'openai_images',
+  build({ endpoint, env, request }) {
+    const model = resolveOpenAiCompatibleImageModel(env, false);
+    const rf =
+      (env?.IMAGE_RESPONSE_FORMAT || env?.RESPONSE_FORMAT || '').trim() || 'b64_json';
+    let size =
+      typeof request.width === 'number' &&
+      request.width > 0 &&
+      typeof request.height === 'number' &&
+      request.height > 0
+        ? `${Math.round(request.width)}x${Math.round(request.height)}`
+        : '1024x1024';
+    const forcedSize = (env?.ARK_SIZE || env?.IMAGE_SIZE || '').trim();
+    if (forcedSize) size = forcedSize;
+    const body: Record<string, unknown> = {
+      model,
+      prompt: request.prompt,
+      size,
+      response_format: rf === 'url' ? 'url' : 'b64_json',
+    };
+    if (request.count > 1) body.n = Math.max(1, Math.min(10, request.count));
+    return { provider: 'openai-images', mode: 'openai_images', endpoint, body };
+  },
+};
+
+const sdWebUiAdapter: HttpImageProviderAdapter = {
+  id: 'sdwebui',
+  match: ({ mode }) => mode === 'sdwebui',
+  build({ endpoint, request }) {
+    return {
+      provider: 'sdwebui',
+      mode: 'sdwebui',
+      endpoint,
+      body: {
+        prompt: request.prompt,
+        negative_prompt: '',
+        steps: 25,
+        width: request.width || 512,
+        height: request.height || 512,
+        cfg_scale: 7,
+        sampler_index: 'Euler a',
+        n_iter: 1,
+        batch_size: Math.max(1, Math.min(8, request.count)),
+      },
+    };
+  },
+};
+
+const ollamaAdapter: HttpImageProviderAdapter = {
+  id: 'ollama',
+  match: ({ mode }) => mode === 'ollama',
+  build({ endpoint, env, request }) {
+    const model = env?.OLLAMA_MODEL || env?.ollama_model || 'flux';
+    const body: Record<string, unknown> = {
+      model,
+      prompt: request.prompt,
+      stream: false,
+    };
+    if (typeof request.width === 'number' && request.width > 0) body.width = request.width;
+    if (typeof request.height === 'number' && request.height > 0) body.height = request.height;
+    return { provider: 'ollama', mode: 'ollama', endpoint, body, ollamaModel: model };
+  },
+};
+
+const rawAutoAdapter: HttpImageProviderAdapter = {
+  id: 'raw-auto',
+  match: () => true,
+  build({ endpoint, request }) {
+    return {
+      provider: 'raw-auto',
+      mode: 'auto',
+      endpoint,
+      body: {
+        prompt: request.prompt,
+        width: request.width,
+        height: request.height,
+      },
+    };
+  },
+};
+
+const httpImageProviderAdapters: HttpImageProviderAdapter[] = [
+  volcSeedreamAdapter,
+  openAiImagesAdapter,
+  sdWebUiAdapter,
+  ollamaAdapter,
+  rawAutoAdapter,
+];
+
+async function buildImageHttpRequestViaAdapter(ctx: {
+  mode: HttpImageMode;
+  endpoint: string;
+  config: NonNullable<ModelConfig['imageGeneratorConfig']>;
+  headers: Record<string, string>;
+  params: ImageGenerationParams;
+}): Promise<BuiltImageHttpRequest> {
+  const request = buildUnifiedImageRequest(ctx.params);
+  const adapter = httpImageProviderAdapters.find((a) =>
+    a.match({ mode: ctx.mode, endpoint: ctx.endpoint, config: ctx.config })
+  )!;
+  const built = await adapter.build({
+    endpoint: ctx.endpoint,
+    config: ctx.config,
+    env: ctx.config.env,
+    request,
+    headers: ctx.headers,
+  });
+  return {
+    ...built,
+    mode: built.mode === 'auto' ? ctx.mode : built.mode,
+  };
 }
 
 function extractOpenAiCompatibleImageDownloadUrl(data: unknown): string | null {
@@ -850,6 +1096,8 @@ async function generateImageCli(
     MYAGENT_OUTPUT_PATH: outputPath,
     MYAGENT_WIDTH: String(params.width ?? 512),
     MYAGENT_HEIGHT: String(params.height ?? 512),
+    MYAGENT_COUNT: String(params.count ?? 1),
+    MYAGENT_REFERENCE_IMAGES: JSON.stringify(params.referenceImages ?? []),
   };
 
   const rawLines = (config.cliArgLines || '').split('\n');
@@ -1072,8 +1320,6 @@ async function generateImageHttp(
 
   const endpoint = config.endpoint.trim();
   const mode = detectHttpFormat(endpoint, config);
-  const ollamaModel =
-    config.env?.OLLAMA_MODEL || config.env?.ollama_model || 'flux';
   const customHdr = mergedCustomHeadersForImageHttp(config.env);
 
   /** Node 兜底请求也需鉴权头等（远端 OpenAI Images 同理） */
@@ -1083,80 +1329,17 @@ async function generateImageHttp(
     ...customHdr,
   };
 
-  let postBody: Record<string, unknown>;
-  if (mode === 'openai_images') {
-    const modelEnv =
-      config.env?.REMOTE_IMAGE_MODEL ||
-      config.env?.IMAGE_MODEL ||
-      config.env?.ARK_IMAGE_MODEL ||
-      config.env?.DOUBAO_IMAGE_MODEL ||
-      '';
-    const model =
-      typeof modelEnv === 'string' ? modelEnv.trim() : String(modelEnv ?? '').trim();
-    if (!model) {
-      throw new Error(
-        'OpenAI Images 请在环境变量中填写模型名：`REMOTE_IMAGE_MODEL` 或 `IMAGE_MODEL`（例：doubao-seedream-4-5-251128）；火山接入点仍为 ep-xxx 时也填在此。鉴权：`ARK_API_KEY=…`（与官方 curl）或 `HEADER_AUTHORIZATION=Bearer …`。'
-      );
-    }
-
-    const volcArk = isVolcArkImageGenerationsEndpoint(endpoint);
-    if (volcArk) {
-      if (!hasExplicitAuthorizationHeader(mergedFetchHeaders)) {
-        throw new Error(
-          '火山方舟返回 401 多为鉴权未带上：请在生图模型「环境变量」中填写 `ARK_API_KEY=你的密钥`（等价于 curl 的 Bearer），或填写 `HEADER_AUTHORIZATION=Bearer 你的密钥`；不要使用对话模型的 Key 占位。'
-        );
-      }
-      postBody = arkVolcDoubaoCompatibleRequestBody(config.env, model, params);
-    } else {
-      const rf =
-        (config.env?.IMAGE_RESPONSE_FORMAT || config.env?.RESPONSE_FORMAT || '').trim() || 'b64_json';
-      let sz =
-        typeof params.width === 'number' &&
-        params.width > 0 &&
-        typeof params.height === 'number' &&
-        params.height > 0
-          ? `${Math.round(params.width)}x${Math.round(params.height)}`
-          : '1024x1024';
-      const forcedSize = (config.env?.ARK_SIZE || config.env?.IMAGE_SIZE || '').trim();
-      if (forcedSize) sz = forcedSize;
-      postBody = {
-        model,
-        prompt: params.prompt ?? '',
-        size: sz,
-        response_format: rf === 'url' ? 'url' : 'b64_json',
-      };
-    }
-  } else if (mode === 'sdwebui') {
-    postBody = {
-      prompt: params.prompt,
-      negative_prompt: '',
-      steps: 25,
-      width: params.width || 512,
-      height: params.height || 512,
-      cfg_scale: 7,
-      sampler_index: 'Euler a',
-      n_iter: 1,
-      batch_size: 1,
-    };
-  } else if (mode === 'ollama') {
-    postBody = {
-      model: ollamaModel,
-      prompt: params.prompt ?? '',
-      stream: false,
-    };
-    /** 可选；仅生图模型会消费（见 Ollama 文档 experimental image generation） */
-    if (typeof params.width === 'number' && params.width > 0) postBody.width = params.width;
-    if (typeof params.height === 'number' && params.height > 0) postBody.height = params.height;
-  } else {
-    postBody = {
-      prompt: params.prompt,
-      width: params.width,
-      height: params.height,
-    };
-  }
-
-  const volcOpenAi = mode === 'openai_images' && isVolcArkImageGenerationsEndpoint(endpoint);
-  const readBodyAsStreamingText = volcOpenAi && Boolean(postBody.stream);
+  const builtReq = await buildImageHttpRequestViaAdapter({
+    mode,
+    endpoint,
+    config,
+    headers: mergedFetchHeaders,
+    params,
+  });
+  const postBody = builtReq.body;
+  const ollamaModel = builtReq.ollamaModel || config.env?.OLLAMA_MODEL || config.env?.ollama_model || 'flux';
+  const volcOpenAi = Boolean(builtReq.volcOpenAi);
+  const readBodyAsStreamingText = Boolean(builtReq.readBodyAsStreamingText);
 
   /**
    * 「fetch + 读完 body」共用同一 AbortSignal 与时间预算：不可在仅收到头部后清掉定时器，
@@ -1494,4 +1677,3 @@ async function invokeGenerateImageIpc(params: ImageGenerationParams) {
     throw new Error('生图失败: ' + msg);
   }
 }
-

@@ -46,6 +46,13 @@ describe('extractGenerateImageCalls', () => {
     expect(r[0].width).toBe(768);
   });
 
+  it('解析多图 count 字段', () => {
+    const t = '{"myagent_tool":"generate_image","prompt":"商品图","width":512,"height":768,"count":4}';
+    const r = extractGenerateImageCalls(t);
+    expect(r).toHaveLength(1);
+    expect(r[0].count).toBe(4);
+  });
+
   it('解析行前空白的 JSON generate_image', () => {
     const t = '{  "myagent_tool":"generate_image","prompt":"云"}';
     expect(extractGenerateImageCalls(t)).toHaveLength(1);

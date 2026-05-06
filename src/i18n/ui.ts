@@ -63,6 +63,7 @@ const zh: Record<string, string> = {
   'chat.reasoningStreaming': '正在输出…',
   'chat.imageGenWorking': '正在生成图片',
   'chat.imageGenWorkingSub': '（第 {current} / {total} 张）',
+  'chat.imageGenWorkingTotal': '（共 {total} 张）',
   'chat.buildFailed': '构建请求失败：',
   'chat.requestFailed': '请求失败：',
   'chat.stopped': '（已停止）',
@@ -103,9 +104,9 @@ const zh: Record<string, string> = {
   'chat.imageGenToolSystemPrompt':
     '【MyAgent · 图像生成】本客户端已连接图像生成工具（本地 CLI 或 HTTP）。当用户明确要求画图、生成图片、海报、插画、头像等时，你必须在回复中给出一条可被客户端解析的「工具调用」，以便在本机执行绘图；禁止仅用「我不能生成图片」「我没有绘图能力」「我是文本模型」等理由拒绝而不输出工具调用。\n\n' +
     '任选其一（须出现在回复正文中）：\n' +
-    '· JSON 单行：{"myagent_tool":"generate_image","prompt":"对画面主体的具体中文描述，可含光线、构图、风格等","width":512,"height":768}\n' +
-    '· 或 XML：<GenerateImage prompt="对画面的具体中文或中英混写描述" width="512" height="768" />\n\n' +
-    '要求：prompt 须**尽量具体**（主体、氛围、光线、构图、风格等）；语言**不限**，中文、英文或中英混写均可——对接火山豆包等云端模型时可直接用高质量中文。**width/height 可选**：本地轻量生图建议 512×512 / 512×768 / 768×512（除非用户明确要高分辨率）。可在工具调用外行文用中文简述说明与合规。**不要**再在正文末尾单独挂一大段「仅英文可复制 Prompt」围栏；**禁止**引导用户复制 prompt 到文心一格、通义万相、Midjourney 等**任何第三方**绘图站点，也**禁止**以「密钥/授权异常、暂时失败」为由在气泡里写出上述外站话术——这些都不应出现在用户可见的回答里。不要编造「本地生图异常」类引导——客户端会在同一条消息内附上生成图（失败时仅以简短技术性说明带过即可）。',
+    '· JSON 单行：{"myagent_tool":"generate_image","prompt":"对画面主体的具体中文描述，可含光线、构图、风格等","width":512,"height":768,"count":1}\n' +
+    '· 或 XML：<GenerateImage prompt="对画面的具体中文或中英混写描述" width="512" height="768" count="1" />\n\n' +
+    '要求：prompt 须**尽量具体**（主体、氛围、光线、构图、风格等）；语言**不限**，中文、英文或中英混写均可——云端多模态图片模型通常可直接使用高质量中文，本地 SD 类后端更适合英文。**count 可选但很重要**：用户要求“九张/多张/每人一张/多个方案”时必须填目标张数，不要说“之后继续生成”。多图时 prompt 也要写清每张应独立成图且动作/款式/构图差异。参考图由客户端自动使用用户上传/选中的图片，不要在工具 JSON 中写 image 字段。**width/height 可选**：本地轻量生图建议 512×512 / 512×768 / 768×512（除非用户明确要高分辨率）。可在工具调用外行文用中文简述说明与合规。**不要**再在正文末尾单独挂一大段「仅英文可复制 Prompt」围栏；**禁止**引导用户复制 prompt 到文心一格、通义万相、Midjourney 等**任何第三方**绘图站点，也**禁止**以「密钥/授权异常、暂时失败」为由在气泡里写出上述外站话术——这些都不应出现在用户可见的回答里。不要编造「本地生图异常」类引导——客户端会在同一条消息内附上生成图（失败时仅以简短技术性说明带过即可）。',
   'postProcess.tag': '[后处理] ',
   'onboarding.welcome': '欢迎使用 MyAgent',
   'onboarding.welcomeDesc': '本地多模型 AI 对话助手，会话与配置保存在本机。',
@@ -156,19 +157,19 @@ const zh: Record<string, string> = {
   'settings.form.cliArgsPh': '留空：不向进程传参数，仅用下方环境变量（MYAGENT_PROMPT、MYAGENT_OUTPUT_PATH 等）。\n示例（每行一条）：\n--prompt\n{{prompt}}\n-o\n{{outputPath}}',
   'settings.form.httpEndpoint': 'HTTP 接口地址 *',
   'settings.form.httpEndpointPh':
-    'SD WebUI: http://127.0.0.1:7860/sdapi/v1/txt2img　Ollama: http://127.0.0.1:11434/api/generate　远端 OpenAI Images（方舟豆包）: https://……/api/v3/images/generations（依控制台接入点为准）',
+    '本地：SD WebUI …/txt2img、Ollama …/api/generate；云端：OpenAI Images 兼容 …/images/generations（以供应商控制台为准）',
   'settings.form.responseFormat': '响应格式',
   'settings.form.format.auto': '自动识别（二进制图 / SD / Ollama / OpenAI Images 兼容 URL）',
   'settings.form.format.sdwebui': 'Stable Diffusion WebUI（txt2img JSON）',
   'settings.form.format.ollama': 'Ollama（/api/generate）',
-  'settings.form.format.openai_images': 'OpenAI Images（…/images/generations，方舟豆包等兼容）',
+  'settings.form.format.openai_images': 'OpenAI Images 兼容（…/images/generations）',
   'settings.form.format.raw': '原始图片（整块响应即 PNG）',
   'settings.form.ollamaEnvHint': 'Ollama 生图请在下方环境变量填写',
   'settings.form.imageGenHttpExtraHint':
-    '豆包方舟：REMOTE_IMAGE_MODEL=模型名；ARK_API_KEY；默认请求体带水印字段为关（不写或 ARK_WATERMARK=false）；需平台水印时设为 ARK_WATERMARK=true；文生多图：`ARK_SEQUENTIAL_IMAGE_GENERATION=auto`、`ARK_SEQUENTIAL_OPTIONS={"max_images":4}`（或 ARK_MAX_IMAGES=4），stream 在 auto 时默认开启；图生图：`ARK_IMAGE=单图 URL`，多参考：`ARK_IMAGES=["url1","url2"]`（JSON）；单图链路可设 sequential=disabled 且 ARK_STREAM=false。多张结果会并行拉取写入同一气泡。',
+    '云端图片 API：填写模型名与鉴权即可。多图、参考图、图生图会由 MyAgent 按用户输入自动组参；如供应商要求特殊请求头，可用 HEADER_AUTHORIZATION=Bearer …。火山/Seedream 可用 ARK_API_KEY，ARK_MAX_IMAGES 仅作为多图上限。',
   'settings.form.envVars': '环境变量（可选，多行 KEY=value；CLI/HTTP 均会注入 MYAGENT_*）',
   'settings.form.envPh':
-    'ARK_API_KEY=…\nREMOTE_IMAGE_MODEL=doubao-seedream-4-5-251128\n# 文生多图：\nARK_SEQUENTIAL_IMAGE_GENERATION=auto\nARK_SEQUENTIAL_OPTIONS={"max_images":4}\n# 图生图（单参考）：\n# ARK_IMAGE=https://…png\n# 多参考：ARK_IMAGES=["https://…1.png","https://…2.png"]',
+    'REMOTE_IMAGE_MODEL=你的图片模型名\nARK_API_KEY=…\n# 或通用鉴权：HEADER_AUTHORIZATION=Bearer …\n# 可选：ARK_MAX_IMAGES=4',
   'settings.form.save': '保存',
   'settings.form.cancel': '取消',
   'settings.form.required': '请填写必填项',
@@ -324,6 +325,7 @@ const en: Record<string, string> = {
   'chat.reasoningStreaming': 'Streaming…',
   'chat.imageGenWorking': 'Generating image',
   'chat.imageGenWorkingSub': ' ({current}/{total})',
+  'chat.imageGenWorkingTotal': ' ({total} total)',
   'chat.buildFailed': 'Failed to build the request: ',
   'chat.requestFailed': 'Request failed: ',
   'chat.stopped': '(Stopped)',
@@ -366,9 +368,9 @@ const en: Record<string, string> = {
   'chat.imageGenToolSystemPrompt':
     '[MyAgent · Image generation] This client has an image-generation tool (local CLI or HTTP). When the user clearly asks for a drawing, image, poster, illustration, avatar, etc., you MUST include one machine-parseable tool invocation in your reply so the client can run it locally. Do not refuse with only “I cannot generate images” / “I have no image capability” / “I am a text-only model” without outputting the tool call.\n\n' +
     'Use either form (must appear in the reply body):\n' +
-    '· Single-line JSON: {"myagent_tool":"generate_image","prompt":"Concrete description of the scene (Chinese, English, or mixed is fine)","width":512,"height":768}\n' +
-    '· Or XML: <GenerateImage prompt="Concrete Chinese or bilingual description of the scene" width="512" height="768" />\n\n' +
-    'Rules: prompt must be **specific** (subject, lighting, composition, style, etc.). **Language is not restricted**—Chinese is fully OK for Ark/Doubao and similar APIs; English is also fine especially for English-tuned local/SD backends. Width/height are optional; for lightweight local gens prefer 512×512, 512×768, or 768×512 unless the user asks for higher res. You may add a short note outside the tool line. **Do not** append a fenced English-only prompt dump. **Never** suggest copying prompts to Wenxin Yige, Tongyi Wanxiang, or any third‑party drawing site, nor “if keys/auth fail, paste elsewhere” fallbacks—keep all of that out of the visible reply.** On failures**, responses must stay brief and technical only. **Do not** invent “local tool broken” narratives—the client attaches the image here.',
+    '· Single-line JSON: {"myagent_tool":"generate_image","prompt":"Concrete description of the scene (Chinese, English, or mixed is fine)","width":512,"height":768,"count":1}\n' +
+    '· Or XML: <GenerateImage prompt="Concrete Chinese or bilingual description of the scene" width="512" height="768" count="1" />\n\n' +
+    'Rules: prompt must be **specific** (subject, lighting, composition, style, etc.). **Language is not restricted**—cloud multimodal image models often handle Chinese well; English is also fine especially for English-tuned local/SD backends. `count` is optional but important: when the user asks for nine/multiple images, one image per person, or several options, set the target count now; do not say you will continue later. For multi-image requests, the prompt must say every output is a separate finished image and should vary pose/style/clothing/composition as requested. Reference images are automatically attached from user uploads/selection; do not put an image field in the tool JSON. Width/height are optional; for lightweight local gens prefer 512×512, 512×768, or 768×512 unless the user asks for higher res. You may add a short note outside the tool line. **Do not** append a fenced English-only prompt dump. **Never** suggest copying prompts to Wenxin Yige, Tongyi Wanxiang, or any third‑party drawing site, nor “if keys/auth fail, paste elsewhere” fallbacks—keep all of that out of the visible reply.** On failures**, responses must stay brief and technical only. **Do not** invent “local tool broken” narratives—the client attaches the image here.',
   'postProcess.tag': '[post-process] ',
   'onboarding.welcome': 'Welcome to MyAgent',
   'onboarding.welcomeDesc': 'Local multi-model chat; sessions and settings stay on this device.',
@@ -419,19 +421,19 @@ const en: Record<string, string> = {
   'settings.form.cliArgsPh': 'Empty: do not pass argv; use env (MYAGENT_PROMPT, MYAGENT_OUTPUT_PATH, …) below.\nExample (one per line):\n--prompt\n{{prompt}}\n-o\n{{outputPath}}',
   'settings.form.httpEndpoint': 'HTTP URL *',
   'settings.form.httpEndpointPh':
-    'SD WebUI: …/txt2img; Ollama: …/api/generate; OpenAI-compatible images (Doubao Ark): …/api/v3/images/generations (exact URL from provider)',
+    'Local: SD WebUI …/txt2img, Ollama …/api/generate; cloud: OpenAI-compatible Images …/images/generations (use provider URL)',
   'settings.form.responseFormat': 'Response format',
   'settings.form.format.auto': 'Auto (binary / SD / Ollama / OpenAI Images URL)',
   'settings.form.format.sdwebui': 'Stable Diffusion WebUI (txt2img JSON)',
   'settings.form.format.ollama': 'Ollama (/api/generate)',
-  'settings.form.format.openai_images': 'OpenAI Images (…/images/generations incl. Ark/Doubao)',
+  'settings.form.format.openai_images': 'OpenAI-compatible Images (…/images/generations)',
   'settings.form.format.raw': 'Raw image (entire body is PNG)',
   'settings.form.ollamaEnvHint': 'For Ollama image gen, set in env below, e.g.',
   'settings.form.imageGenHttpExtraHint':
-    'Doubao Ark: REMOTE_IMAGE_MODEL; ARK_API_KEY. Request body omits visible watermark by default (set ARK_WATERMARK=true only if you want the provider watermark). Multi from text: ARK_SEQUENTIAL_IMAGE_GENERATION=auto + ARK_SEQUENTIAL_OPTIONS={"max_images":4} (or ARK_MAX_IMAGES). Img2img: ARK_IMAGE=URL; multi ref: ARK_IMAGES=["url1","url2"]. With sequential=auto, stream defaults on. Multiple URLs in one response attach as multiple files.',
+    'Cloud image APIs: set model name and auth. MyAgent automatically maps multi-image, reference-image, and img2img requests from user input. For provider-specific headers use HEADER_AUTHORIZATION=Bearer …. For Volc/Seedream, ARK_API_KEY works and ARK_MAX_IMAGES is only a cap.',
   'settings.form.envVars': 'Environment (optional, KEY=value lines; MYAGENT_* injected for both CLI and HTTP)',
   'settings.form.envPh':
-    'ARK_API_KEY=…\nREMOTE_IMAGE_MODEL=doubao-seedream-…\nARK_SEQUENTIAL_IMAGE_GENERATION=auto\nARK_SEQUENTIAL_OPTIONS={"max_images":4}\n# ARK_IMAGE=https://…  or  ARK_IMAGES=["https://…","https://…"]',
+    'REMOTE_IMAGE_MODEL=your-image-model\nARK_API_KEY=…\n# or generic auth: HEADER_AUTHORIZATION=Bearer …\n# optional: ARK_MAX_IMAGES=4',
   'settings.form.save': 'Save',
   'settings.form.cancel': 'Cancel',
   'settings.form.required': 'Please fill in required fields',

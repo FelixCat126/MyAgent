@@ -24,6 +24,16 @@ const __dirname = path.dirname(__filename);
 
 let mainWindow: BrowserWindow | null = null;
 
+/**
+ * Chromium NetworkService 会把部分系统/代理层 TLS reset 直接写 stderr，
+ * 典型为 ssl_client_socket_impl.cc + net_error -100。它通常不是业务异常，
+ * 且会在 dev 终端刷屏；保留应用自己的 console.warn/error 即可。
+ */
+if (process.env.MYAGENT_CHROMIUM_VERBOSE_LOGS !== '1') {
+  app.commandLine.appendSwitch('log-level', '3');
+  app.commandLine.appendSwitch('disable-logging');
+}
+
 const PRIMARY_INSTANCE = app.requestSingleInstanceLock();
 
 if (!PRIMARY_INSTANCE) {
@@ -71,10 +81,11 @@ function createWindow() {
   /** 避免出现长时间白屏错觉；内容就绪后再显式展示 */
   mainWindow.once('ready-to-show', () => mainWindow?.show());
 
-  mainWindow.webContents.once('did-finish-load', () => {
-    if (mainWindow && !mainWindow.isDestroyed() && process.env.VITE_DEV_SERVER_URL)
-      mainWindow.webContents.openDevTools();
-  });
+  if (process.env.VITE_DEV_SERVER_URL && process.env.MYAGENT_OPEN_DEVTOOLS === '1') {
+    mainWindow.webContents.once('did-finish-load', () => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.openDevTools();
+    });
+  }
 
   if (process.env.VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
@@ -106,6 +117,20 @@ if (PRIMARY_INSTANCE) {
         callback(false);
       }
     });
+
+    if (process.env.MYAGENT_LOG_WEB_REQUESTS === '1') {
+      session.defaultSession.webRequest.onBeforeRequest((details, callback) => {
+        try {
+          const u = new URL(details.url);
+          if (u.protocol === 'https:' || u.protocol === 'http:') {
+            console.log('[MyAgent webRequest]', details.resourceType, `${u.protocol}//${u.host}${u.pathname}`);
+          }
+        } catch {
+          /* ignore */
+        }
+        callback({});
+      });
+    }
 
     protocol.handle('local-file', async (request) => {
       try {

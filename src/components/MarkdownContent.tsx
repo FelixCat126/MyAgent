@@ -50,7 +50,15 @@ function FencedCodeBlock(props: {
               await navigator.clipboard.writeText(props.rawText);
               setCopied(true);
               setTimeout(() => setCopied(false), 1600);
-            } catch {}
+            } catch {
+              try {
+                await window.electron.setClipboardText(props.rawText);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1600);
+              } catch (e) {
+                console.warn('复制代码块失败', e);
+              }
+            }
           }}
           className="rounded px-2 py-0.5 font-medium text-primary-700 transition-colors hover:bg-white/65 dark:text-primary-300 dark:hover:bg-slate-700/85"
           title={props.copyLabel}

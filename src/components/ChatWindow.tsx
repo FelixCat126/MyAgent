@@ -253,6 +253,7 @@ async function buildOutgoingChain(
 export type ImageGenProgressHooks = {
   onBegin?: (p: { total: number }) => void;
   onEachStart?: (p: { current: number; total: number }) => void;
+  onEachDone?: (p: { done: number; total: number }) => void;
   onDone?: () => void;
 };
 
@@ -292,12 +293,71 @@ function clampDimensionsForLocalImageGen(width?: number, height?: number, maxSid
   };
 }
 
+function imageReferencePathsFromFiles(files?: FileInfo[]): string[] {
+  return (files ?? [])
+    .filter((f) => f.type?.startsWith('image/') && f.path)
+    .map((f) => f.path);
+}
+
+function inferRequestedImageCount(prompt: string, explicit?: number, context?: string): number | undefined {
+  if (typeof explicit === 'number' && Number.isFinite(explicit) && explicit > 0) {
+    return Math.max(1, Math.min(12, Math.round(explicit)));
+  }
+  const text = [context, prompt].filter(Boolean).join('\n');
+  const digit = text.match(/(?:生成|出|给我|做|make|generate|create)\s*(\d{1,2})\s*(?:张|个|幅|款|版|variants?|images?|options?)/i);
+  if (digit) {
+    const n = parseInt(digit[1], 10);
+    if (Number.isFinite(n) && n > 1) return Math.min(12, n);
+  }
+  const zhNums: Record<string, number> = {
+    一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10,
+  };
+  const zh = text.match(/(?:生成|出|给我|做)?.{0,8}?([一二两三四五六七八九十])\s*(?:张|个|幅|款|版)/);
+  if (zh) {
+    const n = zhNums[zh[1]];
+    if (n > 1) return Math.min(12, n);
+  }
+  const everyOne =
+    /每(?:人|个|位|张|款).{0,8}(?:一张|1\s*张|一幅|1\s*幅|一版|1\s*版)|(?:每人|一人).{0,8}(?:一张|一幅|一个)|one\s+(?:image|picture|portrait)\s+(?:for|per)\s+(?:each|every)/i.test(text);
+  const allCrew =
+    /(?:所有|全部|每个|每位).{0,12}(?:伙伴|角色|人物|船员|成员)|(?:伙伴|角色|人物|船员|成员).{0,12}(?:每人|每个|每位|各自|分别)/.test(text);
+  if (everyOne || allCrew) return 8;
+  const listedOnePieceCrew = [
+    '路飞', '索隆', '娜美', '乌索普', '山治', '乔巴', '罗宾', '弗兰奇', '布鲁克', '甚平',
+    'luffy', 'zoro', 'nami', 'usopp', 'sanji', 'chopper', 'robin', 'franky', 'brook', 'jinbe', 'jimbei',
+  ];
+  const lower = text.toLowerCase();
+  const matchedCrew = listedOnePieceCrew.filter((name) => lower.includes(name.toLowerCase()));
+  if (matchedCrew.length >= 2 && /(?:每人|每个|每位|各自|分别|单人|同风格|统一风格|一张|one\s+(?:image|picture|portrait)\s+(?:for|per)\s+(?:each|every))/i.test(text)) {
+    return Math.min(12, matchedCrew.length);
+  }
+  return undefined;
+}
+
+function enhancePromptForMultiImage(prompt: string, count?: number): string {
+  if (!count || count <= 1) return prompt;
+  const p = prompt.trim();
+  const diversityHint =
+    `本次需要一次性生成 ${count} 张成品图。每张都必须是独立完整图片，不能拼成九宫格或合照；` +
+    `主体、构图、动作、服装款式、配色、镜头角度需要明显不同，但整体质量和商业摄影风格保持统一。`;
+  if (/每张|不同|多张|九张|9\s*张|variants?|images?/i.test(p)) {
+    return `${p}\n${diversityHint}`;
+  }
+  return `${p}\n${diversityHint}`;
+}
+
+function userExplicitlyAskedForImage(text?: string): boolean {
+  const t = String(text ?? '').trim();
+  if (!t) return false;
+  return /(?:画|绘制|生成|出|做|来|制作|设计).{0,18}(?:图|图片|海报|插画|头像|照片|商品图|主图|形象|壁纸)|(?:图|图片|海报|插画|头像|照片|商品图|主图).{0,18}(?:生成|画|做|出|设计)|generate.{0,18}(?:image|picture|poster|avatar|photo)/i.test(t);
+}
+
 async function postProcessAssistantContent(
   responseContent: string,
   activeModel: ModelConfig,
   imageIndexBase: number,
   setInlineImageIndex: React.Dispatch<React.SetStateAction<number>>,
-  opts?: { imageGenHooks?: ImageGenProgressHooks }
+  opts?: { imageGenHooks?: ImageGenProgressHooks; referenceImages?: string[]; userPromptContext?: string }
 ): Promise<{ content: string; files?: FileInfo[] }> {
   let text = responseContent;
 
@@ -319,10 +379,10 @@ async function postProcessAssistantContent(
   const imgGenModel = resolveImageGeneratorModel();
   const hooks = opts?.imageGenHooks;
 
-  type GenItem = { prompt: string; width?: number; height?: number; raw: string };
+  type GenItem = { prompt: string; width?: number; height?: number; count?: number; raw: string };
   const toGenerate: GenItem[] = [];
   for (const match of imageCalls) {
-    const { prompt, width, height, raw } = match;
+    const { prompt, width, height, count, raw } = match;
     if (!imgGenModel?.imageGeneratorConfig) {
       text = text.replace(
         raw,
@@ -330,19 +390,32 @@ async function postProcessAssistantContent(
       );
       continue;
     }
-    toGenerate.push({ prompt, width, height, raw });
+    toGenerate.push({ prompt, width, height, count, raw });
   }
 
+  if (toGenerate.length === 0 && imgGenModel?.imageGeneratorConfig && userExplicitlyAskedForImage(opts?.userPromptContext)) {
+    toGenerate.push({
+      prompt: opts?.userPromptContext?.trim() || text.trim(),
+      count: inferRequestedImageCount(text, undefined, opts?.userPromptContext),
+      raw: '',
+    });
+  }
+
+  const expectedCounts = toGenerate.map((g) =>
+    inferRequestedImageCount(g.prompt, g.count, opts?.userPromptContext) ?? 1
+  );
+  const expectedTotal = expectedCounts.reduce((sum, n) => sum + Math.max(1, n), 0);
   const generatedFiles: Array<{ path: string; url: string; width: number; height: number }> = [];
   if (toGenerate.length > 0) {
-    hooks?.onBegin?.({ total: toGenerate.length });
+    hooks?.onBegin?.({ total: expectedTotal });
   }
   try {
+    let expectedDone = 0;
     for (let i = 0; i < toGenerate.length; i++) {
       const { prompt, width, height, raw } = toGenerate[i];
       hooks?.onEachStart?.({
-        current: i + 1,
-        total: toGenerate.length,
+        current: Math.min(expectedDone + 1, expectedTotal),
+        total: expectedTotal,
       });
       try {
         const m = imgGenModel!;
@@ -354,17 +427,22 @@ async function postProcessAssistantContent(
           widthOut = clipped.width;
           heightOut = clipped.height;
         }
+        const requestedCount = expectedCounts[i];
         const imgs = await window.electron.generateImage({
-          prompt,
+          prompt: enhancePromptForMultiImage(prompt, requestedCount),
           width: widthOut,
           height: heightOut,
+          count: requestedCount,
+          referenceImages: opts?.referenceImages,
           modelId: m.id,
           imageGeneratorConfig: cfg,
         });
         for (const img of imgs) {
           generatedFiles.push(img);
         }
-        text = text.replace(raw, '');
+        expectedDone += Math.max(1, imgs.length || requestedCount || 1);
+        hooks?.onEachDone?.({ done: Math.min(expectedDone, expectedTotal), total: expectedTotal });
+        if (raw) text = text.replace(raw, '');
       } catch (e: unknown) {
         const msg = formatImageGenUserError(e instanceof Error ? e.message : String(e));
         text = text.replace(raw, `\n*[系统提示: 图片生成失败 - ${msg}]*\n`);
@@ -669,6 +747,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                     const imageHooks: ImageGenProgressHooks = {
                       onBegin: ({ total }) => setImageGenProgress({ current: 1, total }),
                       onEachStart: ({ current, total }) => setImageGenProgress({ current, total }),
+                      onEachDone: ({ done, total }) =>
+                        setImageGenProgress(done >= total ? { current: total, total } : { current: done + 1, total }),
                       onDone: () => setImageGenProgress(null),
                     };
                     const { content, files } = await postProcessAssistantContent(
@@ -676,7 +756,11 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                       activeModel,
                       imgBase,
                       setInlineImageIndex,
-                      { imageGenHooks: imageHooks }
+                      {
+                        imageGenHooks: imageHooks,
+                        referenceImages: imageReferencePathsFromFiles(userMessage.files),
+                        userPromptContext: userMessage.content,
+                      }
                     );
                     nextContent = content;
                     nextFiles = files as Message['files'];
@@ -714,6 +798,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         const imageHooks: ImageGenProgressHooks = {
           onBegin: ({ total }) => setImageGenProgress({ current: 1, total }),
           onEachStart: ({ current, total }) => setImageGenProgress({ current, total }),
+          onEachDone: ({ done, total }) =>
+            setImageGenProgress(done >= total ? { current: total, total } : { current: done + 1, total }),
           onDone: () => setImageGenProgress(null),
         };
         const { content: c, files } = await postProcessAssistantContent(
@@ -721,7 +807,11 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           activeModel,
           inlineImageIndexRef.current,
           setInlineImageIndex,
-          { imageGenHooks: imageHooks }
+          {
+            imageGenHooks: imageHooks,
+            referenceImages: imageReferencePathsFromFiles(userMessage.files),
+            userPromptContext: userMessage.content,
+          }
         );
         addMessage(sendSessionId, {
           id: `${Date.now() + 1}-a`,
@@ -1113,7 +1203,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
 
         {imageGenProgress && (
           <div className="flex justify-start" role="status" aria-live="polite">
-            <div className="flex max-w-[min(92%,560px)] flex-col overflow-hidden rounded-2xl rounded-tl-sm border border-stone-300/45 bg-stone-100 shadow-sm dark:border-white/10 dark:bg-slate-800">
+            <div className="flex max-w-[min(92%,640px)] flex-col overflow-hidden rounded-2xl rounded-tl-sm border border-stone-300/45 bg-stone-100 shadow-sm dark:border-white/10 dark:bg-slate-800">
               <div className="flex items-center gap-2 border-b border-stone-200/80 px-4 py-2.5 dark:border-slate-600/45">
                 <FiLoader
                   size={15}
@@ -1122,20 +1212,41 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                 />
                 <span className="text-sm font-medium text-stone-700 dark:text-slate-200">
                   {t('chat.imageGenWorking')}
-                  <span className="ml-1.5 tabular-nums text-[13px] font-normal text-stone-500 dark:text-slate-400">
-                    {t('chat.imageGenWorkingSub', {
-                      current: imageGenProgress.current,
-                      total: imageGenProgress.total,
-                    })}
-                  </span>
+                  {imageGenProgress.total > 1 ? (
+                    <span className="ml-1.5 tabular-nums text-[13px] font-normal text-stone-500 dark:text-slate-400">
+                      {t('chat.imageGenWorkingTotal', { total: imageGenProgress.total })}
+                    </span>
+                  ) : null}
                 </span>
               </div>
-              <div className="relative myagent-image-gen-loading-shimmer mx-3 my-3 flex min-h-[140px] max-h-[272px] min-w-[240px] items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-stone-200/90 via-stone-100 to-primary-500/18 dark:from-slate-700 dark:via-slate-900/85 dark:to-primary-600/22">
-                <div
-                  className="pointer-events-none absolute inset-0 animate-pulse bg-[radial-gradient(ellipse_at_center,_rgba(255,255,255,0.42)_0%,_transparent_65%)] opacity-55 dark:bg-[radial-gradient(ellipse_at_center,_rgba(255,255,255,0.12)_0%,_transparent_60%)] dark:opacity-40"
-                  aria-hidden
-                />
-                <FiImage size={38} className="relative z-10 text-stone-400/95 dark:text-slate-600" aria-hidden />
+              <div
+                className={
+                  imageGenProgress.total > 1
+                    ? 'mx-3 my-3 grid grid-cols-2 gap-2 sm:grid-cols-3'
+                    : 'mx-3 my-3'
+                }
+              >
+                {Array.from({ length: Math.min(imageGenProgress.total, 12) }).map((_, idx) => {
+                  const active = idx + 1 === imageGenProgress.current;
+                  const done = idx + 1 < imageGenProgress.current;
+                  return (
+                    <div
+                      key={idx}
+                      className={`relative myagent-image-gen-loading-shimmer flex aspect-[4/3] min-h-[112px] min-w-[150px] items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-stone-200/90 via-stone-100 to-primary-500/18 dark:from-slate-700 dark:via-slate-900/85 dark:to-primary-600/22 ${
+                        active ? 'ring-2 ring-primary-500/55' : done ? 'opacity-70' : ''
+                      }`}
+                    >
+                      <div
+                        className="pointer-events-none absolute inset-0 animate-pulse bg-[radial-gradient(ellipse_at_center,_rgba(255,255,255,0.42)_0%,_transparent_65%)] opacity-55 dark:bg-[radial-gradient(ellipse_at_center,_rgba(255,255,255,0.12)_0%,_transparent_60%)] dark:opacity-40"
+                        aria-hidden
+                      />
+                      <FiImage size={imageGenProgress.total > 1 ? 26 : 38} className="relative z-10 text-stone-400/95 dark:text-slate-600" aria-hidden />
+                      <span className="absolute bottom-2 right-2 rounded bg-white/70 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-stone-500 dark:bg-slate-900/55 dark:text-slate-400">
+                        {idx + 1}/{imageGenProgress.total}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
