@@ -35,6 +35,7 @@ import { canUseSseStream, effectiveWebEnabled } from '../utils/chatModelPolicy';
 import { enrichMessagesForModel } from '../utils/enrichMessagesForModel';
 import { t as tUi } from '../i18n/ui';
 import type { Locale } from '../i18n/types';
+import { inferImageCountFromText, planImageIntent, type ImageIntent } from '../utils/imageIntentPlanner';
 
 function userQueryTextForRag(m: Message): string {
   const t = (m.content || '').trim();
@@ -304,24 +305,8 @@ function inferRequestedImageCount(prompt: string, explicit?: number, context?: s
     return Math.max(1, Math.min(12, Math.round(explicit)));
   }
   const text = [context, prompt].filter(Boolean).join('\n');
-  const digit = text.match(/(?:生成|出|给我|做|make|generate|create)\s*(\d{1,2})\s*(?:张|个|幅|款|版|variants?|images?|options?)/i);
-  if (digit) {
-    const n = parseInt(digit[1], 10);
-    if (Number.isFinite(n) && n > 1) return Math.min(12, n);
-  }
-  const zhNums: Record<string, number> = {
-    一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10,
-  };
-  const zh = text.match(/(?:生成|出|给我|做)?.{0,8}?([一二两三四五六七八九十])\s*(?:张|个|幅|款|版)/);
-  if (zh) {
-    const n = zhNums[zh[1]];
-    if (n > 1) return Math.min(12, n);
-  }
-  const everyOne =
-    /每(?:人|个|位|张|款).{0,8}(?:一张|1\s*张|一幅|1\s*幅|一版|1\s*版)|(?:每人|一人).{0,8}(?:一张|一幅|一个)|one\s+(?:image|picture|portrait)\s+(?:for|per)\s+(?:each|every)/i.test(text);
-  const allCrew =
-    /(?:所有|全部|每个|每位).{0,12}(?:伙伴|角色|人物|船员|成员)|(?:伙伴|角色|人物|船员|成员).{0,12}(?:每人|每个|每位|各自|分别)/.test(text);
-  if (everyOne || allCrew) return 8;
+  const plannedCount = inferImageCountFromText(text);
+  if (plannedCount) return plannedCount;
   const listedOnePieceCrew = [
     '路飞', '索隆', '娜美', '乌索普', '山治', '乔巴', '罗宾', '弗兰奇', '布鲁克', '甚平',
     'luffy', 'zoro', 'nami', 'usopp', 'sanji', 'chopper', 'robin', 'franky', 'brook', 'jinbe', 'jimbei',
@@ -347,9 +332,7 @@ function enhancePromptForMultiImage(prompt: string, count?: number): string {
 }
 
 function userExplicitlyAskedForImage(text?: string): boolean {
-  const t = String(text ?? '').trim();
-  if (!t) return false;
-  return /(?:画|绘制|生成|出|做|来|制作|设计).{0,18}(?:图|图片|海报|插画|头像|照片|商品图|主图|形象|壁纸)|(?:图|图片|海报|插画|头像|照片|商品图|主图).{0,18}(?:生成|画|做|出|设计)|generate.{0,18}(?:image|picture|poster|avatar|photo)/i.test(t);
+  return planImageIntent({ userText: String(text ?? ''), historyBeforeUser: [] }).shouldGenerate;
 }
 
 async function postProcessAssistantContent(
@@ -357,7 +340,7 @@ async function postProcessAssistantContent(
   activeModel: ModelConfig,
   imageIndexBase: number,
   setInlineImageIndex: React.Dispatch<React.SetStateAction<number>>,
-  opts?: { imageGenHooks?: ImageGenProgressHooks; referenceImages?: string[]; userPromptContext?: string }
+  opts?: { imageGenHooks?: ImageGenProgressHooks; referenceImages?: string[]; userPromptContext?: string; plannedIntent?: ImageIntent }
 ): Promise<{ content: string; files?: FileInfo[] }> {
   let text = responseContent;
 
@@ -393,10 +376,11 @@ async function postProcessAssistantContent(
     toGenerate.push({ prompt, width, height, count, raw });
   }
 
-  if (toGenerate.length === 0 && imgGenModel?.imageGeneratorConfig && userExplicitlyAskedForImage(opts?.userPromptContext)) {
+  const planned = opts?.plannedIntent;
+  if (toGenerate.length === 0 && imgGenModel?.imageGeneratorConfig && (planned?.shouldGenerate || userExplicitlyAskedForImage(opts?.userPromptContext))) {
     toGenerate.push({
-      prompt: opts?.userPromptContext?.trim() || text.trim(),
-      count: inferRequestedImageCount(text, undefined, opts?.userPromptContext),
+      prompt: planned?.prompt?.trim() || opts?.userPromptContext?.trim() || text.trim(),
+      count: planned?.count ?? inferRequestedImageCount(text, undefined, opts?.userPromptContext),
       raw: '',
     });
   }
@@ -744,6 +728,12 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                 let nextFiles = msg?.files as Message['files'] | undefined;
                 if (raw.trim()) {
                   try {
+                    const plannedIntent = planImageIntent({
+                      userText: userMessage.content,
+                      historyBeforeUser,
+                      assistantText: raw,
+                      toolCallCount: extractGenerateImageCalls(raw).length,
+                    });
                     const imageHooks: ImageGenProgressHooks = {
                       onBegin: ({ total }) => setImageGenProgress({ current: 1, total }),
                       onEachStart: ({ current, total }) => setImageGenProgress({ current, total }),
@@ -760,6 +750,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                         imageGenHooks: imageHooks,
                         referenceImages: imageReferencePathsFromFiles(userMessage.files),
                         userPromptContext: userMessage.content,
+                        plannedIntent,
                       }
                     );
                     nextContent = content;
@@ -802,6 +793,12 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
             setImageGenProgress(done >= total ? { current: total, total } : { current: done + 1, total }),
           onDone: () => setImageGenProgress(null),
         };
+        const plannedIntent = planImageIntent({
+          userText: userMessage.content,
+          historyBeforeUser,
+          assistantText: content0,
+          toolCallCount: extractGenerateImageCalls(content0).length,
+        });
         const { content: c, files } = await postProcessAssistantContent(
           content0,
           activeModel,
@@ -811,6 +808,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
             imageGenHooks: imageHooks,
             referenceImages: imageReferencePathsFromFiles(userMessage.files),
             userPromptContext: userMessage.content,
+            plannedIntent,
           }
         );
         addMessage(sendSessionId, {
