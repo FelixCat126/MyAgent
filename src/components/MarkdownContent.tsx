@@ -47,12 +47,13 @@ function FencedCodeBlock(props: {
           type="button"
           onClick={async () => {
             try {
-              await navigator.clipboard.writeText(props.rawText);
+              await window.electron.setClipboardText(props.rawText);
               setCopied(true);
               setTimeout(() => setCopied(false), 1600);
+              return;
             } catch {
               try {
-                await window.electron.setClipboardText(props.rawText);
+                await navigator.clipboard.writeText(props.rawText);
                 setCopied(true);
                 setTimeout(() => setCopied(false), 1600);
               } catch (e) {

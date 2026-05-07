@@ -1,6 +1,24 @@
 import fs from 'fs';
 import { Message } from '../../src/types';
 
+function normalizeTextContent(raw: unknown): string {
+  if (typeof raw === 'string') return raw;
+  if (Array.isArray(raw)) {
+    return raw
+      .map((part) => {
+        if (typeof part === 'string') return part;
+        if (!part || typeof part !== 'object') return '';
+        const obj = part as Record<string, unknown>;
+        if (typeof obj.text === 'string') return obj.text;
+        if (obj.image_url || obj.inline_data || obj.source) return '（历史图片附件已省略）';
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+  return raw == null ? '' : String(raw);
+}
+
 export function imageFileToDataUrl(file: NonNullable<Message['files']>[number]): string {
   if (file.preview && file.preview.startsWith('data:')) {
     return file.preview;
@@ -35,7 +53,7 @@ export function errorIndicatesImageUnsupported(err: unknown): boolean {
 export function formatOpenAITextOnly(messages: Message[]): Array<{ role: string; content: string }> {
   return messages.map((msg) => {
     const hadImage = msg.files?.some((f) => f.type.startsWith('image/'));
-    let content = msg.content;
+    let content = normalizeTextContent((msg as { content?: unknown }).content);
     if (hadImage && !content.trim()) {
       content = '（附件）';
     }
@@ -50,18 +68,19 @@ export function formatOpenAIMultimodal(
   | { role: string; content: Array<{ type: string; text?: string; image_url?: { url: string } }> }
 > {
   return messages.map((msg) => {
-    if (msg.files && msg.files.some((f) => f.type.startsWith('image/'))) {
+    const text = normalizeTextContent((msg as { content?: unknown }).content);
+    if (msg.role === 'user' && msg.files && msg.files.some((f) => f.type.startsWith('image/'))) {
       const imageFile = msg.files.find((f) => f.type.startsWith('image/'))!;
       const dataUrl = imageFileToDataUrl(imageFile);
       return {
         role: msg.role,
         content: [
-          { type: 'text', text: msg.content },
+          { type: 'text', text },
           { type: 'image_url', image_url: { url: dataUrl } },
         ],
       };
     }
-    return { role: msg.role, content: msg.content };
+    return { role: msg.role, content: text };
   });
 }
 

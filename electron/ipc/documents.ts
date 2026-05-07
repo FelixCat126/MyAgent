@@ -1,5 +1,6 @@
-import { dialog, ipcMain } from 'electron';
+import { app, dialog, ipcMain } from 'electron';
 import fs from 'fs/promises';
+import path from 'path';
 import { extractTextFromPath } from '../utils/documentText';
 import { markdownToXlsxBuffer, plainMarkdownToDocxBuffer } from '../utils/markdownExport';
 
@@ -7,6 +8,15 @@ import { markdownToXlsxBuffer, plainMarkdownToDocxBuffer } from '../utils/markdo
 const ATTACH_DOCUMENT_MAX_STATS_BYTES = 80 * 1024 * 1024;
 /** 与中文字符量级同阶的 JS 字符串长度上限（非严格 Unicode 语义） */
 const ATTACH_DOCUMENT_MAX_TEXT_CHARS = 600_000;
+
+function safeBaseName(input: string): string {
+  const s = String(input || 'document')
+    .replace(/[\\/:"*?<>|\r\n\t]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80);
+  return s || 'document';
+}
 
 ipcMain.handle(
   'extract-document-text',
@@ -73,6 +83,45 @@ ipcMain.handle(
       await fs.writeFile(filePath, buf);
     }
     return { ok: true as const, path: filePath };
+  }
+);
+
+ipcMain.handle(
+  'create-document-artifact',
+  async (
+    _e,
+    arg: {
+      format: 'md' | 'docx';
+      content: string;
+      defaultBaseName: string;
+    }
+  ) => {
+    const format = arg.format === 'md' ? 'md' : 'docx';
+    const base = safeBaseName(arg.defaultBaseName);
+    const dir = path.join(app.getPath('documents'), 'MyAgent', 'GeneratedDocuments');
+    await fs.mkdir(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filePath = path.join(dir, `${base}-${stamp}.${format}`);
+    const content = String(arg.content ?? '').trim();
+    if (format === 'md') {
+      await fs.writeFile(filePath, content, 'utf8');
+    } else {
+      const buf = await plainMarkdownToDocxBuffer(content);
+      await fs.writeFile(filePath, buf);
+    }
+    const st = await fs.stat(filePath);
+    return {
+      ok: true as const,
+      file: {
+        name: path.basename(filePath),
+        path: filePath,
+        type:
+          format === 'md'
+            ? 'text/markdown'
+            : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        size: st.size,
+      },
+    };
   }
 );
 

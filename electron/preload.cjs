@@ -82,6 +82,7 @@ window.electron = {
   webSearch: (params) => ipcRenderer.invoke('web-search', cloneForIpc(params)),
   extractDocumentText: (arg) => ipcRenderer.invoke('extract-document-text', cloneForIpc(arg)),
   saveAssistantExport: (arg) => ipcRenderer.invoke('save-assistant-export', cloneForIpc(arg)),
+  createDocumentArtifact: (arg) => ipcRenderer.invoke('create-document-artifact', cloneForIpc(arg)),
   knowledgeIndexWorkspace: (arg) => ipcRenderer.invoke('knowledge-index-workspace', cloneForIpc(arg)),
   knowledgeSearch: (arg) => ipcRenderer.invoke('knowledge-search', cloneForIpc(arg)),
   knowledgeGetIndexStatus: () => ipcRenderer.invoke('knowledge-index-status'),
@@ -103,4 +104,6 @@ window.electron = {
   volcAsrAbort: () => ipcRenderer.invoke('volc-asr-abort'),
   listMediaLibraryImages: (arg) =>
     ipcRenderer.invoke('list-media-library-images', cloneForIpc(arg ?? null)),
+  deleteMediaLibraryImage: (arg) =>
+    ipcRenderer.invoke('delete-media-library-image', cloneForIpc(arg)),
 };

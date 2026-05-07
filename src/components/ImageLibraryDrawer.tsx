@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { pathToFileURL } from 'url';
-import { FiImage, FiX } from 'react-icons/fi';
+import { FiImage, FiTrash2, FiX } from 'react-icons/fi';
 import { ChatSession } from '../types';
 import { useI18n } from '../hooks/useI18n';
 import { ConversationImageGalleryModal } from './MessageItem';
@@ -61,6 +61,7 @@ const ImageLibraryDrawer: React.FC<Props> = ({ open, sessions, onClose }) => {
   const [previewSlides, setPreviewSlides] = useState<ConversationImageGalleryItem[] | null>(null);
   const [previewStart, setPreviewStart] = useState(0);
   const [previewNonce, setPreviewNonce] = useState(0);
+  const [deleteErr, setDeleteErr] = useState<string | null>(null);
 
   useEffect(() => {
     if (!entered || previewSlides !== null) return;
@@ -74,6 +75,7 @@ const ImageLibraryDrawer: React.FC<Props> = ({ open, sessions, onClose }) => {
   const reload = useCallback(async () => {
     setLoading(true);
     setLoadErr(null);
+    setDeleteErr(null);
     try {
       const r = await window.electron.listMediaLibraryImages({
         extraPaths,
@@ -99,6 +101,32 @@ const ImageLibraryDrawer: React.FC<Props> = ({ open, sessions, onClose }) => {
     setPreviewStart(index);
     setPreviewNonce((n) => n + 1);
   }, [paths]);
+
+  const deleteImagePath = useCallback(async (absolutePath: string) => {
+    if (!absolutePath) return;
+    if (!window.confirm(t('imageLibrary.confirmDelete'))) return;
+    setDeleteErr(null);
+    try {
+      const r = await window.electron.deleteMediaLibraryImage({ absolutePath });
+      if (!r.ok) {
+        setDeleteErr(t('imageLibrary.deleteFailed', { err: r.error || 'unknown' }));
+        return;
+      }
+      setPaths((prev) => prev.filter((p) => p !== absolutePath));
+      setPreviewSlides((prev) => {
+        if (!prev) return prev;
+        const next = prev.filter((s) => s.localPath !== absolutePath);
+        if (next.length === 0) {
+          window.setTimeout(() => setPreviewSlides(null), 0);
+          return next;
+        }
+        setPreviewStart((i) => Math.min(i, next.length - 1));
+        return next;
+      });
+    } catch (e) {
+      setDeleteErr(t('imageLibrary.deleteFailed', { err: e instanceof Error ? e.message : String(e) }));
+    }
+  }, [t]);
 
   if (!mounted) return null;
 
@@ -159,6 +187,11 @@ const ImageLibraryDrawer: React.FC<Props> = ({ open, sessions, onClose }) => {
                 {loadErr}
               </p>
             ) : null}
+            {deleteErr ? (
+              <p className="mb-2 rounded-lg border border-red-300/55 bg-red-50/95 px-3 py-2 text-xs leading-relaxed text-red-900 dark:border-red-900/55 dark:bg-red-950/50 dark:text-red-100">
+                {deleteErr}
+              </p>
+            ) : null}
             {!loading && !loadErr && thumbs.length === 0 ? (
               <p className="px-2 py-8 text-center text-sm text-stone-500 dark:text-slate-400">
                 {t('imageLibrary.empty')}
@@ -184,6 +217,26 @@ const ImageLibraryDrawer: React.FC<Props> = ({ open, sessions, onClose }) => {
                             loading="lazy"
                             className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.03]"
                           />
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-md bg-black/45 text-white opacity-0 backdrop-blur-sm transition-opacity hover:bg-red-600/80 group-hover:opacity-100 focus:opacity-100"
+                            title={t('imageLibrary.delete')}
+                            aria-label={t('imageLibrary.delete')}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              void deleteImagePath(p);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key !== 'Enter' && e.key !== ' ') return;
+                              e.preventDefault();
+                              e.stopPropagation();
+                              void deleteImagePath(p);
+                            }}
+                          >
+                            <FiTrash2 size={14} aria-hidden />
+                          </span>
                         </span>
                         <span className="flex min-h-[2rem] items-center gap-1 border-t border-stone-400/25 px-1.5 py-1 dark:border-slate-600/35">
                           <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-stone-700 dark:text-slate-200">
@@ -206,6 +259,7 @@ const ImageLibraryDrawer: React.FC<Props> = ({ open, sessions, onClose }) => {
           slides={previewSlides}
           startIndex={previewStart}
           onClose={() => setPreviewSlides(null)}
+          onDeleteCurrent={(slide) => deleteImagePath(slide.localPath)}
         />
       ) : null}
     </>

@@ -33,9 +33,17 @@ import { useWebSpeechDictation, type SpeechApiTranscribeConfig } from '@/hooks/u
 import { sessionToHtml, sessionToMarkdown } from '../utils/exportChat';
 import { canUseSseStream, effectiveWebEnabled } from '../utils/chatModelPolicy';
 import { enrichMessagesForModel } from '../utils/enrichMessagesForModel';
+import { sanitizeMessagesForModel } from '../utils/sanitizeMessagesForModel';
 import { t as tUi } from '../i18n/ui';
 import type { Locale } from '../i18n/types';
 import { inferImageCountFromText, planImageIntent, type ImageIntent } from '../utils/imageIntentPlanner';
+import {
+  documentArtifactBaseName,
+  documentArtifactBaseNameFromContent,
+  documentExportFormatsFromHint,
+  inferDocumentExportHint,
+  shouldBypassModelForFullTextDownload,
+} from '../utils/documentExportIntent';
 
 function userQueryTextForRag(m: Message): string {
   const t = (m.content || '').trim();
@@ -300,6 +308,23 @@ function imageReferencePathsFromFiles(files?: FileInfo[]): string[] {
     .map((f) => f.path);
 }
 
+async function createDocumentArtifactsFromMarkdown(
+  content: string,
+  formats: Array<'md' | 'docx'>,
+  baseName: string
+): Promise<FileInfo[]> {
+  const files: FileInfo[] = [];
+  for (const format of formats) {
+    const r = await window.electron.createDocumentArtifact({
+      format,
+      content,
+      defaultBaseName: baseName,
+    });
+    if (r.ok && r.file) files.push(r.file);
+  }
+  return files;
+}
+
 function inferRequestedImageCount(prompt: string, explicit?: number, context?: string): number | undefined {
   if (typeof explicit === 'number' && Number.isFinite(explicit) && explicit > 0) {
     return Math.max(1, Math.min(12, Math.round(explicit)));
@@ -522,6 +547,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   const [imageGenProgress, setImageGenProgress] = useState<{
     current: number;
     total: number;
+    messageId: string;
   } | null>(null);
   const [vectorRagStatus, setVectorRagStatus] = useState<{
     text: string;
@@ -630,9 +656,23 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         return;
       }
 
+      const exportHint = inferDocumentExportHint(userMessage.content);
       let chainForModel: Message[];
       try {
         chainForModel = await enrichMessagesForModel(chain, uiLocale);
+        if (exportHint?.document) {
+          chainForModel = [
+            {
+              id: `doc-export-sys-${Date.now()}`,
+              role: 'system',
+              content:
+                '用户本轮明确要求可下载文档。请直接输出可作为文档保存的正文内容，使用 Markdown 标题/章节组织；不要添加“我已经为你准备好”“点击下载”“以下是文档”等聊天式前后缀，也不要把无关说明放入正文。',
+              timestamp: Date.now(),
+              model: 'myagent-document-export',
+            },
+            ...chainForModel,
+          ];
+        }
       } catch (e) {
         console.error(e);
         addMessage(sendSessionId, {
@@ -648,9 +688,90 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
 
       setVectorRagStatus(formatVectorRagHint(ragHint, t));
 
-      const plainMessages = JSON.parse(JSON.stringify(chainForModel)) as Message[];
+      const plainMessages = JSON.parse(JSON.stringify(sanitizeMessagesForModel(chainForModel))) as Message[];
       const plainModel = JSON.parse(JSON.stringify(activeModel)) as ModelConfig;
-      const useStream = useSettingStore.getState().streamResponses && canUseSseStream(activeModel);
+      if (exportHint?.document && canUseSseStream(activeModel)) {
+        streamHadErrorRef.current = false;
+        streamCancelledByUserRef.current = false;
+        const assistantId = `${Date.now()}-doc`;
+        let artifactBuffer = '';
+        streamingAssistantIdRef.current = assistantId;
+        setStreamingTargetAssistantId(assistantId);
+        setIsStreaming(true);
+        addMessage(sendSessionId, {
+          id: assistantId,
+          role: 'assistant',
+          content: '',
+          exportHint: { ...exportHint, status: 'thinking' },
+          timestamp: Date.now(),
+          model: activeModel.name,
+        });
+
+        const unsub = window.electron.subscribeModelStream(plainMessages, plainModel, {
+          onDelta: (d) => {
+            artifactBuffer += d;
+          },
+          onThinkingDelta: (th) => {
+            if (th) appendReasoningToMessage(sendSessionId, assistantId, th);
+          },
+          onError: (m) => {
+            streamHadErrorRef.current = true;
+            updateMessage(sendSessionId, assistantId, {
+              content: t('chat.requestFailed') + m,
+              exportHint,
+            });
+          },
+          locale: uiLocale,
+          onEnd: () => {
+            void (async () => {
+              streamUnsubRef.current = null;
+              const aborted = streamCancelledByUserRef.current;
+              streamCancelledByUserRef.current = false;
+              try {
+                if (streamHadErrorRef.current) return;
+                if (aborted) {
+                  updateMessage(sendSessionId, assistantId, {
+                    content: t('chat.stoppedBanner'),
+                    exportHint,
+                  });
+                  return;
+                }
+                const artifactBody = stripGenerateImageArtifactsForDisplay(artifactBuffer).trim();
+                updateMessage(sendSessionId, assistantId, {
+                  exportHint: { ...exportHint, status: 'generating' },
+                });
+                const artifactFiles = await createDocumentArtifactsFromMarkdown(
+                  artifactBody,
+                  documentExportFormatsFromHint(exportHint),
+                  documentArtifactBaseNameFromContent(
+                    artifactBody,
+                    documentArtifactBaseName(userMessage.content)
+                  )
+                );
+                updateMessage(sendSessionId, assistantId, {
+                  content: artifactFiles.length
+                    ? '文档已生成，点击下方文件即可查看或另存。'
+                    : '文档内容已生成，但写入本地文件失败。请重试或检查文档目录权限。',
+                  exportHint,
+                  files: artifactFiles.length ? artifactFiles : undefined,
+                });
+              } finally {
+                setIsStreaming(false);
+                clearLoadingForSession(sendSessionId);
+                streamingAssistantIdRef.current = null;
+                setStreamingTargetAssistantId(null);
+              }
+            })();
+          },
+        });
+        streamUnsubRef.current = unsub;
+        return;
+      }
+
+      const useStream =
+        !exportHint?.document &&
+        useSettingStore.getState().streamResponses &&
+        canUseSseStream(activeModel);
 
       if (useStream) {
         streamHadErrorRef.current = false;
@@ -663,6 +784,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           id: assistantId,
           role: 'assistant',
           content: '',
+          ...(exportHint ? { exportHint } : {}),
           timestamp: Date.now(),
           model: activeModel.name,
         });
@@ -725,11 +847,11 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                     const imageHooks: ImageGenProgressHooks = {
                       onBegin: ({ total }) => {
                         imageGenCancelledRef.current = false;
-                        setImageGenProgress({ current: 1, total });
+                        setImageGenProgress({ current: 1, total, messageId: assistantId });
                       },
-                      onEachStart: ({ current, total }) => setImageGenProgress({ current, total }),
+                      onEachStart: ({ current, total }) => setImageGenProgress({ current, total, messageId: assistantId }),
                       onEachDone: ({ done, total }) =>
-                        setImageGenProgress(done >= total ? { current: total, total } : { current: done + 1, total }),
+                        setImageGenProgress(done >= total ? { current: total, total, messageId: assistantId } : { current: done + 1, total, messageId: assistantId }),
                       onDone: () => setImageGenProgress(null),
                     };
                     const { content, files } = await postProcessAssistantContent(
@@ -757,7 +879,11 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                   }
                 }
 
-                updateMessage(sendSessionId, assistantId, { content: nextContent, files: nextFiles });
+                updateMessage(sendSessionId, assistantId, {
+                  content: nextContent,
+                  files: nextFiles,
+                  ...(exportHint ? { exportHint } : {}),
+                });
               } finally {
                 setIsStreaming(false);
                 clearLoadingForSession(sendSessionId);
@@ -771,21 +897,62 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         return;
       }
 
+      const documentArtifactAssistantId = exportHint?.document ? `${Date.now()}-doc` : '';
       try {
+        if (documentArtifactAssistantId) {
+          addMessage(sendSessionId, {
+            id: documentArtifactAssistantId,
+            role: 'assistant',
+            content: '',
+            exportHint: { ...exportHint!, status: 'generating' },
+            timestamp: Date.now(),
+            model: activeModel.name,
+          });
+        }
         const response = await window.electron.callModel(plainMessages, plainModel, { locale: uiLocale });
         const content0 = response.content || t('chat.fallbackReply');
         const reasoningIn =
           typeof (response as { reasoning?: unknown }).reasoning === 'string'
             ? String((response as { reasoning?: string }).reasoning).trim()
             : '';
+        if (exportHint?.document) {
+          const artifactBody = stripGenerateImageArtifactsForDisplay(content0).trim();
+          const artifactFiles = await createDocumentArtifactsFromMarkdown(
+            artifactBody,
+            documentExportFormatsFromHint(exportHint),
+            documentArtifactBaseNameFromContent(
+              artifactBody,
+              documentArtifactBaseName(userMessage.content)
+            )
+          );
+          updateMessage(sendSessionId, documentArtifactAssistantId, {
+            content: artifactFiles.length
+              ? '文档已生成，点击下方文件即可查看或另存。'
+              : '文档内容已生成，但写入本地文件失败。请重试或检查文档目录权限。',
+            ...(reasoningIn ? { reasoning: reasoningIn } : {}),
+            exportHint,
+            files: artifactFiles.length ? artifactFiles : undefined,
+          });
+          return;
+        }
+        const assistantId = `${Date.now() + 1}-a`;
+        addMessage(sendSessionId, {
+          id: assistantId,
+          role: 'assistant',
+          content: content0,
+          ...(reasoningIn ? { reasoning: reasoningIn } : {}),
+          ...(exportHint ? { exportHint } : {}),
+          timestamp: Date.now(),
+          model: activeModel.name,
+        });
         const imageHooks: ImageGenProgressHooks = {
           onBegin: ({ total }) => {
             imageGenCancelledRef.current = false;
-            setImageGenProgress({ current: 1, total });
+            setImageGenProgress({ current: 1, total, messageId: assistantId });
           },
-          onEachStart: ({ current, total }) => setImageGenProgress({ current, total }),
+          onEachStart: ({ current, total }) => setImageGenProgress({ current, total, messageId: assistantId }),
           onEachDone: ({ done, total }) =>
-            setImageGenProgress(done >= total ? { current: total, total } : { current: done + 1, total }),
+            setImageGenProgress(done >= total ? { current: total, total, messageId: assistantId } : { current: done + 1, total, messageId: assistantId }),
           onDone: () => setImageGenProgress(null),
         };
         const plannedIntent = planImageIntent({
@@ -807,17 +974,20 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
             shouldCancel: () => imageGenCancelledRef.current,
           }
         );
-        addMessage(sendSessionId, {
-          id: `${Date.now() + 1}-a`,
-          role: 'assistant',
+        updateMessage(sendSessionId, assistantId, {
           content: c,
           ...(reasoningIn ? { reasoning: reasoningIn } : {}),
+          ...(exportHint ? { exportHint } : {}),
           files: files as Message['files'],
-          timestamp: Date.now(),
-          model: activeModel.name,
         });
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
+        if (documentArtifactAssistantId) {
+          updateMessage(sendSessionId, documentArtifactAssistantId, {
+            content: t('chat.requestFailed') + msg,
+          });
+          return;
+        }
         addMessage(sendSessionId, {
           id: `${Date.now()}-a`,
           role: 'assistant',
@@ -1053,6 +1223,20 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     setAttachmentPreviews({});
     requestAnimationFrame(() => inputAreaRef.current?.focus());
 
+    if (shouldBypassModelForFullTextDownload(textContent, uploadedFiles.length > 0)) {
+      addMessage(sendSessionId, {
+        id: `${Date.now() + 1}-a`,
+        role: 'assistant',
+        content:
+          '这个请求属于“既有作品全文下载”。我不会让模型在聊天里逐字打印全文，因为这会非常慢、容易超时，也容易生成不完整或混入错误文本。\n\n' +
+          '请把原文文件作为附件上传，或提供一个可读取的原文来源后再让我整理成 Word/Markdown。拿到源文本后，我会只把正文写入下载文档，不把聊天说明混进去。',
+        timestamp: Date.now(),
+        model: activeModel.name,
+      });
+      clearLoadingForSession(sendSessionId);
+      return;
+    }
+
     await runModelReply(sendSessionId, priorMessages, userMessage, activeModel);
   };
 
@@ -1193,60 +1377,14 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                   setConversationGalleryNonce((n) => n + 1);
                 }
               }}
+              imageGenProgress={
+                imageGenProgress?.messageId === message.id
+                  ? { current: imageGenProgress.current, total: imageGenProgress.total }
+                  : null
+              }
             />
           );
         })}
-
-        {imageGenProgress && (
-          <div className="flex justify-start" role="status" aria-live="polite">
-            <div className="flex max-w-[min(92%,640px)] flex-col overflow-hidden rounded-2xl rounded-tl-sm border border-stone-300/45 bg-stone-100 shadow-sm dark:border-white/10 dark:bg-slate-800">
-              <div className="flex items-center gap-2 border-b border-stone-200/80 px-4 py-2.5 dark:border-slate-600/45">
-                <FiLoader
-                  size={15}
-                  className="shrink-0 animate-spin text-primary-600 dark:text-primary-400"
-                  aria-hidden
-                />
-                <span className="text-sm font-medium text-stone-700 dark:text-slate-200">
-                  {t('chat.imageGenWorking')}
-                  {imageGenProgress.total > 1 ? (
-                    <span className="ml-1.5 tabular-nums text-[13px] font-normal text-stone-500 dark:text-slate-400">
-                      {t('chat.imageGenWorkingTotal', { total: imageGenProgress.total })}
-                    </span>
-                  ) : null}
-                </span>
-              </div>
-              <div
-                className={
-                  imageGenProgress.total > 1
-                    ? 'mx-3 my-3 grid grid-cols-2 gap-2 sm:grid-cols-3'
-                    : 'mx-3 my-3'
-                }
-              >
-                {Array.from({ length: Math.min(imageGenProgress.total, 12) }).map((_, idx) => {
-                  const active = idx + 1 === imageGenProgress.current;
-                  const done = idx + 1 < imageGenProgress.current;
-                  return (
-                    <div
-                      key={idx}
-                      className={`relative myagent-image-gen-loading-shimmer flex aspect-[4/3] min-h-[112px] min-w-[150px] items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-stone-200/90 via-stone-100 to-primary-500/18 dark:from-slate-700 dark:via-slate-900/85 dark:to-primary-600/22 ${
-                        active ? 'ring-2 ring-primary-500/55' : done ? 'opacity-70' : ''
-                      }`}
-                    >
-                      <div
-                        className="pointer-events-none absolute inset-0 animate-pulse bg-[radial-gradient(ellipse_at_center,_rgba(255,255,255,0.42)_0%,_transparent_65%)] opacity-55 dark:bg-[radial-gradient(ellipse_at_center,_rgba(255,255,255,0.12)_0%,_transparent_60%)] dark:opacity-40"
-                        aria-hidden
-                      />
-                      <FiImage size={imageGenProgress.total > 1 ? 26 : 38} className="relative z-10 text-stone-400/95 dark:text-slate-600" aria-hidden />
-                      <span className="absolute bottom-2 right-2 rounded bg-white/70 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-stone-500 dark:bg-slate-900/55 dark:text-slate-400">
-                        {idx + 1}/{imageGenProgress.total}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        )}
 
         {showTypingDots && (
           <div className="flex justify-start">

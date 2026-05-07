@@ -1,8 +1,8 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { pathToFileURL } from 'url';
-import { Message } from '../types';
-import { FiMessageSquare, FiRefreshCw, FiCopy, FiDownload, FiChevronDown, FiChevronRight, FiChevronLeft, FiX } from 'react-icons/fi';
+import { FileInfo, Message } from '../types';
+import { FiMessageSquare, FiRefreshCw, FiCopy, FiDownload, FiChevronDown, FiChevronRight, FiChevronLeft, FiX, FiFileText, FiLoader, FiTrash2, FiImage } from 'react-icons/fi';
 import { useI18n } from '../hooks/useI18n';
 import MarkdownContent from './MarkdownContent';
 import { markdownContainsPipeTable } from '../utils/markdownTableDetect';
@@ -38,6 +38,7 @@ interface MessageItemProps {
   conversationGallery?: ConversationImageGalleryItem[];
   /** 在会话级画廊中打开指定附件（messageId + 该消息 files 数组下标） */
   onOpenConversationGallery?: (messageId: string, fileIndex: number) => void;
+  imageGenProgress?: { current: number; total: number } | null;
 }
 
 function InlineStreamDots() {
@@ -54,6 +55,91 @@ function InlineStreamDots() {
       </span>
     </div>
   );
+}
+
+function DocumentGeneratingPlaceholder({ t }: { t: (key: string) => string }) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-stone-300/50 bg-stone-50/75 dark:border-slate-600/55 dark:bg-slate-900/35" role="status" aria-live="polite">
+      <div className="flex items-center gap-2 px-3 py-2 dark:border-slate-700/65">
+        <FiLoader size={14} className="shrink-0 animate-spin text-primary-600 dark:text-primary-400" aria-hidden />
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-stone-700 dark:text-slate-200">{t('chat.documentGenWorking')}</div>
+          <div className="text-[11px] leading-snug text-stone-500 dark:text-slate-400">{t('chat.documentGenWorkingSub')}</div>
+        </div>
+      </div>
+      <div className="px-3 pb-2">
+        <div className="relative myagent-image-gen-loading-shimmer flex h-8 items-center gap-2 overflow-hidden rounded-md bg-gradient-to-r from-stone-200/90 via-stone-100 to-emerald-500/18 px-2 dark:from-slate-700 dark:via-slate-900/85 dark:to-emerald-600/22">
+          <FiFileText size={15} className="relative z-10 text-stone-500 dark:text-slate-400" aria-hidden />
+          <div className="relative z-10 h-1.5 flex-1 overflow-hidden rounded-full bg-white/60 dark:bg-slate-950/55">
+            <div className="h-full w-1/2 animate-pulse rounded-full bg-emerald-500/55 dark:bg-emerald-400/45" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ImageGeneratingPlaceholder({
+  progress,
+  t,
+}: {
+  progress: { current: number; total: number };
+  t: (key: string, params?: Record<string, string | number>) => string;
+}) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-stone-300/50 bg-stone-50/75 dark:border-slate-600/55 dark:bg-slate-900/35" role="status" aria-live="polite">
+      <div className="flex items-center gap-2 border-b border-stone-200/80 px-3 py-2 dark:border-slate-700/65">
+        <FiLoader size={14} className="shrink-0 animate-spin text-primary-600 dark:text-primary-400" aria-hidden />
+        <span className="text-sm font-medium text-stone-700 dark:text-slate-200">
+          {t('chat.imageGenWorking')}
+          {progress.total > 1 ? (
+            <span className="ml-1.5 tabular-nums text-[13px] font-normal text-stone-500 dark:text-slate-400">
+              {t('chat.imageGenWorkingTotal', { total: progress.total })}
+            </span>
+          ) : null}
+        </span>
+      </div>
+      <div className={progress.total > 2 ? 'grid grid-cols-2 gap-2 p-3 sm:grid-cols-3' : progress.total === 2 ? 'grid grid-cols-2 gap-2 p-3' : 'p-3'}>
+        {Array.from({ length: Math.min(progress.total, 12) }).map((_, idx) => {
+          const active = idx + 1 === progress.current;
+          const done = idx + 1 < progress.current;
+          return (
+            <div
+              key={idx}
+              className={`relative myagent-image-gen-loading-shimmer flex aspect-[4/3] h-[112px] w-[150px] items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-stone-200/90 via-stone-100 to-primary-500/18 dark:from-slate-700 dark:via-slate-900/85 dark:to-primary-600/22 ${
+                active ? 'ring-2 ring-primary-500/55' : done ? 'opacity-70' : ''
+              }`}
+            >
+              <div
+                className="pointer-events-none absolute inset-0 animate-pulse bg-[radial-gradient(ellipse_at_center,_rgba(255,255,255,0.42)_0%,_transparent_65%)] opacity-55 dark:bg-[radial-gradient(ellipse_at_center,_rgba(255,255,255,0.12)_0%,_transparent_60%)] dark:opacity-40"
+                aria-hidden
+              />
+              <FiImage size={progress.total > 1 ? 26 : 38} className="relative z-10 text-stone-400/95 dark:text-slate-600" aria-hidden />
+              <span className="absolute bottom-2 right-2 rounded bg-white/70 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-stone-500 dark:bg-slate-900/55 dark:text-slate-400">
+                {idx + 1}/{progress.total}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function extractDocumentExportBody(raw: string): string {
+  const text = String(raw || '').replace(/\r\n/g, '\n').trim();
+  if (!text) return text;
+
+  const fenced = text.match(/```(?:markdown|md|document|docx|word)?\s*\n([\s\S]*?)\n```/i);
+  if (fenced?.[1]?.trim()) return fenced[1].trim();
+
+  const bodyMarker = text.match(/(?:^|\n)(?:正文|文档正文|以下为(?:文档|正文)|文稿内容)\s*[:：]\s*\n([\s\S]*)/);
+  if (bodyMarker?.[1]?.trim()) return bodyMarker[1].trim();
+
+  const heading = text.search(/^#{1,3}\s+\S/m);
+  if (heading > 0) return text.slice(heading).trim();
+
+  return text;
 }
 
 function AssistantReasoningCollapsible(props: {
@@ -191,7 +277,8 @@ export const ConversationImageGalleryModal: React.FC<{
   slides: ConversationImageGalleryItem[];
   startIndex: number;
   onClose: () => void;
-}> = ({ slides, startIndex, onClose }) => {
+  onDeleteCurrent?: (slide: ConversationImageGalleryItem) => void | Promise<void>;
+}> = ({ slides, startIndex, onClose, onDeleteCurrent }) => {
   const { t } = useI18n();
   const [idx, setIdx] = useState(() =>
     slides.length ? Math.min(Math.max(0, startIndex), slides.length - 1) : 0
@@ -256,6 +343,20 @@ export const ConversationImageGalleryModal: React.FC<{
             <FiDownload size={14} aria-hidden />
             <span>{t('message.imagePreviewDownload')}</span>
           </button>
+          {onDeleteCurrent ? (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded-md bg-red-500/20 px-2.5 py-1 text-sm text-white backdrop-blur-sm transition-colors hover:bg-red-500/35 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
+              title={t('imageLibrary.delete')}
+              onClick={(e) => {
+                e.stopPropagation();
+                void onDeleteCurrent(slide);
+              }}
+            >
+              <FiTrash2 size={14} aria-hidden />
+              <span>{t('imageLibrary.delete')}</span>
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={onClose}
@@ -332,6 +433,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
   showInlineStreamPlaceholder = false,
   conversationGallery,
   onOpenConversationGallery,
+  imageGenProgress,
 }) => {
   const { t } = useI18n();
   const isUser = message.role === 'user';
@@ -368,6 +470,25 @@ const MessageItem: React.FC<MessageItemProps> = ({
     });
   };
 
+  const renderFileDownloadButton = (file: FileInfo) => {
+    if (!file.path) return null;
+    return (
+      <button
+        type="button"
+        className={`shrink-0 rounded p-0.5 ${
+          isUser
+            ? 'text-white/90 hover:bg-white/15'
+            : 'text-stone-600 hover:bg-stone-200 dark:text-slate-300 dark:hover:bg-slate-600'
+        }`}
+        title={t('message.imagePreviewDownload')}
+        aria-label={t('message.imagePreviewDownload')}
+        onClick={(e) => void downloadAttachmentCopy(e, file.path, file.name)}
+      >
+        <FiDownload size={12} aria-hidden />
+      </button>
+    );
+  };
+
   const isThoughtStreaming =
     message.role === 'assistant' &&
     conversationStreaming &&
@@ -386,6 +507,10 @@ const MessageItem: React.FC<MessageItemProps> = ({
     },
     [message.role, message.content]
   );
+  const assistantExportBody = useMemo(
+    () => (message.role === 'assistant' ? stripGenerateImageArtifactsForDisplay(message.content ?? '') : ''),
+    [message.role, message.content]
+  );
 
   const handleCopy = async () => {
     const text =
@@ -393,23 +518,26 @@ const MessageItem: React.FC<MessageItemProps> = ({
         ? (message.content ?? '')
         : stripGenerateImageArtifactsForDisplay(message.content ?? '');
     try {
+      await window.electron.setClipboardText(text);
+      return;
+    } catch (electronError) {
+      console.warn('Electron 剪贴板复制失败，尝试浏览器剪贴板', electronError);
+    }
+    try {
       await navigator.clipboard.writeText(text);
-    } catch {
-      try {
-        await window.electron.setClipboardText(text);
-      } catch (e) {
-        console.warn('复制失败', e);
-      }
+    } catch (e) {
+      console.warn('复制失败', e);
     }
   };
 
   const handleSaveExport = async (format: 'md' | 'xlsx' | 'docx') => {
-    const raw = message.role === 'assistant' ? assistantDisplayBody : (message.content ?? '');
-    const safe = String(raw).slice(0, 40).replace(/[\\/:"*?<>|\r\n]/g, '_');
+    const raw = message.role === 'assistant' ? assistantExportBody : (message.content ?? '');
+    const content = format === 'xlsx' ? raw : extractDocumentExportBody(raw);
+    const safe = String(content).slice(0, 40).replace(/[\\/:"*?<>|\r\n]/g, '_');
     const base = safe || `reply-${message.timestamp}`;
     await window.electron.saveAssistantExport({
       format,
-      content: raw,
+      content,
       defaultBaseName: base,
     });
   };
@@ -418,10 +546,38 @@ const MessageItem: React.FC<MessageItemProps> = ({
     message.role !== 'user' &&
     !(message.files && message.files.length > 0) &&
     looksLikeStandaloneCodeSnippet(assistantDisplayBody);
+  const showDocumentGeneratingPlaceholder =
+    message.role === 'assistant' &&
+    message.exportHint?.document &&
+    message.exportHint.status === 'generating' &&
+    !message.files?.length;
+  const hideBodyForDocumentThinking =
+    message.role === 'assistant' &&
+    message.exportHint?.document &&
+    message.exportHint.status === 'thinking' &&
+    !message.files?.length &&
+    !assistantDisplayBody.trim();
+  const showImageGeneratingPlaceholder =
+    message.role === 'assistant' &&
+    Boolean(imageGenProgress) &&
+    !message.files?.some((f) => f.type.startsWith('image/'));
   const markdownBody =
     assistantDisplayBody.length > MAX_MARKDOWN_RENDER_CHARS
       ? `${assistantDisplayBody.slice(0, MAX_MARKDOWN_RENDER_CHARS)}\n\n[内容过长，已截断显示；复制按钮仍会复制完整内容]`
       : assistantDisplayBody;
+  const hasExportableAssistantText =
+    message.role === 'assistant' && !showInlineStreamPlaceholder && assistantExportBody.trim().length > 0;
+  const hasMarkdownTable = assistantExportBody.trim().length > 0 && markdownContainsPipeTable(assistantExportBody);
+  const documentExportFormats = message.exportHint?.document ? message.exportHint.formats ?? ['md', 'docx'] : [];
+  const showMdExport = documentExportFormats.includes('md');
+  const showDocxExport = documentExportFormats.includes('docx');
+  const showExportPanel =
+    !standaloneCode &&
+    hasExportableAssistantText &&
+    !showDocumentGeneratingPlaceholder &&
+    !showImageGeneratingPlaceholder &&
+    !(message.exportHint?.document && message.files?.length) &&
+    (hasMarkdownTable || showMdExport || showDocxExport);
 
   /** 以上为助手展示/导出正文（已剔除生图工具 JSON） */
 
@@ -493,6 +649,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
                               <div className="inline-flex max-w-full items-center gap-1 rounded-md border border-white/40 bg-white/20 px-2.5 py-1 text-[11px] font-medium text-white shadow-sm">
                                 <span className="shrink-0 opacity-90">📎</span>
                                 <span className="min-w-0 truncate">{file.name}</span>
+                                {renderFileDownloadButton(file)}
                               </div>
                             )}
                           </div>
@@ -550,7 +707,11 @@ const MessageItem: React.FC<MessageItemProps> = ({
                     <InlineStreamDots />
                   </div>
                 ) : null}
-                {standaloneCode ? (
+                {showDocumentGeneratingPlaceholder ? (
+                  <DocumentGeneratingPlaceholder t={t} />
+                ) : showImageGeneratingPlaceholder && imageGenProgress ? (
+                  <ImageGeneratingPlaceholder progress={imageGenProgress} t={t} />
+                ) : standaloneCode ? (
                   <div className="overflow-hidden rounded-lg border border-stone-300/60 bg-[#faf8f5] shadow-inner dark:border-slate-600/50 dark:bg-slate-900/90">
                     <div className="flex items-center justify-between border-b border-stone-300/50 bg-stone-200/85 px-3 py-1.5 text-[11px] text-stone-600 dark:border-slate-600/50 dark:bg-slate-800/90 dark:text-slate-400">
                       <span className="font-medium opacity-90">{t('message.codeSnippetBadge')}</span>
@@ -567,40 +728,44 @@ const MessageItem: React.FC<MessageItemProps> = ({
                       {assistantDisplayBody}
                     </pre>
                   </div>
-                ) : showInlineStreamPlaceholder ? null : (
+                ) : showInlineStreamPlaceholder || hideBodyForDocumentThinking ? null : (
                   <MarkdownContent text={markdownBody} copyCodeLabel={t('message.copyCodeBlock')} />
                 )}
-                {!standaloneCode &&
-                markdownBody.trim() &&
-                markdownContainsPipeTable(markdownBody) ? (
+                {showExportPanel ? (
                   <div className="mt-3 flex flex-wrap gap-1.5 border-t border-stone-200/80 pt-2.5 dark:border-slate-600/50">
                     <p className="mb-0.5 text-[10px] leading-snug text-stone-500 dark:text-slate-400">
-                      {t('chat.exportStripHint')}
+                      {message.exportHint?.document ? t('chat.exportDocumentHint') : t('chat.exportStripHint')}
                     </p>
-                    <button
-                      type="button"
-                      onClick={() => void handleSaveExport('md')}
-                      className="inline-flex items-center gap-1 rounded-md border border-stone-300/60 bg-white/60 px-2 py-1 text-[10px] font-medium text-stone-600 hover:bg-stone-100 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-200 dark:hover:bg-slate-600"
-                    >
-                      <FiDownload size={11} />
-                      {t('chat.downloadMd')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleSaveExport('xlsx')}
-                      className="inline-flex items-center gap-1 rounded-md border border-stone-300/60 bg-white/60 px-2 py-1 text-[10px] font-medium text-stone-600 hover:bg-stone-100 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-200 dark:hover:bg-slate-600"
-                    >
-                      <FiDownload size={11} />
-                      {t('chat.downloadXlsx')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleSaveExport('docx')}
-                      className="inline-flex items-center gap-1 rounded-md border border-stone-300/60 bg-white/60 px-2 py-1 text-[10px] font-medium text-stone-600 hover:bg-stone-100 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-200 dark:hover:bg-slate-600"
-                    >
-                      <FiDownload size={11} />
-                      {t('chat.downloadDocx')}
-                    </button>
+                    {showMdExport ? (
+                      <button
+                        type="button"
+                        onClick={() => void handleSaveExport('md')}
+                        className="inline-flex items-center gap-1 rounded-md border border-stone-300/60 bg-white/60 px-2 py-1 text-[10px] font-medium text-stone-600 hover:bg-stone-100 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-200 dark:hover:bg-slate-600"
+                      >
+                        <FiDownload size={11} />
+                        {t('chat.downloadMd')}
+                      </button>
+                    ) : null}
+                    {hasMarkdownTable ? (
+                      <button
+                        type="button"
+                        onClick={() => void handleSaveExport('xlsx')}
+                        className="inline-flex items-center gap-1 rounded-md border border-stone-300/60 bg-white/60 px-2 py-1 text-[10px] font-medium text-stone-600 hover:bg-stone-100 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-200 dark:hover:bg-slate-600"
+                      >
+                        <FiDownload size={11} />
+                        {t('chat.downloadXlsx')}
+                      </button>
+                    ) : null}
+                    {showDocxExport ? (
+                      <button
+                        type="button"
+                        onClick={() => void handleSaveExport('docx')}
+                        className="inline-flex items-center gap-1 rounded-md border border-stone-300/60 bg-white/60 px-2 py-1 text-[10px] font-medium text-stone-600 hover:bg-stone-100 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-200 dark:hover:bg-slate-600"
+                      >
+                        <FiDownload size={11} />
+                        {t('chat.downloadDocx')}
+                      </button>
+                    ) : null}
                   </div>
                 ) : null}
                 {message.files && message.files.length > 0 && (
@@ -661,6 +826,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
                               <div className="inline-flex max-w-full items-center gap-1 rounded-md border border-stone-300/70 bg-stone-200/90 px-2.5 py-1 text-[11px] font-medium text-stone-800 dark:border-white/10 dark:bg-slate-700 dark:text-slate-100">
                                 <span className="shrink-0 opacity-90">📎</span>
                                 <span className="min-w-0 truncate">{file.name}</span>
+                                {renderFileDownloadButton(file)}
                               </div>
                             )}
                           </div>

@@ -24,4 +24,6 @@ contextBridge.exposeInMainWorld('electron', {
 
   saveLocalFileCopy: (params: unknown) =>
     ipcRenderer.invoke('save-local-file-copy', cloneForIpc(params)),
+  createDocumentArtifact: (arg: unknown) =>
+    ipcRenderer.invoke('create-document-artifact', cloneForIpc(arg)),
 });

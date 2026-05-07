@@ -29,6 +29,9 @@ const zh: Record<string, string> = {
   'imageLibrary.close': '关闭',
   'imageLibrary.loading': '正在载入…',
   'imageLibrary.empty': '暂未发现本地保存的图片。',
+  'imageLibrary.delete': '删除图片',
+  'imageLibrary.confirmDelete': '确定要删除这张图片吗？此操作会删除本地文件。',
+  'imageLibrary.deleteFailed': '删除失败：{err}',
   'message.user': '我',
   'message.copy': '复制',
   'message.copyCodeBlock': '复制代码块',
@@ -64,6 +67,8 @@ const zh: Record<string, string> = {
   'chat.imageGenWorking': '正在生成图片',
   'chat.imageGenWorkingSub': '（第 {current} / {total} 张）',
   'chat.imageGenWorkingTotal': '（共 {total} 张）',
+  'chat.documentGenWorking': '正在生成文档',
+  'chat.documentGenWorkingSub': '正在整理正文、排版并写入本地文件',
   'chat.buildFailed': '构建请求失败：',
   'chat.requestFailed': '请求失败：',
   'chat.stopped': '（已停止）',
@@ -96,6 +101,7 @@ const zh: Record<string, string> = {
   'chat.downloadXlsx': '下载 Excel',
   'chat.downloadDocx': '下载 Word',
   'chat.exportStripHint': '检测到本回复含 Markdown 表格，可将内容导出为文件。',
+  'chat.exportDocumentHint': '已按本轮要求提供文档下载。',
   'chat.ragStatusInjected':
     '本次交互将结合本地知识库内容发起（已按相关度选入 {used} 条片段，索引共 {total} 块）。',
   'chat.ragStatusEmpty':
@@ -291,6 +297,9 @@ const en: Record<string, string> = {
   'imageLibrary.close': 'Close',
   'imageLibrary.loading': 'Loading…',
   'imageLibrary.empty': 'No saved images found on this device.',
+  'imageLibrary.delete': 'Delete image',
+  'imageLibrary.confirmDelete': 'Delete this image from local storage?',
+  'imageLibrary.deleteFailed': 'Delete failed: {err}',
   'message.user': 'You',
   'message.copy': 'Copy',
   'message.copyCodeBlock': 'Copy code',
@@ -326,6 +335,8 @@ const en: Record<string, string> = {
   'chat.imageGenWorking': 'Generating image',
   'chat.imageGenWorkingSub': ' ({current}/{total})',
   'chat.imageGenWorkingTotal': ' ({total} total)',
+  'chat.documentGenWorking': 'Generating document',
+  'chat.documentGenWorkingSub': 'Preparing content, formatting, and writing the local file',
   'chat.buildFailed': 'Failed to build the request: ',
   'chat.requestFailed': 'Request failed: ',
   'chat.stopped': '(Stopped)',
@@ -360,6 +371,7 @@ const en: Record<string, string> = {
   'chat.downloadDocx': 'Save as Word',
   'chat.exportStripHint':
     'This reply includes a Markdown-style table—you can export it below.',
+  'chat.exportDocumentHint': 'Document download is available for this request.',
   'chat.ragStatusInjected':
     'This turn will use your local knowledge base ({used} chunk(s) selected by relevance; {total} chunk(s) in the index).',
   'chat.ragStatusEmpty':

@@ -21,6 +21,7 @@ const electronStub: ElectronAPI = {
   webSearch: async () => ({ ok: false, text: '' }),
   extractDocumentText: async () => ({ ok: true, text: '', kind: 'test' }),
   saveAssistantExport: async () => ({ ok: false }),
+  createDocumentArtifact: async () => ({ ok: false }),
   saveLocalFileCopy: async () => ({ ok: false }),
   knowledgeIndexWorkspace: async () => ({ ok: false, error: 'stub' }),
   knowledgeSearch: async () => ({ ok: false, error: 'stub' }),
@@ -46,6 +47,7 @@ const electronStub: ElectronAPI = {
     localStorage.setItem(name, value);
   },
   listMediaLibraryImages: async () => ({ ok: true, items: [] }),
+  deleteMediaLibraryImage: async () => ({ ok: true }),
   transcribeAudio: async () => ({ ok: false, error: 'stub' }),
   volcAsrStart: async () => ({ ok: false, error: 'stub' }),
   volcAsrPushChunk: async () => ({ ok: false }),

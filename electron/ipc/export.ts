@@ -5,6 +5,18 @@ import { expandUserPath } from '../utils/expandUserPath';
 
 const TEXT_LIMIT = 800_000;
 
+function saveFiltersForFileName(fileName: string): { name: string; extensions: string[] }[] {
+  const ext = path.extname(fileName).replace(/^\./, '').toLowerCase();
+  if (ext === 'docx') return [{ name: 'Word', extensions: ['docx'] }, { name: '所有文件', extensions: ['*'] }];
+  if (ext === 'md' || ext === 'markdown') return [{ name: 'Markdown', extensions: ['md', 'markdown'] }, { name: '所有文件', extensions: ['*'] }];
+  if (ext === 'txt') return [{ name: '纯文本', extensions: ['txt'] }, { name: '所有文件', extensions: ['*'] }];
+  if (ext === 'xlsx') return [{ name: 'Excel', extensions: ['xlsx'] }, { name: '所有文件', extensions: ['*'] }];
+  if (ext === 'pdf') return [{ name: 'PDF', extensions: ['pdf'] }, { name: '所有文件', extensions: ['*'] }];
+  if (ext === 'png') return [{ name: 'PNG', extensions: ['png'] }, { name: '所有文件', extensions: ['*'] }];
+  if (ext === 'jpg' || ext === 'jpeg') return [{ name: 'JPEG', extensions: ['jpg', 'jpeg'] }, { name: '所有文件', extensions: ['*'] }];
+  return [{ name: '所有文件', extensions: ['*'] }];
+}
+
 ipcMain.handle(
   'save-text-file',
   async (
@@ -44,11 +56,7 @@ ipcMain.handle(
     const base = path.basename(String(arg.defaultFileName || '').trim()) || path.basename(src);
     const { canceled, filePath } = await dialog.showSaveDialog({
       defaultPath: base,
-      filters: [
-        { name: 'PNG', extensions: ['png'] },
-        { name: 'JPEG', extensions: ['jpg', 'jpeg'] },
-        { name: '所有文件', extensions: ['*'] },
-      ],
+      filters: saveFiltersForFileName(base),
     });
     if (canceled || !filePath) {
       return { ok: false as const };

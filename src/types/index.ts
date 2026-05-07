@@ -95,6 +95,12 @@ export interface ElectronAPI {
     content: string;
     defaultBaseName: string;
   }) => Promise<{ ok: boolean; path?: string }>;
+  /** 后台生成一个文档产物并返回本地附件信息，不弹保存框 */
+  createDocumentArtifact: (arg: {
+    format: 'md' | 'docx';
+    content: string;
+    defaultBaseName: string;
+  }) => Promise<{ ok: boolean; file?: FileInfo; error?: string }>;
   /** 为工作区构建向量索引（需先配置嵌入服务与模型）；省略 mode 或与 incremental 等效时：能复用指纹则仅处理变更/新文件，否则内部全文重建；mode: 'full' 强制全文 */
   knowledgeIndexWorkspace: (arg: {
     root: string;
@@ -144,6 +150,10 @@ export interface ElectronAPI {
   }) => Promise<{
     ok: boolean;
     items?: Array<{ absolutePath: string; mtimeMs: number }>;
+    error?: string;
+  }>;
+  deleteMediaLibraryImage: (payload: { absolutePath: string }) => Promise<{
+    ok: boolean;
     error?: string;
   }>;
   transcribeAudio: (arg: {
@@ -205,6 +215,12 @@ export interface Message {
   content: string;
   /** 模型的链式推理/思考文本（若有），与正文分离展示并可折叠 */
   reasoning?: string;
+  /** 本轮用户明确要求生成可下载文档时，控制助手消息下方的下载入口 */
+  exportHint?: {
+    document?: boolean;
+    formats?: Array<'md' | 'docx'>;
+    status?: 'thinking' | 'generating';
+  };
   files?: FileInfo[];
   timestamp: number;
   model: string;
