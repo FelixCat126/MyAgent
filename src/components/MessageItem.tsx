@@ -732,8 +732,8 @@ const MessageItem: React.FC<MessageItemProps> = ({
                   <MarkdownContent text={markdownBody} copyCodeLabel={t('message.copyCodeBlock')} />
                 )}
                 {showExportPanel ? (
-                  <div className="mt-3 flex flex-wrap gap-1.5 border-t border-stone-200/80 pt-2.5 dark:border-slate-600/50">
-                    <p className="mb-0.5 text-[10px] leading-snug text-stone-500 dark:text-slate-400">
+                  <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-stone-200/80 pt-2.5 dark:border-slate-600/50">
+                    <p className="m-0 inline-flex min-h-[1.625rem] items-center text-[10px] leading-snug text-stone-500 dark:text-slate-400">
                       {message.exportHint?.document ? t('chat.exportDocumentHint') : t('chat.exportStripHint')}
                     </p>
                     {showMdExport ? (
