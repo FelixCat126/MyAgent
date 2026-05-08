@@ -16,6 +16,29 @@ from pathlib import Path
 
 MODEL_ID = os.environ.get("MYAGENT_SD_MODEL", "runwayml/stable-diffusion-v1-5")
 MAX_PIXELS = int(os.environ.get("MYAGENT_SD_MAX_PIXELS", str(512 * 768)))
+DEFAULT_PORTRAIT_NEGATIVE = (
+    "deformed face, distorted face, bad eyes, asymmetrical eyes, crossed eyes, "
+    "blurry face, bad face, ugly face, plastic skin, doll face, bad anatomy, "
+    "extra limbs, low quality, worst quality"
+)
+PORTRAIT_HINT_RE = (
+    "portrait",
+    "face",
+    "model",
+    "woman",
+    "girl",
+    "female",
+    "fashion",
+    "lingerie",
+    "swimsuit",
+    "underwear",
+    "模特",
+    "人像",
+    "女性",
+    "美女",
+    "内衣",
+    "泳装",
+)
 
 
 def clamp_size(value: int | None, default: int) -> int:
@@ -39,6 +62,73 @@ def fit_size(width: int, height: int) -> tuple[int, int]:
     return max(256, fitted_width), max(256, fitted_height)
 
 
+def truthy_env(name: str, default: str = "1") -> bool:
+    return os.environ.get(name, default).strip().lower() not in ("0", "false", "no", "off")
+
+
+def looks_like_portrait_request(prompt: str) -> bool:
+    lower = prompt.lower()
+    return any(k in lower for k in PORTRAIT_HINT_RE)
+
+
+def enhance_portrait_prompt(prompt: str) -> str:
+    if not truthy_env("MYAGENT_SD_AUTO_PORTRAIT_PROMPT", "1"):
+        return prompt
+    if not looks_like_portrait_request(prompt):
+        return prompt
+    hint = (
+        "natural realistic face, symmetrical facial features, detailed eyes, "
+        "clean skin texture, professional fashion photography, face clearly visible"
+    )
+    if "natural realistic face" in prompt.lower():
+        return prompt
+    return f"{prompt}, {hint}"
+
+
+def enhance_negative_prompt(negative: str, prompt: str) -> str:
+    if not truthy_env("MYAGENT_SD_AUTO_PORTRAIT_PROMPT", "1"):
+        return negative
+    if not looks_like_portrait_request(prompt):
+        return negative
+    merged = negative.strip()
+    lower = merged.lower()
+    extras = [x.strip() for x in DEFAULT_PORTRAIT_NEGATIVE.split(",") if x.strip() and x.strip().lower() not in lower]
+    if extras:
+        merged = f"{merged}, {', '.join(extras)}" if merged else ", ".join(extras)
+    return merged
+
+
+def default_vae_for_model(model_id: str) -> str:
+    if "novae" in model_id.lower():
+        return "stabilityai/sd-vae-ft-mse-original"
+    return ""
+
+
+def find_vae_single_file(repo_id: str, local_only: bool) -> str | None:
+    try:
+        from huggingface_hub import snapshot_download
+
+        snapshot = Path(snapshot_download(repo_id=repo_id, local_files_only=local_only))
+    except Exception:
+        return None
+    for pattern in ("*.safetensors", "*.ckpt"):
+        matches = sorted(snapshot.glob(pattern))
+        if matches:
+            return str(matches[0])
+    return None
+
+
+def find_pipeline_vae_config(model_id: str, local_only: bool) -> str | None:
+    try:
+        from huggingface_hub import snapshot_download
+
+        snapshot = Path(snapshot_download(repo_id=model_id, local_files_only=local_only))
+    except Exception:
+        return None
+    config = snapshot / "vae" / "config.json"
+    return str(config) if config.exists() else None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate image with Stable Diffusion 1.5")
     parser.add_argument("--prompt", default=os.environ.get("MYAGENT_PROMPT", ""), help="Prompt")
@@ -50,7 +140,7 @@ def main() -> None:
     parser.add_argument("--negative", default=os.environ.get("MYAGENT_SD_NEGATIVE", "low quality, blurry, distorted"))
     args = parser.parse_args()
 
-    prompt = (args.prompt or "").strip()
+    prompt = enhance_portrait_prompt((args.prompt or "").strip())
     if not prompt:
         raise SystemExit("Missing prompt")
     if not args.out:
@@ -70,7 +160,7 @@ def main() -> None:
     os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
     import torch
-    from diffusers import StableDiffusionPipeline
+    from diffusers import AutoencoderKL, DPMSolverMultistepScheduler, StableDiffusionPipeline
 
     if torch.backends.mps.is_available():
       device = "mps"
@@ -93,13 +183,44 @@ def main() -> None:
         )
     print(f"Device: {device}; size={width}x{height}; steps={steps}", flush=True)
 
+    local_only = os.environ.get("MYAGENT_SD_LOCAL_ONLY", "1") not in ("0", "false", "no")
+    vae_id = os.environ.get("MYAGENT_SD_VAE", default_vae_for_model(MODEL_ID)).strip()
+    vae = None
+    if vae_id:
+        print(f"Using VAE: {vae_id}", flush=True)
+        try:
+            vae = AutoencoderKL.from_pretrained(
+                vae_id,
+                torch_dtype=dtype,
+                local_files_only=local_only,
+            )
+        except Exception as e:
+            single_file = find_vae_single_file(vae_id, local_only)
+            if not single_file:
+                raise
+            print(f"Loading VAE single file: {single_file}", flush=True)
+            vae_config = find_pipeline_vae_config(MODEL_ID, local_only)
+            vae_kwargs = {"torch_dtype": dtype, "local_files_only": local_only}
+            if vae_config:
+                vae_kwargs["config"] = vae_config
+            vae = AutoencoderKL.from_single_file(single_file, **vae_kwargs)
+
     pipe = StableDiffusionPipeline.from_pretrained(
         MODEL_ID,
         torch_dtype=dtype,
+        vae=vae,
         safety_checker=None,
         requires_safety_checker=False,
-        local_files_only=os.environ.get("MYAGENT_SD_LOCAL_ONLY", "1") not in ("0", "false", "no"),
+        local_files_only=local_only,
     )
+    scheduler_name = os.environ.get("MYAGENT_SD_SCHEDULER", "dpmpp_karras").strip().lower()
+    if scheduler_name in ("dpmpp", "dpmpp_karras", "dpmsolver", "dpmsolver_karras"):
+        pipe.scheduler = DPMSolverMultistepScheduler.from_config(
+            pipe.scheduler.config,
+            algorithm_type="dpmsolver++",
+            use_karras_sigmas=True,
+        )
+        print("Scheduler: DPM++ 2M Karras", flush=True)
     pipe = pipe.to(device)
 
     if hasattr(pipe, "enable_attention_slicing"):
@@ -113,9 +234,10 @@ def main() -> None:
         gen_device = "cpu" if device == "mps" else device
         generator = torch.Generator(device=gen_device).manual_seed(int(seed))
 
+    negative_prompt = enhance_negative_prompt(args.negative, prompt)
     result = pipe(
         prompt=prompt,
-        negative_prompt=args.negative,
+        negative_prompt=negative_prompt,
         width=width,
         height=height,
         num_inference_steps=steps,

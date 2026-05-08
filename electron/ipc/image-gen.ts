@@ -258,13 +258,15 @@ function applyCliPlaceholders(
   const w = String(params.width ?? 512);
   const h = String(params.height ?? 512);
   const count = String(params.count ?? 1);
+  const steps = String((params as { steps?: number }).steps ?? process.env.MYAGENT_SD_STEPS ?? 20);
   const p = params.prompt ?? '';
   return line
     .replace(/\{\{prompt\}\}/g, p)
     .replace(/\{\{outputPath\}\}/g, outputPath)
     .replace(/\{\{width\}\}/g, w)
     .replace(/\{\{height\}\}/g, h)
-    .replace(/\{\{count\}\}/g, count);
+    .replace(/\{\{count\}\}/g, count)
+    .replace(/\{\{steps\}\}/g, steps);
 }
 
 /** 整块响应已为 PNG/JPEG/WebP（避免 JSON 误判或「原始格式」误判） */

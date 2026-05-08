@@ -106,7 +106,7 @@ function ImageGeneratingPlaceholder({
           ) : null}
         </span>
       </div>
-      <div className={progress.total > 2 ? 'grid grid-cols-2 gap-2 p-3 sm:grid-cols-3' : progress.total === 2 ? 'grid grid-cols-2 gap-2 p-3' : 'p-3'}>
+      <div className={progress.total > 2 ? 'grid grid-cols-2 gap-2 p-3 sm:grid-cols-3' : progress.total === 2 ? 'flex flex-wrap justify-start gap-2 p-3' : 'p-3'}>
         {Array.from({ length: Math.min(progress.total, 12) }).map((_, idx) => {
           const active = idx + 1 === progress.current;
           const done = idx + 1 < progress.current;
@@ -854,7 +854,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
                         : 'mt-3'
                     }
                   >
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap justify-start gap-2">
                       {message.files.map((file, index) => {
                         const isImage = file.type.startsWith('image/');
                         const hasPreview = file.preview && file.preview.startsWith('data:');

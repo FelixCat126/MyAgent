@@ -231,12 +231,23 @@ function storeHasUsableImageGenerator(): boolean {
 }
 
 /** 已配置生图工具时注入系统说明，否则模型（如豆包）会按常识声称「不能生图」 */
-function prependImageGenCapabilitySystem(messages: Message[], locale: Locale): Message[] {
+function shouldUseLocalCreativePolicy(activeModel: ModelConfig): boolean {
+  return activeModel.provider === 'ollama' || activeModel.isLocal || activeModel.imageGeneratorConfig?.type === 'cli';
+}
+
+function prependImageGenCapabilitySystem(
+  messages: Message[],
+  locale: Locale,
+  activeModel: ModelConfig
+): Message[] {
   if (!storeHasUsableImageGenerator()) return messages;
+  const localPolicy = shouldUseLocalCreativePolicy(activeModel)
+    ? tUi(locale, 'chat.imageGenToolLocalPolicy')
+    : '';
   const inj: Message = {
     id: `imggen-sys-${Date.now()}`,
     role: 'system',
-    content: tUi(locale, 'chat.imageGenToolSystemPrompt'),
+    content: tUi(locale, 'chat.imageGenToolSystemPrompt') + localPolicy,
     timestamp: Date.now(),
     model: 'myagent-capabilities',
   };
@@ -645,7 +656,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           provider: webState.provider,
           apiKey: webState.apiKey,
         });
-        chain = prependImageGenCapabilitySystem(built.chain, uiLocale);
+        chain = prependImageGenCapabilitySystem(built.chain, uiLocale, activeModel);
         ragHint = built.ragHint;
       } catch (e) {
         console.error(e);
