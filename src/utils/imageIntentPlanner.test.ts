@@ -17,7 +17,7 @@ describe('imageIntentPlanner', () => {
     expect(inferImageCountFromText('船上所有伙伴的相同风格图片，每人一张')).toBe(8);
   });
 
-  it('识别继续生成并继承上一轮生图上下文', () => {
+  it('普通重新生成不默认继承上一轮生图上下文', () => {
     const history = [
       msg('按照之前的淘宝比基尼模特图，生成九张不同风格不同款式的模特展示图'),
     ];
@@ -27,8 +27,26 @@ describe('imageIntentPlanner', () => {
     });
     expect(intent.shouldGenerate).toBe(true);
     expect(intent.count).toBe(4);
-    expect(intent.prompt).toContain('上一轮生图需求');
+    expect(intent.inheritStyle).toBe(false);
+    expect(intent.prompt).not.toContain('上一轮参考');
     expect(intent.prompt).toContain('模特年轻一点');
+  });
+
+  it('明确要求沿用风格时只继承风格不继承主体', () => {
+    const history = [
+      msg('生成两张内衣模特展示图，商业摄影风格'),
+    ];
+    const intent = planImageIntent({
+      userText: '沿用刚才风格，生成两张雪山湖泊风景照片',
+      historyBeforeUser: history,
+    });
+    expect(intent.shouldGenerate).toBe(true);
+    expect(intent.count).toBe(2);
+    expect(intent.inheritStyle).toBe(true);
+    expect(intent.prompt).toContain('仅参考上一轮图片的风格');
+    expect(intent.prompt).toContain('不继承上一轮主体内容');
+    expect(intent.prompt).toContain('本轮要求');
+    expect(intent.prompt).toContain('雪山湖泊');
   });
 
   it('非图片请求不触发生图', () => {
@@ -71,5 +89,18 @@ describe('imageIntentPlanner', () => {
       historyBeforeUser: [msg('生成九张不同风格不同款式的模特展示图')],
     });
     expect(intent.shouldGenerate).toBe(false);
+  });
+
+  it('从人像切换到风景时不继承上一轮人像上下文', () => {
+    const intent = planImageIntent({
+      userText: '再生成两张风景照片，雪山湖泊，黄昏光线，电影感构图',
+      historyBeforeUser: [msg('生成两张内衣模特展示图')],
+    });
+    expect(intent.shouldGenerate).toBe(true);
+    expect(intent.count).toBe(2);
+    expect(intent.inheritStyle).toBe(false);
+    expect(intent.prompt).not.toContain('上一轮参考');
+    expect(intent.prompt).not.toContain('模特');
+    expect(intent.prompt).toContain('雪山湖泊');
   });
 });

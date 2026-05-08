@@ -14,30 +14,30 @@ import os
 from pathlib import Path
 
 
-MODEL_ID = os.environ.get("MYAGENT_SD_MODEL", "runwayml/stable-diffusion-v1-5")
+MODEL_ID = os.environ.get("MYAGENT_SD_MODEL", "SG161222/Realistic_Vision_V6.0_B1_noVAE")
 MAX_PIXELS = int(os.environ.get("MYAGENT_SD_MAX_PIXELS", str(512 * 768)))
-DEFAULT_PORTRAIT_NEGATIVE = (
-    "deformed face, distorted face, bad eyes, asymmetrical eyes, crossed eyes, "
-    "blurry face, bad face, ugly face, plastic skin, doll face, bad anatomy, "
-    "extra limbs, low quality, worst quality"
+FACE_OUT_OF_FRAME_HINT = (
+    "close cropped composition, torso and clothing detail shot, shoulders and body only, "
+    "head and face completely outside the frame, no face visible"
 )
-PORTRAIT_HINT_RE = (
-    "portrait",
-    "face",
-    "model",
-    "woman",
-    "girl",
-    "female",
-    "fashion",
-    "lingerie",
-    "swimsuit",
-    "underwear",
-    "模特",
-    "人像",
-    "女性",
-    "美女",
-    "内衣",
-    "泳装",
+FACE_OUT_OF_FRAME_NEGATIVE = (
+    "face, head, eyes, nose, mouth, visible face, visible head, portrait, headshot"
+)
+FACE_SUPPRESSION_RE = (
+    "no face",
+    "without face",
+    "face not visible",
+    "headless",
+    "crop out face",
+    "crop out head",
+    "不显示脸",
+    "不露脸",
+    "不要脸",
+    "无脸",
+    "脸部不可见",
+    "不显示头",
+    "不要头",
+    "无头",
 )
 
 
@@ -66,33 +66,25 @@ def truthy_env(name: str, default: str = "1") -> bool:
     return os.environ.get(name, default).strip().lower() not in ("0", "false", "no", "off")
 
 
-def looks_like_portrait_request(prompt: str) -> bool:
+def wants_face_out_of_frame(prompt: str) -> bool:
     lower = prompt.lower()
-    return any(k in lower for k in PORTRAIT_HINT_RE)
+    return any(k in lower for k in FACE_SUPPRESSION_RE)
 
 
-def enhance_portrait_prompt(prompt: str) -> str:
-    if not truthy_env("MYAGENT_SD_AUTO_PORTRAIT_PROMPT", "1"):
+def enhance_composition_prompt(prompt: str) -> str:
+    if not wants_face_out_of_frame(prompt):
         return prompt
-    if not looks_like_portrait_request(prompt):
+    if "head and face completely outside the frame" in prompt.lower():
         return prompt
-    hint = (
-        "natural realistic face, symmetrical facial features, detailed eyes, "
-        "clean skin texture, professional fashion photography, face clearly visible"
-    )
-    if "natural realistic face" in prompt.lower():
-        return prompt
-    return f"{prompt}, {hint}"
+    return f"{prompt}, {FACE_OUT_OF_FRAME_HINT}"
 
 
-def enhance_negative_prompt(negative: str, prompt: str) -> str:
-    if not truthy_env("MYAGENT_SD_AUTO_PORTRAIT_PROMPT", "1"):
-        return negative
-    if not looks_like_portrait_request(prompt):
+def enhance_negative_prompt_for_composition(negative: str, prompt: str) -> str:
+    if not wants_face_out_of_frame(prompt):
         return negative
     merged = negative.strip()
     lower = merged.lower()
-    extras = [x.strip() for x in DEFAULT_PORTRAIT_NEGATIVE.split(",") if x.strip() and x.strip().lower() not in lower]
+    extras = [x.strip() for x in FACE_OUT_OF_FRAME_NEGATIVE.split(",") if x.strip() and x.strip().lower() not in lower]
     if extras:
         merged = f"{merged}, {', '.join(extras)}" if merged else ", ".join(extras)
     return merged
@@ -140,7 +132,7 @@ def main() -> None:
     parser.add_argument("--negative", default=os.environ.get("MYAGENT_SD_NEGATIVE", "low quality, blurry, distorted"))
     args = parser.parse_args()
 
-    prompt = enhance_portrait_prompt((args.prompt or "").strip())
+    prompt = enhance_composition_prompt((args.prompt or "").strip())
     if not prompt:
         raise SystemExit("Missing prompt")
     if not args.out:
@@ -175,6 +167,8 @@ def main() -> None:
       dtype = torch.float32
 
     print(f"Using model: {MODEL_ID}", flush=True)
+    print(f"Isolated prompt: {os.environ.get('MYAGENT_SD_ISOLATED_PROMPT', '0')}", flush=True)
+    print(f"Prompt: {prompt[:800]}", flush=True)
     if (width, height) != (requested_width, requested_height):
         print(
             f"Requested size {requested_width}x{requested_height} exceeds lightweight limit; "
@@ -234,7 +228,8 @@ def main() -> None:
         gen_device = "cpu" if device == "mps" else device
         generator = torch.Generator(device=gen_device).manual_seed(int(seed))
 
-    negative_prompt = enhance_negative_prompt(args.negative, prompt)
+    negative_prompt = enhance_negative_prompt_for_composition(args.negative, prompt)
+    print(f"Negative prompt: {negative_prompt[:800]}", flush=True)
     result = pipe(
         prompt=prompt,
         negative_prompt=negative_prompt,

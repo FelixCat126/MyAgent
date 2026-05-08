@@ -1100,6 +1100,7 @@ async function generateImageCli(
     MYAGENT_HEIGHT: String(params.height ?? 512),
     MYAGENT_COUNT: String(params.count ?? 1),
     MYAGENT_REFERENCE_IMAGES: JSON.stringify(params.referenceImages ?? []),
+    MYAGENT_SD_ISOLATED_PROMPT: params.isolatedPrompt ? '1' : '0',
   };
 
   const rawLines = (config.cliArgLines || '').split('\n');
@@ -1107,6 +1108,17 @@ async function generateImageCli(
     .map((line) => applyCliPlaceholders(line.trim(), params, outputPath))
     .filter((line) => line.length > 0);
 
+  console.info('[生图 CLI] 启动', {
+    command: config.command,
+    argv,
+    isolatedPrompt: Boolean(params.isolatedPrompt),
+    promptPreview: String(params.prompt ?? '').slice(0, 500),
+    width: params.width ?? 512,
+    height: params.height ?? 512,
+    count: params.count ?? 1,
+    model: envVars.MYAGENT_SD_MODEL,
+    outputPath,
+  });
 
   const useShell = process.platform === 'win32' && looksLikeWindowsExec(config.command);
 

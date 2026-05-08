@@ -250,6 +250,8 @@ export interface ImageGenerationParams {
   outputFormat?: string;
   modelPath?: string;
   modelFile?: string;
+  /** 当前 prompt 是本轮用户输入的隔离生图任务，不应套用历史生图提示。 */
+  isolatedPrompt?: boolean;
 }
 
 export interface ToolCall {

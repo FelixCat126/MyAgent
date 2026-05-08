@@ -4,6 +4,7 @@ export interface ImageIntent {
   shouldGenerate: boolean;
   prompt: string;
   count?: number;
+  inheritStyle?: boolean;
 }
 
 const ZH_DIGITS: Record<string, number> = {
@@ -25,6 +26,8 @@ const IMAGE_NOUN_RE =
 
 const CREATE_RE = /画|绘制|生成|生|出|做|制作|设计|generate|create|make/i;
 const REVISION_RE = /(?:重新|再|继续|还是|按照|按|沿用|基于|之前|刚才|上次|同样|换|改|调整|不要|不是|而是|更|偏)/;
+const EXPLICIT_INHERIT_RE =
+  /(?:沿用|保持|延续|参考|基于|按照|按|同样|同风格|一致|上一张|上一组|上次|之前|刚才|刚刚|原图|那张|那组|same\s+style|keep\s+style|based\s+on|previous|last)/i;
 const NON_IMAGE_OUTPUT_RE =
   /(?:表格|表单|清单|列表|大纲|文档|文本|文字|代码|公式|JSON|Markdown|Excel|CSV|Word|PPT|思维导图|流程图|mermaid|解释|分析|总结|翻译|润色|改写|提取|归纳)/i;
 const IMAGE_NEGATION_RE = /(?:不是|不要|无需|不用|别|不需要|禁止|停止).{0,8}(?:图|图片|照片|生图|生成图片|image|picture|photo)/i;
@@ -83,6 +86,10 @@ function isRevisionRequest(text: string): boolean {
   return REVISION_RE.test(text);
 }
 
+function explicitlyReferencesPreviousImage(text: string): boolean {
+  return EXPLICIT_INHERIT_RE.test(text);
+}
+
 export function planImageIntent(input: {
   userText: string;
   historyBeforeUser: Message[];
@@ -95,7 +102,8 @@ export function planImageIntent(input: {
   const count = inferImageCountFromText(combined);
   const explicitImage = looksLikeImageRequest(userText);
   const hasToolCall = (input.toolCallCount ?? 0) > 0;
-  const previous = isRevisionRequest(userText) ? lastUserImageRequest(input.historyBeforeUser) : '';
+  const shouldInherit = explicitlyReferencesPreviousImage(userText);
+  const previous = shouldInherit ? lastUserImageRequest(input.historyBeforeUser) : '';
   const nonImageOutput = textPrefersNonImageOutput(userText);
   const revisionOfPreviousImage =
     Boolean(previous) &&
@@ -107,17 +115,18 @@ export function planImageIntent(input: {
       /(?:重新|再|继续).{0,12}(?:生成|生|出|做|来)/.test(userText));
 
   if (!hasToolCall && !explicitImage && !revisionOfPreviousImage) {
-    return { shouldGenerate: false, prompt: userText, count };
+    return { shouldGenerate: false, prompt: userText, count, inheritStyle: false };
   }
 
   const prompt =
     previous && previous !== userText
-      ? `延续上一轮生图需求与风格：${previous}\n本轮修改要求：${userText}`
+      ? `仅参考上一轮图片的风格、画质、构图语言或系列一致性，不继承上一轮主体内容；本轮主体和画面内容以用户当前要求为准。\n上一轮参考：${previous}\n本轮要求：${userText}`
       : userText || assistantText;
 
   return {
     shouldGenerate: true,
     prompt,
     count,
+    inheritStyle: Boolean(previous),
   };
 }

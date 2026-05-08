@@ -347,13 +347,83 @@ function inferRequestedImageCount(prompt: string, explicit?: number, context?: s
 function enhancePromptForMultiImage(prompt: string, count?: number): string {
   if (!count || count <= 1) return prompt;
   const p = prompt.trim();
+  const isLandscape =
+    /风景|景观|山|海|湖|森林|草原|城市|建筑|夜景|日出|日落|天空|云|河流|峡谷|landscape|scenery|mountain|ocean|lake|forest|city|architecture|sunset|sunrise|sky|cloud|river|valley/i.test(p);
+  const diversityAxis = isLandscape
+    ? '主体景观、构图、光线、天气、色彩、镜头角度需要明显不同，但整体影像质量保持统一。'
+    : '主体、构图、动作、服装款式、配色、镜头角度需要明显不同，但整体质量和商业摄影风格保持统一。';
   const diversityHint =
     `本次需要一次性生成 ${count} 张成品图。每张都必须是独立完整图片，不能拼成九宫格或合照；` +
-    `主体、构图、动作、服装款式、配色、镜头角度需要明显不同，但整体质量和商业摄影风格保持统一。`;
+    diversityAxis;
   if (/每张|不同|多张|九张|9\s*张|variants?|images?/i.test(p)) {
     return `${p}\n${diversityHint}`;
   }
   return `${p}\n${diversityHint}`;
+}
+
+function containsCjk(text: string): boolean {
+  return /[\u3400-\u9fff]/.test(text);
+}
+
+function countAsciiWords(text: string): number {
+  return (text.match(/[A-Za-z][A-Za-z0-9'-]*/g) || []).length;
+}
+
+function isCliImageGenerator(model: ModelConfig | undefined): boolean {
+  return model?.imageGeneratorConfig?.type === 'cli';
+}
+
+function shouldUseToolPromptForCli(
+  planned: ImageIntent | undefined,
+  toolPrompt: string,
+  model: ModelConfig | undefined
+): boolean {
+  if (!planned?.shouldGenerate || planned.inheritStyle || !isCliImageGenerator(model)) return false;
+  const p = toolPrompt.trim();
+  if (!p) return false;
+  if (containsCjk(p)) return false;
+  return countAsciiWords(p) >= 8;
+}
+
+async function rewritePromptForLocalCliIfNeeded(prompt: string, activeModel: ModelConfig, imgGenModel: ModelConfig | undefined): Promise<string> {
+  const p = prompt.trim();
+  if (!p || !isCliImageGenerator(imgGenModel) || !containsCjk(p)) return prompt;
+  try {
+    const response = await window.electron.callModel(
+      [
+        {
+          id: `sd-prompt-sys-${Date.now()}`,
+          role: 'system',
+          content:
+            'Rewrite the user image request into one concise English Stable Diffusion prompt for a local SD1.5/Realistic Vision image generator. Return only the final English prompt. Do not include JSON, XML, explanations, quotes, markdown, or Chinese. Preserve the requested subject exactly; do not add people unless the user asked for people. Add useful style, composition, lighting, and quality terms.',
+          timestamp: Date.now(),
+          model: 'myagent-sd-prompt-rewrite',
+        },
+        {
+          id: `sd-prompt-user-${Date.now()}`,
+          role: 'user',
+          content: p,
+          timestamp: Date.now(),
+          model: activeModel.name,
+        },
+      ],
+      { ...activeModel, maxTokens: Math.min(activeModel.maxTokens || 1024, 512) },
+      { locale: 'en' }
+    );
+    const rewritten = stripGenerateImageArtifactsForDisplay(response.content || '')
+      .replace(/^["'`]+|["'`]+$/g, '')
+      .trim();
+    if (rewritten && !containsCjk(rewritten) && countAsciiWords(rewritten) >= 6) {
+      console.info('[生图 CLI] 中文 prompt 已改写为英文 SD prompt', {
+        originalPreview: p.slice(0, 240),
+        rewrittenPreview: rewritten.slice(0, 500),
+      });
+      return rewritten;
+    }
+  } catch (e) {
+    console.warn('[生图 CLI] 中文 prompt 英文化失败，继续使用原 prompt', e);
+  }
+  return prompt;
 }
 
 async function postProcessAssistantContent(
@@ -383,7 +453,7 @@ async function postProcessAssistantContent(
   const imgGenModel = resolveImageGeneratorModel();
   const hooks = opts?.imageGenHooks;
 
-  type GenItem = { prompt: string; width?: number; height?: number; count?: number; raw: string };
+  type GenItem = { prompt: string; width?: number; height?: number; count?: number; raw: string; isolatedPrompt?: boolean };
   const toGenerate: GenItem[] = [];
   for (const match of imageCalls) {
     const { prompt, width, height, count, raw } = match;
@@ -394,7 +464,21 @@ async function postProcessAssistantContent(
       );
       continue;
     }
-    toGenerate.push({ prompt, width, height, count, raw });
+    const planned = opts?.plannedIntent;
+    const useToolPromptForCli = shouldUseToolPromptForCli(planned, prompt, imgGenModel);
+    const shouldUseCurrentTurnPrompt =
+      planned?.shouldGenerate &&
+      !planned.inheritStyle &&
+      planned.prompt.trim().length > 0 &&
+      !useToolPromptForCli;
+    toGenerate.push({
+      prompt: shouldUseCurrentTurnPrompt ? planned.prompt : prompt,
+      width: shouldUseCurrentTurnPrompt ? undefined : width,
+      height: shouldUseCurrentTurnPrompt ? undefined : height,
+      count: count ?? planned?.count,
+      raw,
+      isolatedPrompt: shouldUseCurrentTurnPrompt,
+    });
   }
 
   const planned = opts?.plannedIntent;
@@ -403,6 +487,7 @@ async function postProcessAssistantContent(
       prompt: planned?.prompt?.trim() || opts?.userPromptContext?.trim() || text.trim(),
       count: planned?.count ?? inferRequestedImageCount(text, undefined, opts?.userPromptContext),
       raw: '',
+      isolatedPrompt: !planned.inheritStyle,
     });
   }
 
@@ -418,7 +503,7 @@ async function postProcessAssistantContent(
     let expectedDone = 0;
     for (let i = 0; i < toGenerate.length; i++) {
       if (opts?.shouldCancel?.()) break;
-      const { prompt, width, height, raw } = toGenerate[i];
+      const { prompt, width, height, raw, isolatedPrompt } = toGenerate[i];
       hooks?.onEachStart?.({
         current: Math.min(expectedDone + 1, expectedTotal),
         total: expectedTotal,
@@ -434,14 +519,16 @@ async function postProcessAssistantContent(
           heightOut = clipped.height;
         }
         const requestedCount = expectedCounts[i];
+        const promptForCli = await rewritePromptForLocalCliIfNeeded(prompt, activeModel, m);
         const imgs = await window.electron.generateImage({
-          prompt: enhancePromptForMultiImage(prompt, requestedCount),
+          prompt: enhancePromptForMultiImage(promptForCli, requestedCount),
           width: widthOut,
           height: heightOut,
           count: requestedCount,
           referenceImages: opts?.referenceImages,
           modelId: m.id,
           imageGeneratorConfig: cfg,
+          isolatedPrompt,
         });
         if (opts?.shouldCancel?.()) break;
         for (const img of imgs) {
