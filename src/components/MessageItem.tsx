@@ -2,7 +2,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 're
 import { createPortal } from 'react-dom';
 import { pathToFileURL } from 'url';
 import { FileInfo, Message } from '../types';
-import { FiMessageSquare, FiRefreshCw, FiCopy, FiDownload, FiChevronDown, FiChevronRight, FiChevronLeft, FiX, FiFileText, FiLoader, FiTrash2, FiImage } from 'react-icons/fi';
+import { FiMessageSquare, FiCopy, FiDownload, FiChevronDown, FiChevronRight, FiChevronLeft, FiX, FiFileText, FiLoader, FiTrash2, FiImage, FiEdit2, FiCheckSquare, FiSquare } from 'react-icons/fi';
 import { useI18n } from '../hooks/useI18n';
 import MarkdownContent from './MarkdownContent';
 import { markdownContainsPipeTable } from '../utils/markdownTableDetect';
@@ -27,7 +27,14 @@ const modalPortalShellStyle: React.CSSProperties & { WebkitAppRegion?: string } 
 
 interface MessageItemProps {
   message: Message;
-  onResend?: (message: Message) => void;
+  onEdit?: (message: Message) => void;
+  editing?: boolean;
+  onSubmitEdit?: (message: Message, content: string) => void;
+  onCancelEdit?: () => void;
+  selectionMode?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (messageId: string) => void;
+  onStartSelect?: (messageId: string) => void;
   /** 会话是否仍处于流式生成中（由 ChatWindow 传入） */
   conversationStreaming?: boolean;
   /** 当前流式输出绑定的助手消息 id */
@@ -427,7 +434,14 @@ function formatMessageTime(ts: number) {
 
 const MessageItem: React.FC<MessageItemProps> = ({
   message,
-  onResend,
+  onEdit,
+  editing = false,
+  onSubmitEdit,
+  onCancelEdit,
+  selectionMode = false,
+  selected = false,
+  onToggleSelect,
+  onStartSelect,
   conversationStreaming = false,
   streamingAssistantId = null,
   showInlineStreamPlaceholder = false,
@@ -437,11 +451,16 @@ const MessageItem: React.FC<MessageItemProps> = ({
 }) => {
   const { t } = useI18n();
   const isUser = message.role === 'user';
+  const [draftContent, setDraftContent] = useState(message.content ?? '');
   const [preview, setPreview] = useState<{
     src: string;
     localPath?: string;
     defaultFileName?: string;
   } | null>(null);
+
+  useEffect(() => {
+    if (editing) setDraftContent(message.content ?? '');
+  }, [editing, message.content]);
 
   const openAttachmentPreview = (
     fileName: string,
@@ -584,6 +603,23 @@ const MessageItem: React.FC<MessageItemProps> = ({
   return (
     <>
       <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} group mb-4`}>
+        {selectionMode ? (
+          <button
+            type="button"
+            onClick={() => onToggleSelect?.(message.id)}
+            className={`mt-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors ${
+              isUser ? 'mr-2' : 'mr-2'
+            } ${
+              selected
+                ? 'text-primary-600 dark:text-primary-300'
+                : 'text-stone-400 hover:bg-stone-200 hover:text-stone-700 dark:text-slate-500 dark:hover:bg-slate-800 dark:hover:text-slate-200'
+            }`}
+            title={t('message.selectTitle')}
+            aria-label={t('message.selectTitle')}
+          >
+            {selected ? <FiCheckSquare size={17} /> : <FiSquare size={17} />}
+          </button>
+        ) : null}
         {isUser ? (
           <div className="flex w-fit max-w-[80%] flex-col gap-1.5">
             <div className="flex flex-row-reverse items-start gap-3">
@@ -657,31 +693,70 @@ const MessageItem: React.FC<MessageItemProps> = ({
                       })}
                     </div>
                   )}
-                  <div className="whitespace-pre-wrap text-sm break-words">{message.content}</div>
+                  {editing ? (
+                    <div className="flex min-w-[min(420px,70vw)] flex-col gap-2">
+                      <textarea
+                        value={draftContent}
+                        onChange={(e) => setDraftContent(e.target.value)}
+                        className="min-h-[5.5rem] w-full resize-y rounded-lg border border-white/45 bg-white/95 px-3 py-2 text-sm leading-relaxed text-stone-900 shadow-inner outline-none focus:border-white focus:ring-2 focus:ring-white/55 dark:bg-slate-950/95 dark:text-slate-50"
+                        autoFocus
+                      />
+                      <div className="flex justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={onCancelEdit}
+                          className="rounded-md bg-white/15 px-2.5 py-1 text-xs font-medium text-white hover:bg-white/25"
+                        >
+                          {t('chat.cancelEdit')}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!draftContent.trim()}
+                          onClick={() => onSubmitEdit?.(message, draftContent)}
+                          className="rounded-md bg-white px-2.5 py-1 text-xs font-semibold text-primary-700 shadow-sm hover:bg-primary-50 disabled:cursor-not-allowed disabled:opacity-55"
+                        >
+                          {t('chat.send')}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="whitespace-pre-wrap text-sm break-words">{message.content}</div>
+                  )}
                 </div>
                 {/** 与气泡同宽；日期最右，复制/重发在左、悬停显示 */}
                 <div className="mt-1.5 flex w-full min-w-0 items-center justify-end gap-2 text-[10px] text-stone-500/85 dark:text-slate-500">
                   <div className="flex min-w-0 items-center gap-2 opacity-0 transition-opacity group-hover:opacity-100">
                     <button
                       onClick={handleCopy}
-                      className="inline-flex shrink-0 items-center gap-0.5 hover:text-primary-500"
+                      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md hover:bg-stone-200/80 hover:text-primary-500 dark:hover:bg-slate-800"
                       type="button"
                       title={t('message.copyTitle')}
+                      aria-label={t('message.copyTitle')}
                     >
-                      <FiCopy size={10} />
-                      <span>{t('message.copy')}</span>
+                      <FiCopy size={12} />
                     </button>
-                    {onResend && (
+                    {onEdit && !selectionMode && !editing ? (
                       <button
-                        onClick={() => onResend(message)}
-                        className="inline-flex shrink-0 items-center gap-0.5 hover:text-primary-500"
+                        onClick={() => onEdit(message)}
+                        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md hover:bg-stone-200/80 hover:text-primary-500 dark:hover:bg-slate-800"
                         type="button"
-                        title={t('message.resendTitle')}
+                        title={t('message.editTitle')}
+                        aria-label={t('message.editTitle')}
                       >
-                        <FiRefreshCw size={10} />
-                        <span>{t('message.resend')}</span>
+                        <FiEdit2 size={12} />
                       </button>
-                    )}
+                    ) : null}
+                    {!selectionMode ? (
+                      <button
+                        onClick={() => onStartSelect?.(message.id)}
+                        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md hover:bg-stone-200/80 hover:text-primary-500 dark:hover:bg-slate-800"
+                        type="button"
+                        title={t('message.selectTitle')}
+                        aria-label={t('message.selectTitle')}
+                      >
+                        <FiCheckSquare size={12} />
+                      </button>
+                    ) : null}
                   </div>
                   <span className="shrink-0 tabular-nums text-right">{formatMessageTime(message.timestamp)}</span>
                 </div>
@@ -845,13 +920,24 @@ const MessageItem: React.FC<MessageItemProps> = ({
                 <div className="opacity-0 transition-opacity group-hover:opacity-100">
                   <button
                     onClick={handleCopy}
-                    className="inline-flex items-center gap-0.5 hover:text-primary-500"
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-md hover:bg-stone-200/80 hover:text-primary-500 dark:hover:bg-slate-800"
                     type="button"
                     title={t('message.copyTitle')}
+                    aria-label={t('message.copyTitle')}
                   >
-                    <FiCopy size={10} />
-                    <span>{t('message.copy')}</span>
+                    <FiCopy size={12} />
                   </button>
+                  {!selectionMode ? (
+                    <button
+                      onClick={() => onStartSelect?.(message.id)}
+                      className="ml-1 inline-flex h-6 w-6 items-center justify-center rounded-md hover:bg-stone-200/80 hover:text-primary-500 dark:hover:bg-slate-800"
+                      type="button"
+                      title={t('message.selectTitle')}
+                      aria-label={t('message.selectTitle')}
+                    >
+                      <FiCheckSquare size={12} />
+                    </button>
+                  ) : null}
                 </div>
               </div>
             </div>

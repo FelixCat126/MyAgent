@@ -14,7 +14,7 @@ import { useI18n } from '../hooks/useI18n';
 import { useWorkspaceStore } from '../store/workspaceStore';
 import { useKnowledgeStore } from '../store/knowledgeStore';
 import { Message, ChatSession, FileInfo, ModelConfig, WebSearchProvider } from '../types';
-import { FiPaperclip, FiFile, FiImage, FiSquare, FiDownload, FiGlobe, FiLoader, FiMic } from 'react-icons/fi';
+import { FiPaperclip, FiFile, FiImage, FiSquare, FiDownload, FiGlobe, FiLoader, FiMic, FiTrash2, FiCheckSquare, FiX } from 'react-icons/fi';
 import MessageItem, { ConversationImageGalleryModal } from './MessageItem';
 import {
   buildConversationImageGallery,
@@ -510,6 +510,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     sessions,
     addMessage,
     removeMessage,
+    removeMessages,
     updateMessage,
     appendToMessage,
     appendReasoningToMessage,
@@ -528,6 +529,9 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     loadingSessionId !== null && loadingSessionId === currentSessionId;
   const { getActiveModel } = useModelStore();
   const [input, setInput] = useState('');
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(() => new Set());
   const [attachments, setAttachments] = useState<File[]>([]);
   const [attachmentPreviews, setAttachmentPreviews] = useState<Record<string, string>>({});
   const [isDragging, setIsDragging] = useState(false);
@@ -824,8 +828,16 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                   .sessions.find((s) => s.id === sendSessionId)
                   ?.messages.find((m) => m.id === assistantId);
                 const raw = msg?.content ?? '';
+                const reasoningText = (msg?.reasoning ?? '').trim();
 
-                if (aborted && !raw.trim()) {
+                const plannedIntent = planImageIntent({
+                  userText: userMessage.content,
+                  historyBeforeUser,
+                  assistantText: raw,
+                  toolCallCount: extractGenerateImageCalls(raw).length,
+                });
+
+                if (aborted && !raw.trim() && !plannedIntent.shouldGenerate) {
                   removeMessage(sendSessionId, assistantId);
                   setIsStreaming(false);
                   clearLoadingForSession(sendSessionId);
@@ -836,14 +848,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
 
                 let nextContent = raw;
                 let nextFiles = msg?.files as Message['files'] | undefined;
-                if (raw.trim()) {
+                if (raw.trim() || plannedIntent.shouldGenerate) {
                   try {
-                    const plannedIntent = planImageIntent({
-                      userText: userMessage.content,
-                      historyBeforeUser,
-                      assistantText: raw,
-                      toolCallCount: extractGenerateImageCalls(raw).length,
-                    });
                     const imageHooks: ImageGenProgressHooks = {
                       onBegin: ({ total }) => {
                         imageGenCancelledRef.current = false;
@@ -877,6 +883,9 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                     nextContent =
                       `${nextContent}\n\n---\n\n${t('chat.stoppedBanner')}`;
                   }
+                }
+                if (!nextContent.trim() && !nextFiles?.length && reasoningText) {
+                  nextContent = t('chat.emptyAfterReasoning');
                 }
 
                 updateMessage(sendSessionId, assistantId, {
@@ -1024,24 +1033,40 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     /** streamingAssistantIdRef 由 onEnd 清理，便于识别待删空气泡 */
   };
 
-  const handleResend = async (message: Message) => {
-    const activeModel = getActiveModel();
-    if (!activeModel || !currentSessionId) return;
-    if (useChatStore.getState().loadingSessionId === currentSessionId) return;
+  const handleEditMessage = (message: Message) => {
+    if (isCurrentSessionLoading) return;
+    setEditingMessageId(message.id);
+  };
 
-    const sendSessionId = currentSessionId;
-    setLoadingSession(sendSessionId);
-    const priorMessages = messages;
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      role: 'user',
-      content: message.content,
-      files: message.files,
-      timestamp: Date.now(),
-      model: activeModel.name,
-    };
-    addMessage(currentSessionId, userMessage);
-    await runModelReply(sendSessionId, priorMessages, userMessage, activeModel);
+  const cancelEdit = () => {
+    setEditingMessageId(null);
+  };
+
+  const startSelection = (messageId?: string) => {
+    setSelectionMode(true);
+    setSelectedMessageIds(messageId ? new Set([messageId]) : new Set());
+  };
+
+  const toggleMessageSelection = (messageId: string) => {
+    setSelectedMessageIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(messageId)) next.delete(messageId);
+      else next.add(messageId);
+      return next;
+    });
+  };
+
+  const cancelSelection = () => {
+    setSelectionMode(false);
+    setSelectedMessageIds(new Set());
+  };
+
+  const deleteSelectedMessages = () => {
+    if (!currentSessionId || selectedMessageIds.size === 0) return;
+    if (!window.confirm(t('chat.confirmDeleteMessages', { count: selectedMessageIds.size }))) return;
+    if (editingMessageId && selectedMessageIds.has(editingMessageId)) setEditingMessageId(null);
+    removeMessages(currentSessionId, [...selectedMessageIds]);
+    cancelSelection();
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -1240,6 +1265,59 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     await runModelReply(sendSessionId, priorMessages, userMessage, activeModel);
   };
 
+  const handleSubmitEditedMessage = async (sourceMessage: Message, nextContent: string) => {
+    const textContent = nextContent.trim();
+    if (!textContent || !currentSessionId) return;
+    if (useChatStore.getState().loadingSessionId === currentSessionId) return;
+
+    const activeModel = getActiveModel();
+    if (!activeModel) {
+      alert(t('chat.configureModel'));
+      return;
+    }
+
+    const sendSessionId = currentSessionId;
+    setLoadingSession(sendSessionId);
+    const sourceIndex = messages.findIndex((m) => m.id === sourceMessage.id);
+    if (sourceIndex < 0) {
+      clearLoadingForSession(sendSessionId);
+      return;
+    }
+    const priorMessages = messages.slice(0, sourceIndex);
+    const userMessage: Message = {
+      ...sourceMessage,
+      role: 'user',
+      content: textContent,
+      timestamp: Date.now(),
+      model: activeModel.name,
+    };
+
+    const staleMessageIds = messages.slice(sourceIndex + 1).map((m) => m.id);
+    updateMessage(currentSessionId, sourceMessage.id, {
+      content: textContent,
+      timestamp: userMessage.timestamp,
+      model: activeModel.name,
+    });
+    if (staleMessageIds.length > 0) removeMessages(currentSessionId, staleMessageIds);
+    setEditingMessageId(null);
+
+    if (shouldBypassModelForFullTextDownload(textContent, Boolean(sourceMessage.files?.length))) {
+      addMessage(sendSessionId, {
+        id: `${Date.now() + 1}-a`,
+        role: 'assistant',
+        content:
+          '这个请求属于“既有作品全文下载”。我不会让模型在聊天里逐字打印全文，因为这会非常慢、容易超时，也容易生成不完整或混入错误文本。\n\n' +
+          '请把原文文件作为附件上传，或提供一个可读取的原文来源后再让我整理成 Word/Markdown。拿到源文本后，我会只把正文写入下载文档，不把聊天说明混进去。',
+        timestamp: Date.now(),
+        model: activeModel.name,
+      });
+      clearLoadingForSession(sendSessionId);
+      return;
+    }
+
+    await runModelReply(sendSessionId, priorMessages, userMessage, activeModel);
+  };
+
   const handleInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key !== 'Enter') return;
     if (e.shiftKey) return;
@@ -1297,6 +1375,40 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
             />
           </div>
           <div className="ml-auto flex items-center gap-1">
+            {selectionMode ? (
+              <>
+                <span className="mr-1 text-xs text-stone-500 dark:text-slate-400">
+                  {t('chat.selectedCount', { count: selectedMessageIds.size })}
+                </span>
+                <button
+                  type="button"
+                  onClick={deleteSelectedMessages}
+                  disabled={selectedMessageIds.size === 0 || isCurrentSessionLoading}
+                  className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-red-600 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-45 dark:text-red-300 dark:hover:bg-red-950/45"
+                  title={t('chat.deleteSelected')}
+                >
+                  <FiTrash2 size={14} /> {t('chat.deleteSelected')}
+                </button>
+                <button
+                  type="button"
+                  onClick={cancelSelection}
+                  className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-stone-600 hover:bg-stone-200/80 dark:text-slate-300 dark:hover:bg-slate-800"
+                  title={t('chat.cancelSelect')}
+                >
+                  <FiX size={14} /> {t('chat.cancelSelect')}
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => startSelection()}
+                disabled={messages.length === 0 || isCurrentSessionLoading}
+                className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-stone-600 hover:bg-stone-200/80 disabled:cursor-not-allowed disabled:opacity-45 dark:text-slate-300 dark:hover:bg-slate-800"
+                title={t('chat.selectMessages')}
+              >
+                <FiCheckSquare size={14} /> {t('chat.selectMessages')}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => void handleExport('md')}
@@ -1359,7 +1471,14 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
             <MessageItem
               key={message.id}
               message={message}
-              onResend={message.role === 'user' ? handleResend : undefined}
+              onEdit={message.role === 'user' ? handleEditMessage : undefined}
+              editing={editingMessageId === message.id}
+              onSubmitEdit={handleSubmitEditedMessage}
+              onCancelEdit={cancelEdit}
+              selectionMode={selectionMode}
+              selected={selectedMessageIds.has(message.id)}
+              onToggleSelect={toggleMessageSelection}
+              onStartSelect={startSelection}
               conversationStreaming={isStreaming}
               streamingAssistantId={streamingTargetAssistantId}
               showInlineStreamPlaceholder={
