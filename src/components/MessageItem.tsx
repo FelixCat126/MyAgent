@@ -2,7 +2,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 're
 import { createPortal } from 'react-dom';
 import { pathToFileURL } from 'url';
 import { FileInfo, Message } from '../types';
-import { FiMessageSquare, FiCopy, FiDownload, FiChevronDown, FiChevronRight, FiChevronLeft, FiX, FiFileText, FiLoader, FiTrash2, FiImage, FiEdit2, FiCheckSquare, FiSquare } from 'react-icons/fi';
+import { FiMessageSquare, FiCopy, FiDownload, FiChevronDown, FiChevronRight, FiChevronLeft, FiX, FiFileText, FiLoader, FiTrash2, FiImage, FiEdit2, FiCheckSquare, FiSquare, FiCheck } from 'react-icons/fi';
 import { useI18n } from '../hooks/useI18n';
 import MarkdownContent from './MarkdownContent';
 import { markdownContainsPipeTable } from '../utils/markdownTableDetect';
@@ -457,6 +457,13 @@ const MessageItem: React.FC<MessageItemProps> = ({
     localPath?: string;
     defaultFileName?: string;
   } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 1400);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
 
   useEffect(() => {
     if (editing) setDraftContent(message.content ?? '');
@@ -538,12 +545,14 @@ const MessageItem: React.FC<MessageItemProps> = ({
         : stripGenerateImageArtifactsForDisplay(message.content ?? '');
     try {
       await window.electron.setClipboardText(text);
+      setCopied(true);
       return;
     } catch (electronError) {
       console.warn('Electron 剪贴板复制失败，尝试浏览器剪贴板', electronError);
     }
     try {
       await navigator.clipboard.writeText(text);
+      setCopied(true);
     } catch (e) {
       console.warn('复制失败', e);
     }
@@ -730,10 +739,10 @@ const MessageItem: React.FC<MessageItemProps> = ({
                       onClick={handleCopy}
                       className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md hover:bg-stone-200/80 hover:text-primary-500 dark:hover:bg-slate-800"
                       type="button"
-                      title={t('message.copyTitle')}
-                      aria-label={t('message.copyTitle')}
-                    >
-                      <FiCopy size={12} />
+                    title={t('message.copyTitle')}
+                    aria-label={t('message.copyTitle')}
+                  >
+                      {copied ? <FiCheck size={13} className="text-emerald-500" /> : <FiCopy size={12} />}
                     </button>
                     {onEdit && !selectionMode && !editing ? (
                       <button
@@ -925,7 +934,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
                     title={t('message.copyTitle')}
                     aria-label={t('message.copyTitle')}
                   >
-                    <FiCopy size={12} />
+                    {copied ? <FiCheck size={13} className="text-emerald-500" /> : <FiCopy size={12} />}
                   </button>
                   {!selectionMode ? (
                     <button

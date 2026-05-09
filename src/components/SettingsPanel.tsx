@@ -59,6 +59,55 @@ const defaultFormData: EditingFormData = {
   imageGenCliArgLines: '',
 };
 
+function parseEnvMap(text: string): Record<string, string> {
+  const envMap: Record<string, string> = {};
+  const envLines = text.trim().split('\n');
+  for (const line of envLines) {
+    const eq = line.indexOf('=');
+    if (eq > 0) {
+      const k = line.slice(0, eq).trim();
+      const v = line.slice(eq + 1).trim();
+      if (k) envMap[k] = v;
+    }
+  }
+  return envMap;
+}
+
+function validateImageGeneratorForm(form: EditingFormData, envMap: Record<string, string>): string | null {
+  if (!form.isImageGenerator) return null;
+  if (form.imageGenType === 'cli') {
+    if (!form.imageGenCommand.trim()) return '启用生图工具后，CLI 命令不能为空。';
+    const argLines = form.imageGenCliArgLines
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (argLines.length === 0) return '启用 CLI 生图后，CLI 参数不能为空，至少需要脚本路径和输出路径占位符。';
+    if (!argLines.some((line) => line.includes('{{outputPath}}'))) {
+      return '启用 CLI 生图后，CLI 参数必须包含 {{outputPath}}，否则无法确认图片输出文件。';
+    }
+    if (!envMap.MYAGENT_SD_MODEL && !envMap.OLLAMA_MODEL && !envMap.MODEL && !envMap.MODEL_ID) {
+      return '启用 CLI 生图后，环境变量必须包含模型名称，例如 MYAGENT_SD_MODEL=你的本地生图模型。';
+    }
+    return null;
+  }
+  if (form.imageGenType === 'http') {
+    if (!form.imageGenEndpoint.trim()) return '启用 HTTP 生图后，接口地址不能为空。';
+    if (!/^https?:\/\//i.test(form.imageGenEndpoint.trim())) {
+      return '启用 HTTP 生图后，接口地址必须以 http:// 或 https:// 开头。';
+    }
+    if (
+      form.imageGenHttpFormat === 'ollama' &&
+      !envMap.OLLAMA_MODEL &&
+      !envMap.MODEL &&
+      !envMap.MODEL_ID
+    ) {
+      return 'Ollama HTTP 生图必须在环境变量里填写 OLLAMA_MODEL=你的模型标签。';
+    }
+    return null;
+  }
+  return '生图工具类型无效。';
+}
+
 const SettingsPanel: React.FC = () => {
   const { t, locale } = useI18n();
   const { models, addModel, removeModel, updateModel } = useModelStore();
@@ -173,15 +222,11 @@ const SettingsPanel: React.FC = () => {
       return;
     }
 
-    const envMap: Record<string, string> = {};
-    const envLines = formData.imageGenEnv.trim().split('\n');
-    for (const line of envLines) {
-      const eq = line.indexOf('=');
-      if (eq > 0) {
-        const k = line.slice(0, eq).trim();
-        const v = line.slice(eq + 1).trim();
-        envMap[k] = v;
-      }
+    const envMap = parseEnvMap(formData.imageGenEnv);
+    const imageGenError = validateImageGeneratorForm(formData, envMap);
+    if (imageGenError) {
+      alert(imageGenError);
+      return;
     }
 
     const payload: ModelConfig = {
@@ -193,9 +238,10 @@ const SettingsPanel: React.FC = () => {
       modelName: formData.modelName,
       isLocal: formData.isLocal,
       maxTokens: formData.maxTokens,
+      isImageGenerator: formData.isImageGenerator,
+      imageGeneratorConfig: undefined,
       ...(formData.isImageGenerator
         ? {
-            isImageGenerator: true,
             imageGeneratorConfig: {
               type: formData.imageGenType as 'cli' | 'http',
               command: formData.imageGenCommand,

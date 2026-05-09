@@ -221,13 +221,11 @@ async function buildMessagesWithOptionalWebSearch(
   }
 }
 
-function storeHasUsableImageGenerator(): boolean {
-  return useModelStore.getState().models.some((m) => {
-    if (!m.isImageGenerator || !m.imageGeneratorConfig) return false;
-    const c = m.imageGeneratorConfig;
-    if (c.type === 'http') return Boolean(String(c.endpoint ?? '').trim());
-    return Boolean(String(c.command ?? '').trim());
-  });
+function modelHasUsableImageGenerator(m: ModelConfig | undefined): boolean {
+  if (!m?.isImageGenerator || !m.imageGeneratorConfig) return false;
+  const c = m.imageGeneratorConfig;
+  if (c.type === 'http') return Boolean(String(c.endpoint ?? '').trim());
+  return Boolean(String(c.command ?? '').trim());
 }
 
 /** 已配置生图工具时注入系统说明，否则模型（如豆包）会按常识声称「不能生图」 */
@@ -240,7 +238,7 @@ function prependImageGenCapabilitySystem(
   locale: Locale,
   activeModel: ModelConfig
 ): Message[] {
-  if (!storeHasUsableImageGenerator()) return messages;
+  if (!modelHasUsableImageGenerator(activeModel)) return messages;
   const localPolicy = shouldUseLocalCreativePolicy(activeModel)
     ? tUi(locale, 'chat.imageGenToolLocalPolicy')
     : '';
@@ -447,8 +445,7 @@ async function postProcessAssistantContent(
 
   const imageCalls = extractGenerateImageCalls(text);
   const resolveImageGeneratorModel = (): ModelConfig | undefined => {
-    if (activeModel?.isImageGenerator && activeModel.imageGeneratorConfig) return activeModel;
-    return useModelStore.getState().models.find((m) => m.isImageGenerator && m.imageGeneratorConfig);
+    return modelHasUsableImageGenerator(activeModel) ? activeModel : undefined;
   };
   const imgGenModel = resolveImageGeneratorModel();
   const hooks = opts?.imageGenHooks;
