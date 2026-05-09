@@ -647,7 +647,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
                   bg-gradient-to-br from-primary-500 to-primary-600 text-white rounded-tr-sm border border-primary-400/30`}
                 >
                   {message.files && message.files.length > 0 && (
-                    <div className="mb-2 flex flex-wrap gap-2">
+                    <div className="mb-2 grid grid-cols-[repeat(auto-fill,minmax(120px,120px))] justify-start gap-2 sm:grid-cols-[repeat(auto-fill,minmax(150px,150px))] lg:grid-cols-[repeat(auto-fill,minmax(150px,150px))] xl:max-w-[790px]">
                       {message.files.map((file, index) => {
                         const isImage = file.type.startsWith('image/');
                         const hasPreview = file.preview && file.preview.startsWith('data:');
@@ -673,9 +673,9 @@ const MessageItem: React.FC<MessageItemProps> = ({
                                     displaySrc &&
                                     openAttachmentPreview(file.name, displaySrc, file.path, index)
                                   }
-                                  className="max-h-[180px] max-w-[240px] cursor-zoom-in rounded-md object-contain shadow-sm transition-transform hover:scale-[1.02] border border-white/50 ring-1 ring-white/25"
+                                  className="h-[90px] w-[120px] cursor-zoom-in rounded-md object-contain shadow-sm transition-transform hover:scale-[1.02] border border-white/50 ring-1 ring-white/25 sm:h-[112px] sm:w-[150px]"
                                 />
-                                <div className="flex max-w-[240px] items-center gap-1">
+                                <div className="flex w-[120px] items-center gap-1 sm:w-[150px]">
                                   <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-white/95">
                                     {file.name}
                                   </span>
@@ -863,7 +863,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
                         : 'mt-3'
                     }
                   >
-                    <div className="flex flex-wrap justify-start gap-2">
+                    <div className="grid grid-cols-[repeat(auto-fill,minmax(120px,120px))] justify-start gap-2 sm:grid-cols-[repeat(auto-fill,minmax(150px,150px))] xl:max-w-[790px]">
                       {message.files.map((file, index) => {
                         const isImage = file.type.startsWith('image/');
                         const hasPreview = file.preview && file.preview.startsWith('data:');
@@ -889,9 +889,9 @@ const MessageItem: React.FC<MessageItemProps> = ({
                                     displaySrc &&
                                     openAttachmentPreview(file.name, displaySrc, file.path, index)
                                   }
-                                  className="max-h-[180px] max-w-[240px] cursor-zoom-in rounded-md object-contain border border-stone-300/60 shadow-sm transition-transform hover:scale-[1.02] dark:border-white/10"
+                                  className="h-[90px] w-[120px] cursor-zoom-in rounded-md object-contain border border-stone-300/60 shadow-sm transition-transform hover:scale-[1.02] dark:border-white/10 sm:h-[112px] sm:w-[150px]"
                                 />
-                                <div className="flex max-w-[240px] items-center gap-1">
+                                <div className="flex w-[120px] items-center gap-1 sm:w-[150px]">
                                   <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-stone-700 dark:text-slate-300">
                                     {file.name}
                                   </span>
