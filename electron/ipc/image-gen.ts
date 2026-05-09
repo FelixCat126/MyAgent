@@ -1072,6 +1072,140 @@ function formatAxiosGenerateHttpError(
   return `HTTP ${status}：${raw.slice(0, 900)}`;
 }
 
+type CliGeneratedImage = { url: string; path: string; width: number; height: number };
+
+/**
+ * 单次 CLI 调用：仅校验 `outputPath` 这一张图。
+ * 多图场景由上层按 `count` 顺序多次调用（每次独立输出路径、MYAGENT_COUNT=1），
+ * 兼容「只往 MYAGENT_OUTPUT_PATH 写一张」的本地脚本。
+ */
+async function generateImageCliOneShot(
+  params: ImageGenerationParams,
+  config: NonNullable<ModelConfig['imageGeneratorConfig']>,
+  outputPath: string,
+  batch?: { index: number; total: number }
+): Promise<CliGeneratedImage> {
+  const exe = config.command?.trim();
+  if (!exe) {
+    throw new Error('请填写「命令行程序」路径');
+  }
+
+  const appModule = await import('electron');
+  const electronApp = appModule.app;
+
+  const runCount = params.count ?? 1;
+  const envVars: Record<string, string> = {
+    ...(config.env || {}),
+    MYAGENT_PROMPT: params.prompt ?? '',
+    MYAGENT_OUTPUT_PATH: outputPath,
+    MYAGENT_WIDTH: String(params.width ?? 512),
+    MYAGENT_HEIGHT: String(params.height ?? 512),
+    MYAGENT_COUNT: String(runCount),
+    MYAGENT_REFERENCE_IMAGES: JSON.stringify(params.referenceImages ?? []),
+    MYAGENT_SD_ISOLATED_PROMPT: params.isolatedPrompt ? '1' : '0',
+  };
+  if (batch && batch.total > 1) {
+    envVars.MYAGENT_IMAGE_INDEX = String(batch.index);
+    envVars.MYAGENT_IMAGE_TOTAL = String(batch.total);
+  }
+
+  const rawLines = (config.cliArgLines || '').split('\n');
+  const argv = rawLines
+    .map((line) => applyCliPlaceholders(line.trim(), params, outputPath))
+    .filter((line) => line.length > 0);
+
+  console.info('[生图 CLI] 启动', {
+    command: exe,
+    argv,
+    isolatedPrompt: Boolean(params.isolatedPrompt),
+    promptPreview: String(params.prompt ?? '').slice(0, 500),
+    width: params.width ?? 512,
+    height: params.height ?? 512,
+    count: runCount,
+    model: envVars.MYAGENT_SD_MODEL,
+    outputPath,
+    ...(batch && batch.total > 1
+      ? { batchIndex: batch.index, batchTotal: batch.total }
+      : {}),
+  });
+
+  const useShell = process.platform === 'win32' && looksLikeWindowsExec(exe);
+
+  const proc = spawn(exe, argv, {
+    env: { ...process.env, ...envVars },
+    cwd: electronApp.getPath('home'),
+    shell: useShell,
+  });
+
+  return await new Promise<CliGeneratedImage>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      proc.kill();
+      const min = Math.max(1, Math.round(IMAGE_GEN_TIMEOUT_MS / 60_000));
+      reject(new Error(`生图命令超时（${min} 分钟）`));
+    }, IMAGE_GEN_TIMEOUT_MS);
+
+    let output = '';
+    proc.stdout?.on('data', (data) => {
+      output = appendCappedCliLog(output, data);
+    });
+    proc.stderr?.on('data', (data) => {
+      output = appendCappedCliLog(output, data);
+    });
+    proc.on('close', (code) => {
+      clearTimeout(timeout);
+      void (async () => {
+        try {
+          await fs.access(outputPath);
+        } catch {
+          reject(
+            new Error(
+              `未在预期路径生成图片文件：${outputPath}\n子进程退出码=${code}\n输出：\n${output.slice(0, 4000)}`
+            )
+          );
+          return;
+        }
+
+        if (code !== 0) {
+          console.warn('[生图 CLI] 进程退出码非 0，但输出文件已存在:', code);
+        }
+
+        let stats: Promise<{ width: number; height: number }>;
+        try {
+          const sharp = require('sharp');
+          stats = sharp(outputPath)
+            .metadata()
+            .then((m: { width?: number; height?: number }) => ({
+              width: m.width ?? NaN,
+              height: m.height ?? NaN,
+            }));
+        } catch {
+          stats = Promise.resolve({ width: NaN, height: NaN });
+        }
+
+        stats
+          .then(({ width, height }) =>
+            resolve({
+              url: `file://${outputPath}`,
+              path: outputPath,
+              width:
+                Number.isInteger(width) && width > 0 ? width : Number(params.width) || 512,
+              height:
+                Number.isInteger(height) && height > 0 ? height : Number(params.height) || 512,
+            })
+          )
+          .catch(() =>
+            resolve({
+              url: `file://${outputPath}`,
+              path: outputPath,
+              width: Number(params.width) || 512,
+              height: Number(params.height) || 512,
+            })
+          );
+      })();
+    });
+  });
+}
+
 async function generateImageCli(
   params: ImageGenerationParams,
   config: NonNullable<ModelConfig['imageGeneratorConfig']>
@@ -1089,116 +1223,29 @@ async function generateImageCli(
     throw new Error('请填写「命令行程序」路径');
   }
 
-  const outputFile = `${randomUUID()}.png`;
-  const outputPath = join(outputDir, outputFile);
+  const rawN = params.count;
+  const requested =
+    typeof rawN === 'number' && Number.isFinite(rawN) && rawN > 0 ? Math.round(rawN) : 1;
+  const n = Math.max(1, Math.min(12, requested));
 
-  const envVars: Record<string, string> = {
-    ...(config.env || {}),
-    MYAGENT_PROMPT: params.prompt ?? '',
-    MYAGENT_OUTPUT_PATH: outputPath,
-    MYAGENT_WIDTH: String(params.width ?? 512),
-    MYAGENT_HEIGHT: String(params.height ?? 512),
-    MYAGENT_COUNT: String(params.count ?? 1),
-    MYAGENT_REFERENCE_IMAGES: JSON.stringify(params.referenceImages ?? []),
-    MYAGENT_SD_ISOLATED_PROMPT: params.isolatedPrompt ? '1' : '0',
-  };
+  const results: CliGeneratedImage[] = [];
+  if (n <= 1) {
+    const outputPath = join(outputDir, `${randomUUID()}.png`);
+    results.push(await generateImageCliOneShot(params, config, outputPath));
+    return results;
+  }
 
-  const rawLines = (config.cliArgLines || '').split('\n');
-  const argv = rawLines
-    .map((line) => applyCliPlaceholders(line.trim(), params, outputPath))
-    .filter((line) => line.length > 0);
-
-  console.info('[生图 CLI] 启动', {
-    command: config.command,
-    argv,
-    isolatedPrompt: Boolean(params.isolatedPrompt),
-    promptPreview: String(params.prompt ?? '').slice(0, 500),
-    width: params.width ?? 512,
-    height: params.height ?? 512,
-    count: params.count ?? 1,
-    model: envVars.MYAGENT_SD_MODEL,
-    outputPath,
-  });
-
-  const useShell = process.platform === 'win32' && looksLikeWindowsExec(config.command);
-
-  const proc = spawn(config.command, argv, {
-    env: { ...process.env, ...envVars },
-    cwd: electronApp.getPath('home'),
-    shell: useShell,
-  });
-
-  const result = await new Promise<{ url: string; path: string; width: number; height: number }>(
-    (resolve, reject) => {
-      const timeout = setTimeout(() => {
-        proc.kill();
-        const min = Math.max(1, Math.round(IMAGE_GEN_TIMEOUT_MS / 60_000));
-        reject(new Error(`生图命令超时（${min} 分钟）`));
-      }, IMAGE_GEN_TIMEOUT_MS);
-
-      let output = '';
-      proc.stdout?.on('data', (data) => {
-        output = appendCappedCliLog(output, data);
-      });
-      proc.stderr?.on('data', (data) => {
-        output = appendCappedCliLog(output, data);
-      });
-      proc.on('close', (code) => {
-        clearTimeout(timeout);
-        void (async () => {
-          try {
-            await fs.access(outputPath);
-          } catch {
-            reject(
-              new Error(
-                `未在预期路径生成图片文件：${outputPath}\n子进程退出码=${code}\n输出：\n${output.slice(0, 4000)}`
-              )
-            );
-            return;
-          }
-
-          if (code !== 0) {
-            console.warn('[生图 CLI] 进程退出码非 0，但输出文件已存在:', code);
-          }
-
-          let stats: Promise<{ width: number; height: number }>;
-          try {
-            const sharp = require('sharp');
-            stats = sharp(outputPath)
-              .metadata()
-              .then((m: { width?: number; height?: number }) => ({
-                width: m.width ?? NaN,
-                height: m.height ?? NaN,
-              }));
-          } catch {
-            stats = Promise.resolve({ width: NaN, height: NaN });
-          }
-
-          stats
-            .then(({ width, height }) =>
-              resolve({
-                url: `file://${outputPath}`,
-                path: outputPath,
-                width:
-                  Number.isInteger(width) && width > 0 ? width : Number(params.width) || 512,
-                height:
-                  Number.isInteger(height) && height > 0 ? height : Number(params.height) || 512,
-              })
-            )
-            .catch(() =>
-              resolve({
-                url: `file://${outputPath}`,
-                path: outputPath,
-                width: Number(params.width) || 512,
-                height: Number(params.height) || 512,
-              })
-            );
-        })();
-      });
-    }
-  );
-
-  return [result];
+  for (let i = 0; i < n; i++) {
+    const outputPath = join(outputDir, `${randomUUID()}.png`);
+    const perParams: ImageGenerationParams = { ...params, count: 1 };
+    results.push(
+      await generateImageCliOneShot(perParams, config, outputPath, {
+        index: i + 1,
+        total: n,
+      })
+    );
+  }
+  return results;
 }
 
 function detectHttpFormat(

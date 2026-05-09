@@ -342,21 +342,35 @@ function inferRequestedImageCount(prompt: string, explicit?: number, context?: s
   return inferImageCountFromText(text);
 }
 
-function enhancePromptForMultiImage(prompt: string, count?: number): string {
+/**
+ * @param options.forLocalCli — 本地 CLI/SD 主干为英文时，多图说明用英文后缀，避免中文污染 MYAGENT_PROMPT。
+ */
+function enhancePromptForMultiImage(
+  prompt: string,
+  count?: number,
+  options?: { forLocalCli?: boolean }
+): string {
   if (!count || count <= 1) return prompt;
   const p = prompt.trim();
   const isLandscape =
     /风景|景观|山|海|湖|森林|草原|城市|建筑|夜景|日出|日落|天空|云|河流|峡谷|landscape|scenery|mountain|ocean|lake|forest|city|architecture|sunset|sunrise|sky|cloud|river|valley/i.test(p);
-  const diversityAxis = isLandscape
-    ? '主体景观、构图、光线、天气、色彩、镜头角度需要明显不同，但整体影像质量保持统一。'
-    : '主体、构图、动作、服装款式、配色、镜头角度需要明显不同，但整体质量和商业摄影风格保持统一。';
-  const diversityHint =
-    `本次需要一次性生成 ${count} 张成品图。每张都必须是独立完整图片，不能拼成九宫格或合照；` +
-    diversityAxis;
-  if (/每张|不同|多张|九张|9\s*张|variants?|images?/i.test(p)) {
+
+  if (options?.forLocalCli) {
+    const diversityAxis = isLandscape
+      ? 'Make each image clearly different in subject matter, composition, light, weather, color, and camera angle, while keeping consistent overall quality.'
+      : 'Make each image clearly different in subject pose, framing, outfit or color palette, action, and viewpoint, while keeping consistent quality and a polished photographic look.';
+    const diversityHint =
+      `Generate exactly ${count} separate full images—one finished image per generation, not a grid, collage, or contact sheet. ${diversityAxis}`;
     return `${p}\n${diversityHint}`;
   }
-  return `${p}\n${diversityHint}`;
+
+  const diversityAxisZh = isLandscape
+    ? '主体景观、构图、光线、天气、色彩、镜头角度需要明显不同，但整体影像质量保持统一。'
+    : '主体、构图、动作、服装款式、配色、镜头角度需要明显不同，但整体质量和商业摄影风格保持统一。';
+  const diversityHintZh =
+    `本次需要一次性生成 ${count} 张成品图。每张都必须是独立完整图片，不能拼成九宫格或合照；` +
+    diversityAxisZh;
+  return `${p}\n${diversityHintZh}`;
 }
 
 function containsCjk(text: string): boolean {
@@ -383,9 +397,22 @@ function shouldUseToolPromptForCli(
   return countAsciiWords(p) >= 8;
 }
 
-async function rewritePromptForLocalCliIfNeeded(prompt: string, activeModel: ModelConfig, imgGenModel: ModelConfig | undefined): Promise<string> {
+async function rewritePromptForLocalCliIfNeeded(
+  prompt: string,
+  activeModel: ModelConfig,
+  imgGenModel: ModelConfig | undefined,
+  multiImageBatch?: number
+): Promise<string> {
   const p = prompt.trim();
   if (!p || !isCliImageGenerator(imgGenModel) || !containsCjk(p)) return prompt;
+
+  const batchNote =
+    typeof multiImageBatch === 'number' &&
+    Number.isFinite(multiImageBatch) &&
+    multiImageBatch > 1
+      ? `\n\n[Context: ${multiImageBatch} separate images will be produced from this description in sequence. Write ONE compact English SD prompt that states the shared subject and aesthetic; phrasing should allow natural variation across runs (different pose, angle, or detail). Output English only, single paragraph.]`
+      : '';
+
   try {
     const response = await window.electron.callModel(
       [
@@ -400,7 +427,7 @@ async function rewritePromptForLocalCliIfNeeded(prompt: string, activeModel: Mod
         {
           id: `sd-prompt-user-${Date.now()}`,
           role: 'user',
-          content: p,
+          content: p + batchNote,
           timestamp: Date.now(),
           model: activeModel.name,
         },
@@ -525,9 +552,15 @@ async function postProcessAssistantContent(
           heightOut = clipped.height;
         }
         const requestedCount = expectedCounts[i];
-        const promptForCli = await rewritePromptForLocalCliIfNeeded(prompt, activeModel, m);
+        const forCli = isCliImageGenerator(m);
+        const promptForCli = await rewritePromptForLocalCliIfNeeded(
+          prompt,
+          activeModel,
+          m,
+          requestedCount > 1 ? requestedCount : undefined
+        );
         const imgs = await window.electron.generateImage({
-          prompt: enhancePromptForMultiImage(promptForCli, requestedCount),
+          prompt: enhancePromptForMultiImage(promptForCli, requestedCount, { forLocalCli: forCli }),
           width: widthOut,
           height: heightOut,
           count: requestedCount,
