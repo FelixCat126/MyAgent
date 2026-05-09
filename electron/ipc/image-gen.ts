@@ -1073,6 +1073,8 @@ function formatAxiosGenerateHttpError(
 }
 
 type CliGeneratedImage = { url: string; path: string; width: number; height: number };
+type GeneratedImage = { url: string; path: string; width: number; height: number };
+type ImageGeneratedCallback = (image: GeneratedImage, index: number, total: number) => void;
 
 /**
  * 单次 CLI 调用：仅校验 `outputPath` 这一张图。
@@ -1208,8 +1210,9 @@ async function generateImageCliOneShot(
 
 async function generateImageCli(
   params: ImageGenerationParams,
-  config: NonNullable<ModelConfig['imageGeneratorConfig']>
-): Promise<Array<{ url: string; path: string; width: number; height: number }>> {
+  config: NonNullable<ModelConfig['imageGeneratorConfig']>,
+  onImage?: ImageGeneratedCallback
+): Promise<GeneratedImage[]> {
   const appModule = await import('electron');
   const electronApp = appModule.app;
 
@@ -1231,19 +1234,21 @@ async function generateImageCli(
   const results: CliGeneratedImage[] = [];
   if (n <= 1) {
     const outputPath = join(outputDir, `${randomUUID()}.png`);
-    results.push(await generateImageCliOneShot(params, config, outputPath));
+    const img = await generateImageCliOneShot(params, config, outputPath);
+    results.push(img);
+    onImage?.(img, 1, 1);
     return results;
   }
 
   for (let i = 0; i < n; i++) {
     const outputPath = join(outputDir, `${randomUUID()}.png`);
     const perParams: ImageGenerationParams = { ...params, count: 1 };
-    results.push(
-      await generateImageCliOneShot(perParams, config, outputPath, {
-        index: i + 1,
-        total: n,
-      })
-    );
+    const img = await generateImageCliOneShot(perParams, config, outputPath, {
+      index: i + 1,
+      total: n,
+    });
+    results.push(img);
+    onImage?.(img, i + 1, n);
   }
   return results;
 }
@@ -1716,11 +1721,19 @@ function isUsableImageConfig(
   return Boolean(c.command && String(c.command).trim());
 }
 
-ipcMain.handle('generate-image', (_event, params: ImageGenerationParams) =>
-  enqueueSerializedImageGeneration(() => invokeGenerateImageIpc(params))
+ipcMain.handle('generate-image', (event, params: ImageGenerationParams) =>
+  enqueueSerializedImageGeneration(() => invokeGenerateImageIpc(params, (image, index, total) => {
+    if (!params.streamRequestId) return;
+    event.sender.send('image-generation-image', {
+      requestId: params.streamRequestId,
+      image,
+      index,
+      total,
+    });
+  }))
 );
 
-async function invokeGenerateImageIpc(params: ImageGenerationParams) {
+async function invokeGenerateImageIpc(params: ImageGenerationParams, onImage?: ImageGeneratedCallback) {
   const config = params.imageGeneratorConfig;
   if (!isUsableImageConfig(config)) {
     throw new Error(
@@ -1730,9 +1743,11 @@ async function invokeGenerateImageIpc(params: ImageGenerationParams) {
 
   try {
     if (config.type === 'http') {
-      return await generateImageHttp(params, config);
+      const imgs = await generateImageHttp(params, config);
+      imgs.forEach((img, idx) => onImage?.(img, idx + 1, imgs.length));
+      return imgs;
     }
-    return await generateImageCli(params, config);
+    return await generateImageCli(params, config, onImage);
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
     throw new Error('生图失败: ' + msg);

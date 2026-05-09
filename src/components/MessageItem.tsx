@@ -92,11 +92,18 @@ function DocumentGeneratingPlaceholder({ t }: { t: (key: string) => string }) {
 
 function ImageGeneratingPlaceholder({
   progress,
+  files,
+  openAttachmentPreview,
+  downloadAttachmentCopy,
   t,
 }: {
   progress: { current: number; total: number };
+  files?: FileInfo[];
+  openAttachmentPreview?: (name: string, src: string, path: string, index: number) => void;
+  downloadAttachmentCopy?: (e: React.MouseEvent, path: string, name: string) => void | Promise<void>;
   t: (key: string, params?: Record<string, string | number>) => string;
 }) {
+  const imageFiles = (files ?? []).filter((f) => f.type.startsWith('image/'));
   return (
     <div className="overflow-hidden rounded-xl border border-stone-300/50 bg-stone-50/75 dark:border-slate-600/55 dark:bg-slate-900/35" role="status" aria-live="polite">
       <div className="flex items-center gap-2 border-b border-stone-200/80 px-3 py-2 dark:border-slate-700/65">
@@ -112,6 +119,46 @@ function ImageGeneratingPlaceholder({
       </div>
       <div className={`${MULTI_IMAGE_ATTACHMENT_GRID} p-3`}>
         {Array.from({ length: Math.min(progress.total, 12) }).map((_, idx) => {
+          const file = imageFiles[idx];
+          if (file) {
+            const hasPreview = file.preview && file.preview.startsWith('data:');
+            const displaySrc = hasPreview
+              ? file.preview
+              : file.path
+                ? pathToFileURL(file.path).href.replace(/^file:/i, 'local-file:')
+                : '';
+            return (
+              <div key={file.path || idx} className="relative group/file max-w-full transition-all" title={file.name}>
+                <div className="flex flex-col gap-1">
+                  <img
+                    src={displaySrc}
+                    alt={file.name}
+                    onClick={() =>
+                      displaySrc &&
+                      openAttachmentPreview?.(file.name, displaySrc, file.path, idx)
+                    }
+                    className="h-[90px] w-[120px] cursor-zoom-in rounded-md object-contain border border-stone-300/60 shadow-sm transition-transform hover:scale-[1.02] dark:border-white/10 sm:h-[112px] sm:w-[150px]"
+                  />
+                  <div className="flex w-[120px] items-center gap-1 sm:w-[150px]">
+                    <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-stone-700 dark:text-slate-300">
+                      {file.name}
+                    </span>
+                    {downloadAttachmentCopy ? (
+                      <button
+                        type="button"
+                        className="shrink-0 rounded p-0.5 text-stone-500 hover:bg-stone-200 hover:text-primary-600 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-primary-300"
+                        title={t('message.imagePreviewDownload')}
+                        aria-label={t('message.imagePreviewDownload')}
+                        onClick={(e) => void downloadAttachmentCopy(e, file.path, file.name)}
+                      >
+                        <FiDownload size={12} aria-hidden />
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            );
+          }
           const active = idx + 1 === progress.current;
           const done = idx + 1 < progress.current;
           return (
@@ -622,8 +669,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
     !assistantDisplayBody.trim();
   const showImageGeneratingPlaceholder =
     message.role === 'assistant' &&
-    Boolean(imageGenProgress) &&
-    !message.files?.some((f) => f.type.startsWith('image/'));
+    Boolean(imageGenProgress);
   const markdownBody =
     assistantDisplayBody.length > MAX_MARKDOWN_RENDER_CHARS
       ? `${assistantDisplayBody.slice(0, MAX_MARKDOWN_RENDER_CHARS)}\n\n[内容过长，已截断显示；复制按钮仍会复制完整内容]`
@@ -829,7 +875,13 @@ const MessageItem: React.FC<MessageItemProps> = ({
                 {showDocumentGeneratingPlaceholder ? (
                   <DocumentGeneratingPlaceholder t={t} />
                 ) : showImageGeneratingPlaceholder && imageGenProgress ? (
-                  <ImageGeneratingPlaceholder progress={imageGenProgress} t={t} />
+                  <ImageGeneratingPlaceholder
+                    progress={imageGenProgress}
+                    files={message.files}
+                    openAttachmentPreview={openAttachmentPreview}
+                    downloadAttachmentCopy={downloadAttachmentCopy}
+                    t={t}
+                  />
                 ) : skipHeavyAssistantMutationsDuringStream &&
                   !showInlineStreamPlaceholder &&
                   !hideBodyForDocumentThinking ? (
@@ -893,7 +945,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
                     ) : null}
                   </div>
                 ) : null}
-                {message.files && message.files.length > 0 && (
+                {message.files && message.files.length > 0 && !showImageGeneratingPlaceholder && (
                   <div
                     className={
                       !(showInlineStreamPlaceholder ||

@@ -272,6 +272,11 @@ export type ImageGenProgressHooks = {
   onBegin?: (p: { total: number }) => void;
   onEachStart?: (p: { current: number; total: number }) => void;
   onEachDone?: (p: { done: number; total: number }) => void;
+  onImage?: (p: {
+    image: { url: string; path: string; width: number; height: number };
+    index: number;
+    total: number;
+  }) => void;
   onDone?: () => void;
 };
 
@@ -581,16 +586,23 @@ async function postProcessAssistantContent(
           m,
           requestedCount > 1 ? requestedCount : undefined
         );
-        const imgs = await window.electron.generateImage({
-          prompt: enhancePromptForMultiImage(promptForCli, requestedCount, { forLocalCli: forCli }),
-          width: widthOut,
-          height: heightOut,
-          count: requestedCount,
-          referenceImages: opts?.referenceImages,
-          modelId: m.id,
-          imageGeneratorConfig: cfg,
-          isolatedPrompt,
-        });
+        const imgs = await window.electron.generateImage(
+          {
+            prompt: enhancePromptForMultiImage(promptForCli, requestedCount, { forLocalCli: forCli }),
+            width: widthOut,
+            height: heightOut,
+            count: requestedCount,
+            referenceImages: opts?.referenceImages,
+            modelId: m.id,
+            imageGeneratorConfig: cfg,
+            isolatedPrompt,
+          },
+          {
+            onImage: ({ image, index, total }) => {
+              hooks?.onImage?.({ image, index, total });
+            },
+          }
+        );
         if (opts?.shouldCancel?.()) break;
         for (const img of imgs) {
           generatedFiles.push(img);
@@ -864,6 +876,33 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
       if (imageToolExpected) {
         plainModel.maxTokens = Math.min(plainModel.maxTokens || 1024, 1024);
       }
+      const appendGeneratedImageToAssistant = (
+        assistantId: string,
+        image: { url: string; path: string; width: number; height: number }
+      ): void => {
+        const name = image.path.split(/[\\/]/).pop() || 'generated-image.png';
+        const file: FileInfo = {
+          name,
+          path: image.path,
+          type: 'image/png',
+          size: 0,
+          preview: image.url,
+        };
+        const sess = useChatStore.getState().sessions.find((s) => s.id === sendSessionId);
+        const msg = sess?.messages.find((m) => m.id === assistantId);
+        const prev = (msg?.files ?? []) as FileInfo[];
+        if (prev.some((f) => f.path === file.path)) return;
+        updateMessage(sendSessionId, assistantId, { files: [...prev, file] });
+      };
+      const mergeAssistantFiles = (assistantId: string, incoming?: FileInfo[]): FileInfo[] | undefined => {
+        const sess = useChatStore.getState().sessions.find((s) => s.id === sendSessionId);
+        const msg = sess?.messages.find((m) => m.id === assistantId);
+        const merged: FileInfo[] = [...((msg?.files ?? []) as FileInfo[])];
+        for (const f of incoming ?? []) {
+          if (!merged.some((x) => x.path === f.path)) merged.push(f);
+        }
+        return merged.length ? merged : undefined;
+      };
       if (exportHint?.document && canUseSseStream(activeModel)) {
         streamHadErrorRef.current = false;
         streamCancelledByUserRef.current = false;
@@ -1101,6 +1140,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                       onEachStart: ({ current, total }) => setImageGenProgress({ current, total, messageId: assistantId }),
                       onEachDone: ({ done, total }) =>
                         setImageGenProgress(done >= total ? { current: total, total, messageId: assistantId } : { current: done + 1, total, messageId: assistantId }),
+                      onImage: ({ image }) => appendGeneratedImageToAssistant(assistantId, image),
                       onDone: () => setImageGenProgress(null),
                     };
                     const { content, files } = await postProcessAssistantContent(
@@ -1117,7 +1157,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                       }
                     );
                     nextContent = content;
-                    nextFiles = files as Message['files'];
+                    nextFiles = mergeAssistantFiles(assistantId, files);
                   } catch (e) {
                     nextContent =
                       raw + '\n\n' + t('postProcess.tag') + (e instanceof Error ? e.message : String(e));
@@ -1133,7 +1173,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
 
                 updateMessage(sendSessionId, assistantId, {
                   content: nextContent,
-                  files: nextFiles,
+                  files: mergeAssistantFiles(assistantId, nextFiles as FileInfo[] | undefined),
                   ...(exportHint ? { exportHint } : {}),
                 });
               } finally {
@@ -1205,6 +1245,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           onEachStart: ({ current, total }) => setImageGenProgress({ current, total, messageId: assistantId }),
           onEachDone: ({ done, total }) =>
             setImageGenProgress(done >= total ? { current: total, total, messageId: assistantId } : { current: done + 1, total, messageId: assistantId }),
+          onImage: ({ image }) => appendGeneratedImageToAssistant(assistantId, image),
           onDone: () => setImageGenProgress(null),
         };
         const plannedIntent = planImageIntent({
@@ -1230,7 +1271,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           content: c,
           ...(reasoningIn ? { reasoning: reasoningIn } : {}),
           ...(exportHint ? { exportHint } : {}),
-          files: files as Message['files'],
+          files: mergeAssistantFiles(assistantId, files),
         });
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);

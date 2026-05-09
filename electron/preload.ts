@@ -18,7 +18,39 @@ contextBridge.exposeInMainWorld('electron', {
 
   getInstalledApps: () => ipcRenderer.invoke('get-installed-apps'),
 
-  generateImage: (params: unknown) => ipcRenderer.invoke('generate-image', cloneForIpc(params)),
+  generateImage: (
+    params: Record<string, unknown>,
+    handlers?: {
+      onImage?: (p: {
+        requestId: string;
+        image: { url: string; path: string; width: number; height: number };
+        index: number;
+        total: number;
+      }) => void;
+    }
+  ) => {
+    const requestId =
+      (typeof params?.streamRequestId === 'string' && params.streamRequestId) ||
+      `img-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const payload = { ...(params || {}), streamRequestId: requestId };
+    let imageHandler: ((event: Electron.IpcRendererEvent, payload: unknown) => void) | null = null;
+    if (handlers?.onImage) {
+      imageHandler = (_event, eventPayload) => {
+        const p = eventPayload as { requestId?: string } | undefined;
+        if (!p || p.requestId !== requestId) return;
+        handlers.onImage?.(eventPayload as {
+          requestId: string;
+          image: { url: string; path: string; width: number; height: number };
+          index: number;
+          total: number;
+        });
+      };
+      ipcRenderer.on('image-generation-image', imageHandler);
+    }
+    return ipcRenderer.invoke('generate-image', cloneForIpc(payload)).finally(() => {
+      if (imageHandler) ipcRenderer.removeListener('image-generation-image', imageHandler);
+    });
+  },
 
   webSearch: (params: unknown) => ipcRenderer.invoke('web-search', cloneForIpc(params)),
 

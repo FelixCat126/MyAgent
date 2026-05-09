@@ -76,7 +76,17 @@ export interface ElectronAPI {
   launchApp: (appName: string) => Promise<boolean>;
   getInstalledApps: () => Promise<string[]>;
   /** 返回 1 张或多张（如火山 sequential / 多 URL）；界面按顺序展示 */
-  generateImage: (params: ImageGenerationParams) => Promise<
+  generateImage: (
+    params: ImageGenerationParams,
+    handlers?: {
+      onImage?: (p: {
+        requestId: string;
+        image: { url: string; path: string; width: number; height: number };
+        index: number;
+        total: number;
+      }) => void;
+    }
+  ) => Promise<
     Array<{ url: string; path: string; width: number; height: number }>
   >;
   webSearch: (params: WebSearchRequest) => Promise<WebSearchResponse>;
@@ -252,6 +262,8 @@ export interface ImageGenerationParams {
   modelFile?: string;
   /** 当前 prompt 是本轮用户输入的隔离生图任务，不应套用历史生图提示。 */
   isolatedPrompt?: boolean;
+  /** 渲染进程内部用于逐张图片增量回传的请求标识。 */
+  streamRequestId?: string;
 }
 
 export interface ToolCall {

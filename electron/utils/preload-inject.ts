@@ -24,7 +24,23 @@ export const preloadScript = `
     uploadFile: (fileData) => ipcRenderer.invoke('upload-file', __cf(fileData)),
     launchApp: (appName) => ipcRenderer.invoke('launch-app', __cf(appName)),
     getInstalledApps: () => ipcRenderer.invoke('get-installed-apps'),
-    generateImage: (params) => ipcRenderer.invoke('generate-image', __cf(params)),
+    generateImage: (params, handlers) => {
+      const requestId =
+        (params && typeof params.streamRequestId === 'string' && params.streamRequestId) ||
+        \`img-\${Date.now()}-\${Math.random().toString(16).slice(2)}\`;
+      const payload = { ...(params || {}), streamRequestId: requestId };
+      let imageHandler = null;
+      if (handlers && typeof handlers.onImage === 'function') {
+        imageHandler = (_event, eventPayload) => {
+          if (!eventPayload || eventPayload.requestId !== requestId) return;
+          handlers.onImage(eventPayload);
+        };
+        ipcRenderer.on('image-generation-image', imageHandler);
+      }
+      return ipcRenderer.invoke('generate-image', __cf(payload)).finally(() => {
+        if (imageHandler) ipcRenderer.removeListener('image-generation-image', imageHandler);
+      });
+    },
     webSearch: (params) => ipcRenderer.invoke('web-search', __cf(params)),
   });
 `;

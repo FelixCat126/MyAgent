@@ -78,7 +78,23 @@ window.electron = {
   uploadFile: (fileData) => ipcRenderer.invoke('upload-file', cloneForIpc(fileData)),
   launchApp: (appName) => ipcRenderer.invoke('launch-app', cloneForIpc(appName)),
   getInstalledApps: () => ipcRenderer.invoke('get-installed-apps'),
-  generateImage: (params) => ipcRenderer.invoke('generate-image', cloneForIpc(params)),
+  generateImage: (params, handlers) => {
+    const requestId =
+      (params && typeof params.streamRequestId === 'string' && params.streamRequestId) ||
+      `img-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const payload = { ...(params || {}), streamRequestId: requestId };
+    let imageHandler = null;
+    if (handlers && typeof handlers.onImage === 'function') {
+      imageHandler = (_event, eventPayload) => {
+        if (!eventPayload || eventPayload.requestId !== requestId) return;
+        handlers.onImage(eventPayload);
+      };
+      ipcRenderer.on('image-generation-image', imageHandler);
+    }
+    return ipcRenderer.invoke('generate-image', cloneForIpc(payload)).finally(() => {
+      if (imageHandler) ipcRenderer.removeListener('image-generation-image', imageHandler);
+    });
+  },
   webSearch: (params) => ipcRenderer.invoke('web-search', cloneForIpc(params)),
   extractDocumentText: (arg) => ipcRenderer.invoke('extract-document-text', cloneForIpc(arg)),
   saveAssistantExport: (arg) => ipcRenderer.invoke('save-assistant-export', cloneForIpc(arg)),
