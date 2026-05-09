@@ -443,12 +443,21 @@ async function postProcessAssistantContent(
     }
   }
 
-  const imageCalls = extractGenerateImageCalls(text);
   const resolveImageGeneratorModel = (): ModelConfig | undefined => {
     return modelHasUsableImageGenerator(activeModel) ? activeModel : undefined;
   };
   const imgGenModel = resolveImageGeneratorModel();
   const hooks = opts?.imageGenHooks;
+  const allowBarePromptJson =
+    Boolean(opts?.plannedIntent?.shouldGenerate) ||
+    Boolean(
+      imgGenModel?.imageGeneratorConfig &&
+        /^\s*\{[\s\S]*"prompt"\s*:/.test(text) &&
+        /"(?:count|width|height|n|num_images|max_images)"\s*:/.test(text)
+    );
+  const imageCalls = extractGenerateImageCalls(text, {
+    allowBarePromptJson,
+  });
 
   type GenItem = { prompt: string; width?: number; height?: number; count?: number; raw: string; isolatedPrompt?: boolean };
   const toGenerate: GenItem[] = [];
@@ -789,6 +798,17 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
 
       const plainMessages = JSON.parse(JSON.stringify(sanitizeMessagesForModel(chainForModel))) as Message[];
       const plainModel = JSON.parse(JSON.stringify(activeModel)) as ModelConfig;
+      const preplannedImageIntent = planImageIntent({
+        userText: userMessage.content,
+        historyBeforeUser,
+        assistantText: '',
+        toolCallCount: 0,
+      });
+      const imageToolExpected =
+        preplannedImageIntent.shouldGenerate && modelHasUsableImageGenerator(activeModel);
+      if (imageToolExpected) {
+        plainModel.maxTokens = Math.min(plainModel.maxTokens || 1024, 1024);
+      }
       if (exportHint?.document && canUseSseStream(activeModel)) {
         streamHadErrorRef.current = false;
         streamCancelledByUserRef.current = false;
@@ -889,8 +909,92 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         });
 
         const imgBase = inlineImageIndexRef.current;
+        let streamedTextForToolDetect = '';
+        let stoppedAfterToolCall = false;
+        let forceFinalizedToolStream = false;
+        let toolStreamIdleTimer: number | undefined;
+        const clearToolStreamIdleTimer = () => {
+          if (toolStreamIdleTimer != null) {
+            window.clearTimeout(toolStreamIdleTimer);
+            toolStreamIdleTimer = undefined;
+          }
+        };
+        const forceFinalizeToolStream = () => {
+          if (forceFinalizedToolStream) return;
+          forceFinalizedToolStream = true;
+          stoppedAfterToolCall = true;
+          clearToolStreamIdleTimer();
+          window.electron.closeModelStream();
+          void (async () => {
+            try {
+              const msg = useChatStore.getState()
+                .sessions.find((s) => s.id === sendSessionId)
+                ?.messages.find((m) => m.id === assistantId);
+              const raw = msg?.content ?? '';
+              const plannedIntent = planImageIntent({
+                userText: userMessage.content,
+                historyBeforeUser,
+                assistantText: raw,
+                toolCallCount: extractGenerateImageCalls(raw, { allowBarePromptJson: true }).length,
+              });
+              const imageHooks: ImageGenProgressHooks = {
+                onBegin: ({ total }) => {
+                  imageGenCancelledRef.current = false;
+                  setImageGenProgress({ current: 1, total, messageId: assistantId });
+                },
+                onEachStart: ({ current, total }) => setImageGenProgress({ current, total, messageId: assistantId }),
+                onEachDone: ({ done, total }) =>
+                  setImageGenProgress(done >= total ? { current: total, total, messageId: assistantId } : { current: done + 1, total, messageId: assistantId }),
+                onDone: () => setImageGenProgress(null),
+              };
+              const { content, files } = await postProcessAssistantContent(
+                raw,
+                activeModel,
+                imgBase,
+                setInlineImageIndex,
+                {
+                  imageGenHooks: imageHooks,
+                  referenceImages: imageReferencePathsFromFiles(userMessage.files),
+                  userPromptContext: userMessage.content,
+                  plannedIntent,
+                  shouldCancel: () => imageGenCancelledRef.current,
+                }
+              );
+              updateMessage(sendSessionId, assistantId, {
+                content,
+                files: files as Message['files'],
+                ...(exportHint ? { exportHint } : {}),
+              });
+            } finally {
+              setIsStreaming(false);
+              clearLoadingForSession(sendSessionId);
+              streamingAssistantIdRef.current = null;
+              setStreamingTargetAssistantId(null);
+              streamUnsubRef.current = null;
+            }
+          })();
+        };
+        const scheduleToolStreamIdleStop = () => {
+          if (!imageToolExpected || stoppedAfterToolCall) return;
+          if (!/myagent_tool|generate_image|GenerateImage/i.test(streamedTextForToolDetect)) return;
+          clearToolStreamIdleTimer();
+          toolStreamIdleTimer = window.setTimeout(() => {
+            if (stoppedAfterToolCall) return;
+            forceFinalizeToolStream();
+          }, 3500);
+        };
         const unsub = window.electron.subscribeModelStream(plainMessages, plainModel, {
-          onDelta: (d) => appendToMessage(sendSessionId, assistantId, d),
+          onDelta: (d) => {
+            appendToMessage(sendSessionId, assistantId, d);
+            if (!imageToolExpected || stoppedAfterToolCall) return;
+            streamedTextForToolDetect += d;
+            if (extractGenerateImageCalls(streamedTextForToolDetect, { allowBarePromptJson: true }).length > 0) {
+              clearToolStreamIdleTimer();
+              forceFinalizeToolStream();
+              return;
+            }
+            scheduleToolStreamIdleStop();
+          },
           onThinkingDelta: (th) => {
             if (th) appendReasoningToMessage(sendSessionId, assistantId, th);
           },
@@ -906,6 +1010,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           locale: uiLocale,
           onEnd: () => {
             void (async () => {
+              clearToolStreamIdleTimer();
+              if (forceFinalizedToolStream) return;
               streamUnsubRef.current = null;
               const aborted = streamCancelledByUserRef.current;
               streamCancelledByUserRef.current = false;

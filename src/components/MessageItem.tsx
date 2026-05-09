@@ -779,7 +779,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
             </div>
             <div className="flex min-w-0 max-w-full flex-1 flex-col items-stretch">
               <div className="max-w-full rounded-2xl rounded-tl-sm border border-stone-300/45 bg-stone-100 px-5 py-3.5 text-stone-800 shadow-sm leading-relaxed dark:border-white/5 dark:bg-slate-800 dark:text-slate-100">
-                {(isThoughtStreaming || (message.reasoning ?? '').trim().length > 0) && (
+                {(message.reasoning ?? '').trim().length > 0 && (
                   <AssistantReasoningCollapsible
                     reasoning={message.reasoning ?? ''}
                     isThoughtStreaming={isThoughtStreaming}

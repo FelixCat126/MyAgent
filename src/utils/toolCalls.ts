@@ -98,7 +98,8 @@ function collectGenerateImageJsonSpans(text: string): { start: number; end: numb
 }
 
 function parseGenerateImageFields(
-  raw: string
+  raw: string,
+  options?: { allowBarePromptJson?: boolean }
 ): { prompt: string; width?: number; height?: number; count?: number } | null {
   let obj: Record<string, unknown>;
   try {
@@ -107,7 +108,8 @@ function parseGenerateImageFields(
     return null;
   }
   const tool = obj.myagent_tool ?? obj.tool;
-  if (tool !== 'generate_image') return null;
+  if (tool !== 'generate_image' && !options?.allowBarePromptJson) return null;
+  if (tool !== 'generate_image' && !('prompt' in obj)) return null;
   const prompt = obj.prompt;
   if (typeof prompt !== 'string') return null;
   const width = obj.width;
@@ -285,7 +287,8 @@ export function stripGenerateImageToolPresentation(text: string): string {
 }
 
 export function extractGenerateImageCalls(
-  text: string
+  text: string,
+  options?: { allowBarePromptJson?: boolean }
 ): { prompt: string; width?: number; height?: number; count?: number; raw: string }[] {
   const out: { prompt: string; width?: number; height?: number; count?: number; raw: string }[] = [];
   const reXml =
@@ -302,9 +305,20 @@ export function extractGenerateImageCalls(
   const spans = collectGenerateImageJsonSpans(text);
   for (const { raw } of spans) {
     if (out.some((o) => o.raw === raw)) continue;
-    const parsed = parseGenerateImageFields(raw);
+    const parsed = parseGenerateImageFields(raw, options);
     if (!parsed) continue;
     out.push({ prompt: parsed.prompt, width: parsed.width, height: parsed.height, count: parsed.count, raw });
+  }
+  if (options?.allowBarePromptJson) {
+    for (let s = text.indexOf('{'); s !== -1; s = text.indexOf('{', s + 1)) {
+      const end = endOfBalancedBraceObject(text, s);
+      if (end < 0) continue;
+      const raw = text.slice(s, end + 1);
+      if (out.some((o) => o.raw === raw)) continue;
+      const parsed = parseGenerateImageFields(raw, options);
+      if (!parsed) continue;
+      out.push({ prompt: parsed.prompt, width: parsed.width, height: parsed.height, count: parsed.count, raw });
+    }
   }
   return out;
 }

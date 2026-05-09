@@ -71,6 +71,15 @@ describe('extractGenerateImageCalls', () => {
     expect(r[0].width).toBe(1024);
     expect(r[0].height).toBe(512);
   });
+
+  it('生图意图场景允许裸 prompt JSON', () => {
+    const t = '{"prompt":"A fast high-speed train crossing a mountain bridge","count":1}';
+    expect(extractGenerateImageCalls(t)).toHaveLength(0);
+    const r = extractGenerateImageCalls(t, { allowBarePromptJson: true });
+    expect(r).toHaveLength(1);
+    expect(r[0].prompt).toContain('train');
+    expect(r[0].count).toBe(1);
+  });
 });
 
 describe('stripRedundantAssistantImagePromptBlocks', () => {
