@@ -826,14 +826,36 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           model: activeModel.name,
         });
 
+        let docPendingReasoning = '';
+        let docReasoningFlushRaf = 0;
+        const flushDocReasoningImmediately = (): void => {
+          if (docReasoningFlushRaf !== 0) {
+            window.cancelAnimationFrame(docReasoningFlushRaf);
+            docReasoningFlushRaf = 0;
+          }
+          const merged = docPendingReasoning;
+          docPendingReasoning = '';
+          if (!merged) return;
+          appendReasoningToMessage(sendSessionId, assistantId, merged);
+        };
+        const queueDocReasoningChunk = (th: string): void => {
+          docPendingReasoning += th;
+          if (docReasoningFlushRaf !== 0) return;
+          docReasoningFlushRaf = window.requestAnimationFrame(() => {
+            docReasoningFlushRaf = 0;
+            flushDocReasoningImmediately();
+          });
+        };
+
         const unsub = window.electron.subscribeModelStream(plainMessages, plainModel, {
           onDelta: (d) => {
             artifactBuffer += d;
           },
           onThinkingDelta: (th) => {
-            if (th) appendReasoningToMessage(sendSessionId, assistantId, th);
+            if (th) queueDocReasoningChunk(th);
           },
           onError: (m) => {
+            flushDocReasoningImmediately();
             streamHadErrorRef.current = true;
             updateMessage(sendSessionId, assistantId, {
               content: t('chat.requestFailed') + m,
@@ -843,6 +865,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           locale: uiLocale,
           onEnd: () => {
             void (async () => {
+              flushDocReasoningImmediately();
               streamUnsubRef.current = null;
               const aborted = streamCancelledByUserRef.current;
               streamCancelledByUserRef.current = false;
@@ -909,96 +932,60 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         });
 
         const imgBase = inlineImageIndexRef.current;
-        let streamedTextForToolDetect = '';
-        let stoppedAfterToolCall = false;
-        let forceFinalizedToolStream = false;
-        let toolStreamIdleTimer: number | undefined;
-        const clearToolStreamIdleTimer = () => {
-          if (toolStreamIdleTimer != null) {
-            window.clearTimeout(toolStreamIdleTimer);
-            toolStreamIdleTimer = undefined;
+        /** 合并 content delta（不在流式中解析 myagent_tool / extractGenerateImageCalls，避免出现该片段时对整缓冲区反复括号扫描导致卡死；生图在 onEnd 统一 postProcess） */
+        let pendingContentDelta = '';
+        let contentDeltaFlushRaf = 0;
+        const flushPendingContentDeltaImmediately = () => {
+          if (contentDeltaFlushRaf !== 0) {
+            window.cancelAnimationFrame(contentDeltaFlushRaf);
+            contentDeltaFlushRaf = 0;
           }
+          const merged = pendingContentDelta;
+          pendingContentDelta = '';
+          if (!merged) return;
+          appendToMessage(sendSessionId, assistantId, merged);
         };
-        const forceFinalizeToolStream = () => {
-          if (forceFinalizedToolStream) return;
-          forceFinalizedToolStream = true;
-          stoppedAfterToolCall = true;
-          clearToolStreamIdleTimer();
-          window.electron.closeModelStream();
-          void (async () => {
-            try {
-              const msg = useChatStore.getState()
-                .sessions.find((s) => s.id === sendSessionId)
-                ?.messages.find((m) => m.id === assistantId);
-              const raw = msg?.content ?? '';
-              const plannedIntent = planImageIntent({
-                userText: userMessage.content,
-                historyBeforeUser,
-                assistantText: raw,
-                toolCallCount: extractGenerateImageCalls(raw, { allowBarePromptJson: true }).length,
-              });
-              const imageHooks: ImageGenProgressHooks = {
-                onBegin: ({ total }) => {
-                  imageGenCancelledRef.current = false;
-                  setImageGenProgress({ current: 1, total, messageId: assistantId });
-                },
-                onEachStart: ({ current, total }) => setImageGenProgress({ current, total, messageId: assistantId }),
-                onEachDone: ({ done, total }) =>
-                  setImageGenProgress(done >= total ? { current: total, total, messageId: assistantId } : { current: done + 1, total, messageId: assistantId }),
-                onDone: () => setImageGenProgress(null),
-              };
-              const { content, files } = await postProcessAssistantContent(
-                raw,
-                activeModel,
-                imgBase,
-                setInlineImageIndex,
-                {
-                  imageGenHooks: imageHooks,
-                  referenceImages: imageReferencePathsFromFiles(userMessage.files),
-                  userPromptContext: userMessage.content,
-                  plannedIntent,
-                  shouldCancel: () => imageGenCancelledRef.current,
-                }
-              );
-              updateMessage(sendSessionId, assistantId, {
-                content,
-                files: files as Message['files'],
-                ...(exportHint ? { exportHint } : {}),
-              });
-            } finally {
-              setIsStreaming(false);
-              clearLoadingForSession(sendSessionId);
-              streamingAssistantIdRef.current = null;
-              setStreamingTargetAssistantId(null);
-              streamUnsubRef.current = null;
-            }
-          })();
+        const queueContentDeltaChunk = (d: string): void => {
+          pendingContentDelta += d;
+          if (contentDeltaFlushRaf !== 0) return;
+          contentDeltaFlushRaf = window.requestAnimationFrame(() => {
+            contentDeltaFlushRaf = 0;
+            flushPendingContentDeltaImmediately();
+          });
         };
-        const scheduleToolStreamIdleStop = () => {
-          if (!imageToolExpected || stoppedAfterToolCall) return;
-          if (!/myagent_tool|generate_image|GenerateImage/i.test(streamedTextForToolDetect)) return;
-          clearToolStreamIdleTimer();
-          toolStreamIdleTimer = window.setTimeout(() => {
-            if (stoppedAfterToolCall) return;
-            forceFinalizeToolStream();
-          }, 3500);
+
+        /** 合并 thinking channel，极低频更新 store（否则每条 reasoning token + 滚动同步会把主线程钉死） */
+        let pendingReasoningDelta = '';
+        let reasoningFlushRaf = 0;
+        const drainReasoningBufferUnsafe = (): void => {
+          if (reasoningFlushRaf !== 0) {
+            window.cancelAnimationFrame(reasoningFlushRaf);
+            reasoningFlushRaf = 0;
+          }
+          const merged = pendingReasoningDelta;
+          pendingReasoningDelta = '';
+          if (!merged) return;
+          appendReasoningToMessage(sendSessionId, assistantId, merged);
         };
+        const queueReasoningDeltaChunk = (th: string): void => {
+          pendingReasoningDelta += th;
+          if (reasoningFlushRaf !== 0) return;
+          reasoningFlushRaf = window.requestAnimationFrame(() => {
+            reasoningFlushRaf = 0;
+            drainReasoningBufferUnsafe();
+          });
+        };
+
         const unsub = window.electron.subscribeModelStream(plainMessages, plainModel, {
           onDelta: (d) => {
-            appendToMessage(sendSessionId, assistantId, d);
-            if (!imageToolExpected || stoppedAfterToolCall) return;
-            streamedTextForToolDetect += d;
-            if (extractGenerateImageCalls(streamedTextForToolDetect, { allowBarePromptJson: true }).length > 0) {
-              clearToolStreamIdleTimer();
-              forceFinalizeToolStream();
-              return;
-            }
-            scheduleToolStreamIdleStop();
+            queueContentDeltaChunk(d);
           },
           onThinkingDelta: (th) => {
-            if (th) appendReasoningToMessage(sendSessionId, assistantId, th);
+            if (th) queueReasoningDeltaChunk(th);
           },
           onError: (m) => {
+            flushPendingContentDeltaImmediately();
+            drainReasoningBufferUnsafe();
             streamHadErrorRef.current = true;
             const sess = useChatStore.getState().sessions.find((s) => s.id === sendSessionId);
             const prior = sess?.messages.find((x) => x.id === assistantId)?.content?.trimEnd() ?? '';
@@ -1010,8 +997,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           locale: uiLocale,
           onEnd: () => {
             void (async () => {
-              clearToolStreamIdleTimer();
-              if (forceFinalizedToolStream) return;
+              flushPendingContentDeltaImmediately();
+              drainReasoningBufferUnsafe();
               streamUnsubRef.current = null;
               const aborted = streamCancelledByUserRef.current;
               streamCancelledByUserRef.current = false;

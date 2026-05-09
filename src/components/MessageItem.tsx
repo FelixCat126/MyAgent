@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { pathToFileURL } from 'url';
 import { FileInfo, Message } from '../types';
@@ -15,6 +15,10 @@ import {
 
 const MAX_MARKDOWN_RENDER_CHARS = 24_000;
 const MAX_ASSISTANT_PREPROCESS_CHARS = 28_000;
+
+/** 多图附件：每行 4 张，不足一行时从左依次排列，超过 4 张按 4 的倍数换行 */
+const MULTI_IMAGE_ATTACHMENT_GRID =
+  'grid w-max max-w-full grid-cols-[repeat(4,max-content)] gap-2 justify-items-start overflow-x-auto';
 
 /** 对应 App.tsx 顶栏拖拽区 TITLEBAR_H(44)，避免按钮落在 Electron drag 带上被吞点击 */
 const MODAL_CLEAR_TITLEBAR_PT = 'pt-[52px]';
@@ -106,14 +110,14 @@ function ImageGeneratingPlaceholder({
           ) : null}
         </span>
       </div>
-      <div className={progress.total > 2 ? 'grid grid-cols-2 gap-2 p-3 sm:grid-cols-3' : progress.total === 2 ? 'flex flex-wrap justify-start gap-2 p-3' : 'p-3'}>
+      <div className={`${MULTI_IMAGE_ATTACHMENT_GRID} p-3`}>
         {Array.from({ length: Math.min(progress.total, 12) }).map((_, idx) => {
           const active = idx + 1 === progress.current;
           const done = idx + 1 < progress.current;
           return (
             <div
               key={idx}
-              className={`relative myagent-image-gen-loading-shimmer flex aspect-[4/3] h-[112px] w-[150px] items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-stone-200/90 via-stone-100 to-primary-500/18 dark:from-slate-700 dark:via-slate-900/85 dark:to-primary-600/22 ${
+              className={`relative myagent-image-gen-loading-shimmer flex h-[90px] w-[120px] items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-stone-200/90 via-stone-100 to-primary-500/18 sm:h-[112px] sm:w-[150px] dark:from-slate-700 dark:via-slate-900/85 dark:to-primary-600/22 ${
                 active ? 'ring-2 ring-primary-500/55' : done ? 'opacity-70' : ''
               }`}
             >
@@ -157,6 +161,7 @@ function AssistantReasoningCollapsible(props: {
   const { reasoning, isThoughtStreaming, t } = props;
   const [expanded, setExpanded] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollFollowRaf = useRef(0);
 
   useEffect(() => {
     if (!isThoughtStreaming) setExpanded(false);
@@ -169,11 +174,18 @@ function AssistantReasoningCollapsible(props: {
     setExpanded((v) => !v);
   };
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     if (!showBody) return;
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    if (scrollFollowRaf.current !== 0) window.cancelAnimationFrame(scrollFollowRaf.current);
+    scrollFollowRaf.current = window.requestAnimationFrame(() => {
+      scrollFollowRaf.current = 0;
+      const el = scrollRef.current;
+      if (!el) return;
+      el.scrollTop = el.scrollHeight;
+    });
+    return () => {
+      if (scrollFollowRaf.current !== 0) window.cancelAnimationFrame(scrollFollowRaf.current);
+    };
   }, [reasoning, showBody]);
 
   return (
@@ -521,6 +533,13 @@ const MessageItem: React.FC<MessageItemProps> = ({
     !!streamingAssistantId &&
     message.id === streamingAssistantId;
 
+  /** 流式输出的助手正文：禁用 strip + Markdown，避免半截 JSON/remark-gfm 把界面卡死 */
+  const skipHeavyAssistantMutationsDuringStream =
+    message.role === 'assistant' &&
+    Boolean(conversationStreaming) &&
+    streamingAssistantId != null &&
+    streamingAssistantId === message.id;
+
   const assistantDisplayBody = useMemo(
     () => {
       if (message.role !== 'assistant') return '';
@@ -529,13 +548,29 @@ const MessageItem: React.FC<MessageItemProps> = ({
         raw.length > MAX_ASSISTANT_PREPROCESS_CHARS
           ? `${raw.slice(0, MAX_ASSISTANT_PREPROCESS_CHARS)}\n\n[内容过长，已截断显示；复制按钮仍会复制完整内容]`
           : raw;
+      if (skipHeavyAssistantMutationsDuringStream) return capped;
       return stripGenerateImageArtifactsForDisplay(capped);
     },
-    [message.role, message.content]
+    [message.role, message.id, message.content, conversationStreaming, streamingAssistantId]
   );
   const assistantExportBody = useMemo(
-    () => (message.role === 'assistant' ? stripGenerateImageArtifactsForDisplay(message.content ?? '') : ''),
-    [message.role, message.content]
+    () => {
+      if (message.role !== 'assistant') return '';
+      const raw = message.content ?? '';
+      if (
+        conversationStreaming &&
+        streamingAssistantId != null &&
+        streamingAssistantId === message.id
+      ) {
+        const capped =
+          raw.length > MAX_ASSISTANT_PREPROCESS_CHARS
+            ? `${raw.slice(0, MAX_ASSISTANT_PREPROCESS_CHARS)}\n\n[内容过长，已截断显示；复制按钮仍会复制完整内容]`
+            : raw;
+        return capped;
+      }
+      return stripGenerateImageArtifactsForDisplay(raw);
+    },
+    [message.role, message.id, message.content, conversationStreaming, streamingAssistantId]
   );
 
   const handleCopy = async () => {
@@ -647,7 +682,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
                   bg-gradient-to-br from-primary-500 to-primary-600 text-white rounded-tr-sm border border-primary-400/30`}
                 >
                   {message.files && message.files.length > 0 && (
-                    <div className="mb-2 grid grid-cols-[repeat(auto-fill,minmax(120px,120px))] justify-start gap-2 sm:grid-cols-[repeat(auto-fill,minmax(150px,150px))] lg:grid-cols-[repeat(auto-fill,minmax(150px,150px))] xl:max-w-[790px]">
+                    <div className={`mb-2 ${MULTI_IMAGE_ATTACHMENT_GRID}`}>
                       {message.files.map((file, index) => {
                         const isImage = file.type.startsWith('image/');
                         const hasPreview = file.preview && file.preview.startsWith('data:');
@@ -795,6 +830,12 @@ const MessageItem: React.FC<MessageItemProps> = ({
                   <DocumentGeneratingPlaceholder t={t} />
                 ) : showImageGeneratingPlaceholder && imageGenProgress ? (
                   <ImageGeneratingPlaceholder progress={imageGenProgress} t={t} />
+                ) : skipHeavyAssistantMutationsDuringStream &&
+                  !showInlineStreamPlaceholder &&
+                  !hideBodyForDocumentThinking ? (
+                  <div className="max-w-full whitespace-pre-wrap break-words pt-0.5 text-[13px] leading-relaxed text-stone-800 dark:text-slate-100">
+                    {markdownBody}
+                  </div>
                 ) : standaloneCode ? (
                   <div className="overflow-hidden rounded-lg border border-stone-300/60 bg-[#faf8f5] shadow-inner dark:border-slate-600/50 dark:bg-slate-900/90">
                     <div className="flex items-center justify-between border-b border-stone-300/50 bg-stone-200/85 px-3 py-1.5 text-[11px] text-stone-600 dark:border-slate-600/50 dark:bg-slate-800/90 dark:text-slate-400">
@@ -863,7 +904,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
                         : 'mt-3'
                     }
                   >
-                    <div className="grid grid-cols-[repeat(auto-fill,minmax(120px,120px))] justify-start gap-2 sm:grid-cols-[repeat(auto-fill,minmax(150px,150px))] xl:max-w-[790px]">
+                    <div className={MULTI_IMAGE_ATTACHMENT_GRID}>
                       {message.files.map((file, index) => {
                         const isImage = file.type.startsWith('image/');
                         const hasPreview = file.preview && file.preview.startsWith('data:');
