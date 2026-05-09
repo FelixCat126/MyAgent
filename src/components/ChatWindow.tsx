@@ -381,6 +381,25 @@ function countAsciiWords(text: string): number {
   return (text.match(/[A-Za-z][A-Za-z0-9'-]*/g) || []).length;
 }
 
+function cleanLocalCliPromptRewrite(raw: string): string {
+  const toolCalls = extractGenerateImageCalls(raw, { allowBarePromptJson: true });
+  const toolPrompt = toolCalls.find((x) => x.prompt.trim())?.prompt?.trim();
+  const text = (toolPrompt || stripGenerateImageArtifactsForDisplay(raw))
+    .replace(/\r\n/g, '\n')
+    .replace(/^```(?:text|txt|json|markdown)?\s*/i, '')
+    .replace(/```$/i, '')
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .trim();
+
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^(?:prompt|english prompt|final prompt|output)\s*[:：]\s*$/i.test(line));
+  const compact = lines.join(' ').replace(/\s+/g, ' ').trim();
+  return compact.replace(/^(?:prompt|english prompt|final prompt|output)\s*[:：]\s*/i, '').trim();
+}
+
 function isCliImageGenerator(model: ModelConfig | undefined): boolean {
   return model?.imageGeneratorConfig?.type === 'cli';
 }
@@ -420,7 +439,7 @@ async function rewritePromptForLocalCliIfNeeded(
           id: `sd-prompt-sys-${Date.now()}`,
           role: 'system',
           content:
-            'Rewrite the user image request into one concise English Stable Diffusion prompt for a local SD1.5/Realistic Vision image generator. Return only the final English prompt. Do not include JSON, XML, explanations, quotes, markdown, or Chinese. Preserve the requested subject exactly; do not add people unless the user asked for people. Add useful style, composition, lighting, and quality terms.',
+            'You are a strict prompt translation engine for a local Stable Diffusion / SDXL image generator. Translate and rewrite the user image request into ONE concise English image prompt. Output ONLY the English prompt text. No JSON, no XML, no Markdown, no quotes, no explanations, no thinking text, no Chinese characters. Preserve the requested subject exactly; do not add people unless the user asked for people. Add useful style, composition, lighting, camera, and quality terms.',
           timestamp: Date.now(),
           model: 'myagent-sd-prompt-rewrite',
         },
@@ -435,9 +454,7 @@ async function rewritePromptForLocalCliIfNeeded(
       { ...activeModel, maxTokens: Math.min(activeModel.maxTokens || 1024, 512) },
       { locale: 'en' }
     );
-    const rewritten = stripGenerateImageArtifactsForDisplay(response.content || '')
-      .replace(/^["'`]+|["'`]+$/g, '')
-      .trim();
+    const rewritten = cleanLocalCliPromptRewrite(response.content || '');
     if (rewritten && !containsCjk(rewritten) && countAsciiWords(rewritten) >= 6) {
       console.info('[生图 CLI] 中文 prompt 已改写为英文 SD prompt', {
         originalPreview: p.slice(0, 240),
@@ -445,10 +462,15 @@ async function rewritePromptForLocalCliIfNeeded(
       });
       return rewritten;
     }
+    console.warn('[生图 CLI] 中文 prompt 英文化结果不可用', {
+      originalPreview: p.slice(0, 240),
+      responsePreview: String(response.content || '').slice(0, 800),
+      rewrittenPreview: rewritten.slice(0, 500),
+    });
   } catch (e) {
-    console.warn('[生图 CLI] 中文 prompt 英文化失败，继续使用原 prompt', e);
+    console.warn('[生图 CLI] 中文 prompt 英文化失败', e);
   }
-  return prompt;
+  throw new Error('本地 CLI 生图需要英文 prompt，但当前本地对话模型没有返回可用英文提示词；已中止，避免把中文 prompt 直接送入 SD/SDXL。');
 }
 
 async function postProcessAssistantContent(

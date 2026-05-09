@@ -110,15 +110,37 @@ def find_vae_single_file(repo_id: str, local_only: bool) -> str | None:
     return None
 
 
-def find_pipeline_vae_config(model_id: str, local_only: bool) -> str | None:
+def get_model_snapshot(model_id: str, local_only: bool) -> Path | None:
     try:
         from huggingface_hub import snapshot_download
 
-        snapshot = Path(snapshot_download(repo_id=model_id, local_files_only=local_only))
+        return Path(snapshot_download(repo_id=model_id, local_files_only=local_only))
     except Exception:
+        return None
+
+
+def find_pipeline_vae_config(model_id: str, local_only: bool) -> str | None:
+    snapshot = get_model_snapshot(model_id, local_only)
+    if not snapshot:
         return None
     config = snapshot / "vae" / "config.json"
     return str(config) if config.exists() else None
+
+
+def detect_pipeline_class(model_id: str, local_only: bool) -> str:
+    snapshot = get_model_snapshot(model_id, local_only)
+    if not snapshot:
+        return ""
+    model_index = snapshot / "model_index.json"
+    if not model_index.exists():
+        return ""
+    try:
+        import json
+
+        data = json.loads(model_index.read_text(encoding="utf-8"))
+        return str(data.get("_class_name") or "")
+    except Exception:
+        return ""
 
 
 def main() -> None:
@@ -152,13 +174,17 @@ def main() -> None:
     os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
     import torch
-    from diffusers import AutoencoderKL, DPMSolverMultistepScheduler, StableDiffusionPipeline
+    from diffusers import AutoencoderKL, DPMSolverMultistepScheduler, StableDiffusionPipeline, StableDiffusionXLPipeline
 
+    local_only = os.environ.get("MYAGENT_SD_LOCAL_ONLY", "1") not in ("0", "false", "no")
+    pipeline_class_name = detect_pipeline_class(MODEL_ID, local_only)
+    is_sdxl = pipeline_class_name == "StableDiffusionXLPipeline" or "xl" in MODEL_ID.lower()
     if torch.backends.mps.is_available():
       device = "mps"
-      # Stable Diffusion 1.5 can produce NaNs/black images on some MPS fp16 paths.
-      # float32 is still practical for SD1.5 on 24 GB Apple Silicon and is much safer.
-      dtype = torch.float32
+      dtype_name = os.environ.get("MYAGENT_SD_DTYPE", "float32").strip().lower()
+      # Apple Silicon MPS fp16 is fast, but SD/SDXL VAE/UNet paths can produce NaNs that decode to all-black PNGs.
+      # Keep the default numerically stable; users can opt into fp16 through MYAGENT_SD_DTYPE when they prefer speed.
+      dtype = torch.float16 if dtype_name in ("fp16", "float16", "half") else torch.float32
     elif torch.cuda.is_available():
       device = "cuda"
       dtype = torch.float16
@@ -167,6 +193,7 @@ def main() -> None:
       dtype = torch.float32
 
     print(f"Using model: {MODEL_ID}", flush=True)
+    print(f"Pipeline: {pipeline_class_name or ('StableDiffusionXLPipeline' if is_sdxl else 'StableDiffusionPipeline')}", flush=True)
     print(f"Isolated prompt: {os.environ.get('MYAGENT_SD_ISOLATED_PROMPT', '0')}", flush=True)
     print(f"Prompt: {prompt[:800]}", flush=True)
     if (width, height) != (requested_width, requested_height):
@@ -175,9 +202,8 @@ def main() -> None:
             f"using {width}x{height}. Set MYAGENT_SD_MAX_PIXELS to override.",
             flush=True,
         )
-    print(f"Device: {device}; size={width}x{height}; steps={steps}", flush=True)
+    print(f"Device: {device}; dtype={dtype}; size={width}x{height}; steps={steps}", flush=True)
 
-    local_only = os.environ.get("MYAGENT_SD_LOCAL_ONLY", "1") not in ("0", "false", "no")
     vae_id = os.environ.get("MYAGENT_SD_VAE", default_vae_for_model(MODEL_ID)).strip()
     vae = None
     if vae_id:
@@ -199,14 +225,15 @@ def main() -> None:
                 vae_kwargs["config"] = vae_config
             vae = AutoencoderKL.from_single_file(single_file, **vae_kwargs)
 
-    pipe = StableDiffusionPipeline.from_pretrained(
-        MODEL_ID,
-        torch_dtype=dtype,
-        vae=vae,
-        safety_checker=None,
-        requires_safety_checker=False,
-        local_files_only=local_only,
-    )
+    pipeline_cls = StableDiffusionXLPipeline if is_sdxl else StableDiffusionPipeline
+    pipe_kwargs = {
+        "torch_dtype": dtype,
+        "local_files_only": local_only,
+        **({} if is_sdxl else {"safety_checker": None, "requires_safety_checker": False}),
+    }
+    if vae is not None:
+        pipe_kwargs["vae"] = vae
+    pipe = pipeline_cls.from_pretrained(MODEL_ID, **pipe_kwargs)
     scheduler_name = os.environ.get("MYAGENT_SD_SCHEDULER", "dpmpp_karras").strip().lower()
     if scheduler_name in ("dpmpp", "dpmpp_karras", "dpmsolver", "dpmsolver_karras"):
         pipe.scheduler = DPMSolverMultistepScheduler.from_config(
@@ -219,7 +246,7 @@ def main() -> None:
 
     if hasattr(pipe, "enable_attention_slicing"):
         pipe.enable_attention_slicing()
-    if hasattr(pipe, "enable_vae_slicing"):
+    if getattr(pipe, "vae", None) is not None and hasattr(pipe, "enable_vae_slicing"):
         pipe.enable_vae_slicing()
 
     generator = None
