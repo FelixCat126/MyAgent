@@ -15,9 +15,13 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="application-name" content="MyAgent" />
   <meta name="format-detection" content="telephone=no" />
+  <!-- Safari 需在解析早期就有 apple-touch-icon；仅靠 JS append 易导致仍用缓存占位图 -->
+  <link id="myagent-pwa-touch" rel="apple-touch-icon" sizes="180x180" href="/remote/apple-touch-icon.png?v=3" />
+  <link id="myagent-pwa-manifest" rel="manifest" href="/remote/manifest.webmanifest?v=3" />
   <script>
     (function () {
-      /** 与 gatewayBaseHrefDir：子路径挂载时 manifest/图标与同基底下的 remote/... */
+      /** 与子路径挂载时 gatewayBaseHrefDir 同源：重写为 .../前缀/remote/... */
+      var PWA_ICON_Q = 'v=3';
       function pwaHrefBaseDir() {
         var u = window.location;
         var pn = u.pathname || '/';
@@ -34,14 +38,14 @@
       }
       try {
         var root = pwaHrefBaseDir();
-        var icon = document.createElement('link');
-        icon.rel = 'apple-touch-icon';
-        icon.href = new URL('remote/apple-touch-icon.png', root).href;
-        document.head.appendChild(icon);
-        var man = document.createElement('link');
-        man.rel = 'manifest';
-        man.href = new URL('remote/manifest.webmanifest', root).href;
-        document.head.appendChild(man);
+        var icon = document.getElementById('myagent-pwa-touch');
+        var man = document.getElementById('myagent-pwa-manifest');
+        if (icon) {
+          icon.href = new URL('remote/apple-touch-icon.png?' + PWA_ICON_Q, root).href;
+        }
+        if (man) {
+          man.href = new URL('remote/manifest.webmanifest?' + PWA_ICON_Q, root).href;
+        }
       } catch (_) {}
     })();
   </script>
@@ -849,14 +853,20 @@
       border: 1px solid var(--bd);
       background: var(--card);
       color: var(--muted);
-      font-size: 18px;
-      line-height: 1;
+      line-height: 0;
       cursor: pointer;
       display: inline-flex;
       align-items: center;
       justify-content: center;
       padding: 0;
       flex-shrink: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .btn-mini-att svg {
+      width: 22px;
+      height: 22px;
+      flex-shrink: 0;
+      display: block;
     }
     .btn-mini-att:active { opacity: .9; }
     .composer-field {
@@ -1345,7 +1355,11 @@
         <div id="thread"></div>
         <div class="composer">
           <div class="composer-one">
-            <button type="button" class="btn-mini-att" id="pick" aria-label="添加附件">📎</button>
+            <button type="button" class="btn-mini-att" id="pick" aria-label="添加附件" title="添加附件">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+              </svg>
+            </button>
             <div class="composer-field">
               <textarea id="msg" rows="1" placeholder=""></textarea>
             </div>

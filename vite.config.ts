@@ -12,10 +12,21 @@ const PRELOAD_SRC = join(_dirname, 'electron/preload.cjs');
 const PRELOAD_OUT = join(_dirname, 'dist-electron/preload.cjs');
 const REMOTE_SHELL_SRC = join(_dirname, 'electron/remote-shell.html');
 const REMOTE_SHELL_OUT = join(_dirname, 'dist-electron/remote-shell.html');
-const REMOTE_TOUCH_ICON_SRC = join(_dirname, 'electron/remote-apple-touch-icon.png');
+/** 与 electron-builder 桌面图标同源：优先 resources，其次 public（与 generate-app-icon 输出一致） */
 const REMOTE_TOUCH_ICON_OUT = join(_dirname, 'dist-electron/remote-apple-touch-icon.png');
 const REMOTE_MANIFEST_SRC = join(_dirname, 'electron/remote-manifest.webmanifest');
 const REMOTE_MANIFEST_OUT = join(_dirname, 'dist-electron/remote-manifest.webmanifest');
+
+function resolveDesktopIconForRemoteTouch(): string | null {
+  const candidates = [
+    join(_dirname, 'resources/icon.png'),
+    join(_dirname, 'public/icon.png'),
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return null;
+}
 
 /** 打包会错误地生成 ESM 的 `import`，而 Electron 对 preload 使用 require 加载，故原样复制 CJS 源文件。 */
 function copyPreloadCjs() {
@@ -26,8 +37,14 @@ function copyPreloadCjs() {
 function copyRemoteShellHtml() {
   mkdirSync(dirname(REMOTE_SHELL_OUT), { recursive: true });
   copyFileSync(REMOTE_SHELL_SRC, REMOTE_SHELL_OUT);
-  if (existsSync(REMOTE_TOUCH_ICON_SRC))
-    copyFileSync(REMOTE_TOUCH_ICON_SRC, REMOTE_TOUCH_ICON_OUT);
+  const iconSrc = resolveDesktopIconForRemoteTouch();
+  if (iconSrc) {
+    copyFileSync(iconSrc, REMOTE_TOUCH_ICON_OUT);
+  } else {
+    console.warn(
+      '[vite] 未找到 resources/icon.png 或 public/icon.png，跳过复制 remote-apple-touch-icon（iOS 主屏幕图标将缺失）'
+    );
+  }
   if (existsSync(REMOTE_MANIFEST_SRC))
     copyFileSync(REMOTE_MANIFEST_SRC, REMOTE_MANIFEST_OUT);
 }

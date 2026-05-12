@@ -9,5 +9,5 @@
   "scope": ".",
   "theme_color": "#0f1117",
   "background_color": "#0f1117",
-  "icons": [{ "src": "apple-touch-icon.png", "type": "image/png" }]
+  "icons": [{ "src": "apple-touch-icon.png", "type": "image/png", "sizes": "512x512" }]
 }
