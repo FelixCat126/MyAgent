@@ -472,6 +472,46 @@
       color: var(--tx);
       border-color: var(--bd);
     }
+    /** 在等待首包时与桌面一致的「···」跳动 */
+    @keyframes remote-dot-bounce {
+      0%,
+      80%,
+      100% {
+        opacity: 0.35;
+        transform: translateY(0);
+      }
+      40% {
+        opacity: 1;
+        transform: translateY(-5px);
+      }
+    }
+    .typing-wait-bubble {
+      min-width: 64px;
+      padding: 12px 16px;
+      box-sizing: border-box;
+    }
+    .remote-type-dots {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      min-height: 1rem;
+      color: var(--muted);
+      font-weight: bold;
+      line-height: 1;
+    }
+    .remote-type-dots span {
+      width: 5px;
+      height: 5px;
+      border-radius: 999px;
+      background: currentColor;
+      animation: remote-dot-bounce 1s ease-in-out infinite both;
+    }
+    .remote-type-dots span:nth-child(2) {
+      animation-delay: 0.14s;
+    }
+    .remote-type-dots span:nth-child(3) {
+      animation-delay: 0.28s;
+    }
     .bubble.user .msg-body a {
       color: #ecfdfa;
       text-decoration: underline;
@@ -942,7 +982,8 @@
       border-radius: 10px;
       border: 1px solid var(--bd);
       padding: 10px;
-      font-size: 14px;
+      /** iOS：聚焦时小于 16px 会整页放大，关闭 dialog 后常不缩回 */
+      font-size: 16px;
       line-height: 1.45;
       background: var(--card);
       color: var(--tx);
@@ -1065,17 +1106,38 @@
         background 0.15s ease,
         border-color 0.15s ease,
         box-shadow 0.15s ease;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
     }
-    .gcell .gdel:hover {
-      background: rgba(220, 38, 38, 0.88);
-      border-color: rgba(255, 255, 255, 0.55);
-      transform: scale(1.06);
-      box-shadow:
-        0 4px 16px rgba(220, 38, 38, 0.35),
-        inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    @media (hover: hover) and (pointer: fine) {
+      .gcell .gdel:hover {
+        background: rgba(220, 38, 38, 0.88);
+        border-color: rgba(255, 255, 255, 0.55);
+        transform: scale(1.06);
+        box-shadow:
+          0 4px 16px rgba(220, 38, 38, 0.35),
+          inset 0 1px 0 rgba(255, 255, 255, 0.2);
+      }
+    }
+    .gcell .gdel:focus {
+      outline: none;
+    }
+    .gcell .gdel:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
     }
     .gcell .gdel:active {
       transform: scale(0.96);
+    }
+    @media (hover: none) {
+      .gcell .gdel:active {
+        background: rgba(15, 23, 42, 0.48);
+        border-color: rgba(255, 255, 255, 0.42);
+        transform: none;
+        box-shadow:
+          0 2px 10px rgba(0, 0, 0, 0.22),
+          inset 0 1px 0 rgba(255, 255, 255, 0.12);
+      }
     }
 
     #toast {
@@ -1117,8 +1179,8 @@
       max-width: min(100vw - 24px, 920px);
       overflow: hidden;
       align-self: center;
-      touch-action: pan-y;
-      /** 避免灯箱内垂直滚动劫持：水平跟手看图 */
+      touch-action: none;
+      /** 灯箱内自定水平滑动与双指缩放，避免浏览器抢手势 */
       -webkit-user-select: none;
       user-select: none;
     }
@@ -1140,6 +1202,8 @@
       object-fit: contain;
       border-radius: 8px;
       pointer-events: none;
+      -webkit-touch-callout: none;
+      backface-visibility: hidden;
     }
     .lb-bar {
       margin-top: 12px;
@@ -1301,10 +1365,14 @@
     var attaching = [];
     /** @type {ReturnType<typeof setInterval>|null} */
     var pollChatIv = null;
+    /** 当前 thread 已渲染内容的签名；轮询时若与 state 一致则跳过整页重建，避免转圈动画被反复打断 */
+    var cachedThreadRenderSig = '';
     /** 图库接口失败后用于区分「暂无」与加载失败 */
     var galleryLoadErrorMsg = '';
     /** 已成功拉取过一次图库列表时，切 tab 不再重复请求（改令牌/删图/刷新会话等会强制更新） */
     var mediaLibraryListOk = false;
+    /** 图库静默刷新进行中；合并请求以避免重复打点 */
+    var galleryBgPromise = null;
 
     var tokIn = qs('#tok');
     var sessEl = qs('#sess');
@@ -1315,6 +1383,56 @@
     var modelMenuLabel = qs('#modelMenuLabel');
     var cachedModelsList = [];
     var cachedActiveModelId = '';
+
+    /** 灯箱：双指缩放 / 单指拖拽（缩放后） */
+    var lbZoomScale = 1;
+    var lbPanX = 0;
+    var lbPanY = 0;
+    var lbPinching = false;
+    var lbPinchDist0 = 0;
+    var lbPinchScale0 = 1;
+    var lbPanningZoom = false;
+    var lbPanSx = 0;
+    var lbPanSy = 0;
+    var lbPanOx = 0;
+    var lbPanOy = 0;
+
+    function lbTouchDist(touches) {
+      var a = touches[0];
+      var b = touches[1];
+      var dx = a.clientX - b.clientX;
+      var dy = a.clientY - b.clientY;
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    function lbZoomResetHard() {
+      lbZoomScale = 1;
+      lbPanX = lbPanY = 0;
+      lbPinching = false;
+      lbPanningZoom = false;
+      try {
+        [].slice.call(qs('#lbTrack').querySelectorAll('.lb-slide')).forEach(function (im) {
+          im.style.transform = '';
+        });
+      } catch (_) {}
+      lbSlideEls = null;
+    }
+
+    function lbCenterImgApplyTransform() {
+      if (!qs('#imgDlg').open) return;
+      var imgs = lbSlides();
+      if (imgs.length < 2) return;
+      var mid = imgs[1];
+      if (lbZoomScale <= 1.02 && Math.abs(lbPanX) < 1 && Math.abs(lbPanY) < 1) {
+        lbZoomScale = 1;
+        lbPanX = lbPanY = 0;
+        mid.style.transform = '';
+        return;
+      }
+      mid.style.transformOrigin = 'center center';
+      mid.style.transform =
+        'translate(' + lbPanX + 'px,' + lbPanY + 'px) scale(' + lbZoomScale + ')';
+    }
 
     function closeModelMenu() {
       modelPopover.classList.add('hidden');
@@ -1372,7 +1490,7 @@
           var lid = d.loadingSessionId != null ? String(d.loadingSessionId) : '';
           if (!lid || !sid || lid !== sid) {
             stopChatPoll();
-            await loadMediaLibrary({ force: true }).catch(function () {});
+            await loadMediaLibrary({ background: true }).catch(function () {});
           }
         } catch (_) {
           /* 继续轮询，避免瞬时网络抖动误停 */
@@ -1614,7 +1732,7 @@
       });
       window.__lastState = await api('/remote/api/state', { method: 'GET' });
       renderSessionsUI();
-      renderThread();
+      renderThread({ force: true, scroll: 'preserve' });
       await loadMediaLibrary({ force: true });
       toast('已删除', 'ok');
     }
@@ -1632,7 +1750,7 @@
       });
       window.__lastState = await api('/remote/api/state', { method: 'GET' });
       renderSessionsUI();
-      renderThread();
+      renderThread({ force: true, scroll: 'bottom' });
       await loadMediaLibrary({ force: true });
       toast('已发送', 'ok');
       startChatPolling(sidStable);
@@ -1775,7 +1893,7 @@
         method: 'POST',
         body: JSON.stringify({ path: absPath }),
       });
-      await loadMediaLibrary({ force: true });
+      await loadMediaLibrary({ background: true });
       toast('已删除图片', 'ok');
     }
 
@@ -1786,6 +1904,157 @@
         encodeURIComponent(path) +
         (t ? '&t=' + encodeURIComponent(t) : '');
       return resolveRemoteFetchUrl(pq);
+    }
+
+    /** 将远端 media-library GET 规整为缓存结构（mtime 从新到旧） */
+    function normalizeMediaLibraryJson(j) {
+      var raw = Array.isArray(j && j.items) ? j.items : [];
+      return raw
+        .filter(function (x) {
+          return x && typeof x.path === 'string' && x.path;
+        })
+        .map(function (x) {
+          return { path: x.path, url: mediaUrl(x.path), mtimeMs: Number(x.mtimeMs) || 0 };
+        })
+        .sort(function (a, b) {
+          return b.mtimeMs - a.mtimeMs;
+        });
+    }
+
+    function buildGalleryCell(it, listSlides, indexInList) {
+      var wrap = document.createElement('div');
+      wrap.className = 'gcell';
+      wrap.setAttribute('data-path', it.path);
+      var del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'gdel';
+      del.setAttribute('aria-label', '删除');
+      del.textContent = '×';
+      (function (pathKey) {
+        del.onclick = function (ev) {
+          ev.stopPropagation();
+          if (!confirm('删除此图片？')) return;
+          void (async function () {
+            try {
+              await apiDeleteGalleryImage(pathKey);
+            } catch (e) {
+              toast(String(e.message || e), 'err');
+            }
+          })();
+        };
+      })(it.path);
+      wrap.appendChild(del);
+      var im = document.createElement('img');
+      im.alt = '';
+      im.loading = 'lazy';
+      im.referrerPolicy = 'no-referrer';
+      im.src = it.url;
+      (function (idxCapt) {
+        im.onclick = function () {
+          openLightbox(listSlides, idxCapt, true);
+        };
+      })(indexInList);
+      var pad = document.createElement('div');
+      pad.className = 'gcell-pad';
+      var thumb = document.createElement('div');
+      thumb.className = 'gcell-thumb';
+      thumb.appendChild(im);
+      pad.appendChild(thumb);
+      wrap.appendChild(pad);
+      return wrap;
+    }
+
+    function wireGalleryCellInteractions(cell, listSlides, indexInList) {
+      var im = cell.querySelector('.gcell-thumb img');
+      var it =
+        typeof indexInList === 'number'
+          ? mediaLibItems[indexInList]
+          : null;
+      if (!im || !it || cell.getAttribute('data-path') !== it.path) return;
+      if (im.getAttribute('src') !== it.url) im.src = it.url;
+      (function (idxCapt) {
+        im.onclick = function () {
+          openLightbox(listSlides, idxCapt, true);
+        };
+      })(indexInList);
+      var del = cell.querySelector('.gdel');
+      if (del) {
+        (function (pk) {
+          del.onclick = function (ev) {
+            ev.stopPropagation();
+            if (!confirm('删除此图片？')) return;
+            void (async function () {
+              try {
+                await apiDeleteGalleryImage(pk);
+              } catch (e) {
+                toast(String(e.message || e), 'err');
+              }
+            })();
+          };
+        })(it.path);
+      }
+    }
+
+    function renderGallery(opts) {
+      opts = opts || {};
+      var reuseDom = !!opts.reuseDom;
+      var grid = qs('#galleryGrid');
+      if (!mediaLibItems.length && galleryLoadErrorMsg) {
+        grid.innerHTML =
+          '<div class="toast err" style="flex-basis:100%;width:100%;margin:0;line-height:1.45">' +
+          esc(galleryLoadErrorMsg) +
+          '</div>';
+        return;
+      }
+      if (!mediaLibItems.length) {
+        grid.innerHTML =
+          '<div class="toast" style="border-style:dashed;text-align:center;flex-basis:100%;width:100%">暂无图片</div>';
+        return;
+      }
+
+      var listSlides = mediaLibItems.map(function (x) {
+        return { url: x.url, absPath: x.path };
+      });
+
+      if (!reuseDom || !grid.querySelector('.gcell')) {
+        grid.innerHTML = '';
+        mediaLibItems.forEach(function (it, i) {
+          grid.appendChild(buildGalleryCell(it, listSlides, i));
+        });
+        return;
+      }
+
+      var prevMap = {};
+      [].slice.call(grid.querySelectorAll('.gcell')).forEach(function (cell) {
+        var p = cell.getAttribute('data-path');
+        if (p) prevMap[p] = cell;
+      });
+      var alive = {};
+      mediaLibItems.forEach(function (it) {
+        alive[it.path] = true;
+      });
+      [].slice.call(grid.querySelectorAll('.gcell')).forEach(function (cell) {
+        var pv = cell.getAttribute('data-path');
+        if (pv && !alive[pv]) cell.remove();
+      });
+      prevMap = {};
+      [].slice.call(grid.querySelectorAll('.gcell')).forEach(function (cell) {
+        var p2 = cell.getAttribute('data-path');
+        if (p2) prevMap[p2] = cell;
+      });
+
+      var fragment = document.createDocumentFragment();
+      mediaLibItems.forEach(function (it, i) {
+        var cell = prevMap[it.path];
+        if (cell) {
+          wireGalleryCellInteractions(cell, listSlides, i);
+          fragment.appendChild(cell);
+        } else {
+          fragment.appendChild(buildGalleryCell(it, listSlides, i));
+        }
+      });
+      grid.innerHTML = '';
+      grid.appendChild(fragment);
     }
 
     function mimeLooksPreview(ct) {
@@ -1911,60 +2180,88 @@
     }
 
     async function loadMediaLibrary(opts) {
-      var force = !!(opts && opts.force);
+      opts = opts || {};
+      var force = !!opts.force;
+      var background = !!opts.background;
+
+      if (background) {
+        if (galleryBgPromise) return galleryBgPromise;
+        galleryBgPromise = (async function () {
+          try {
+            var jBg = await api('/remote/api/media-library', { method: 'GET' });
+            galleryLoadErrorMsg = '';
+            mediaLibItems = normalizeMediaLibraryJson(jBg);
+            mediaLibraryListOk = true;
+            refreshMediaLibBadge();
+            if (qs('#panel-gallery').classList.contains('active')) renderGallery({ reuseDom: true });
+          } catch (e) {
+            if (!mediaLibItems.length) {
+              mediaLibraryListOk = false;
+              mediaLibItems = [];
+              refreshMediaLibBadge();
+              galleryLoadErrorMsg =
+                String((e && e.message) ? e.message : e) || '图库加载失败';
+              if (qs('#panel-gallery').classList.contains('active')) renderGallery({ reuseDom: false });
+              toast(galleryLoadErrorMsg, 'err');
+            }
+          } finally {
+            galleryBgPromise = null;
+          }
+        })();
+        return galleryBgPromise;
+      }
+
       if (!force && mediaLibraryListOk) {
         refreshMediaLibBadge();
-        if (qs('#panel-gallery').classList.contains('active')) renderGallery();
-        return;
+        if (qs('#panel-gallery').classList.contains('active')) renderGallery({ reuseDom: true });
+        void loadMediaLibrary({ background: true });
+        return Promise.resolve();
       }
+
       try {
         galleryLoadErrorMsg = '';
+        var galAct = qs('#panel-gallery').classList.contains('active');
+        var gridHint = qs('#galleryGrid');
+        if (galAct && !mediaLibItems.length) {
+          gridHint.innerHTML =
+            '<div class="toast" style="opacity:.88;border-style:dashed;margin:12px 8px;text-align:center;font-size:13px">加载图库…</div>';
+        }
         var j = await api('/remote/api/media-library', { method: 'GET' });
-        var items = Array.isArray(j.items) ? j.items : [];
-        mediaLibItems = items
-          .filter(function (x) { return x && typeof x.path === 'string' && x.path; })
-          .map(function (x) {
-            return { path: x.path, url: mediaUrl(x.path), mtimeMs: Number(x.mtimeMs) || 0 };
-          })
-          .sort(function (a, b) {
-            return b.mtimeMs - a.mtimeMs;
-          });
+        mediaLibItems = normalizeMediaLibraryJson(j);
         mediaLibraryListOk = true;
         refreshMediaLibBadge();
-        if (qs('#panel-gallery').classList.contains('active')) renderGallery();
+        if (galAct) renderGallery({ reuseDom: false });
       } catch (e) {
         mediaLibraryListOk = false;
         mediaLibItems = [];
         refreshMediaLibBadge();
         galleryLoadErrorMsg = String((e && e.message) ? e.message : e) || '图库加载失败';
-        if (qs('#panel-gallery').classList.contains('active')) renderGallery();
+        if (qs('#panel-gallery').classList.contains('active')) renderGallery({ reuseDom: false });
         toast(galleryLoadErrorMsg, 'err');
       }
     }
 
+    /** 会话内点击图片：幻灯片仅限本对话已汇入的列表，不展开为媒体库全盘（全盘仅在「图库」页 openLightbox） */
     function openLightboxFromLibPath(absPathOrEmpty, fallbackList, fallbackIdx) {
-      if (mediaLibItems.length) {
-        var idx = mediaLibItems.findIndex(function (x) {
-          return x.path === absPathOrEmpty;
+      var mapped = (fallbackList || []).map(function (x) {
+        return {
+          url: x.url,
+          absPath:
+            typeof x.absPath === 'string' && x.absPath.length > 0 ? x.absPath : null,
+        };
+      });
+      if (!mapped.length) return;
+      var idx =
+        typeof fallbackIdx === 'number' && fallbackIdx >= 0 && fallbackIdx < mapped.length
+          ? fallbackIdx
+          : 0;
+      if (absPathOrEmpty) {
+        var found = mapped.findIndex(function (s) {
+          return s.absPath === absPathOrEmpty;
         });
-        if (idx >= 0) {
-          openLightbox(
-            mediaLibItems.map(function (x) {
-              return { url: x.url, absPath: x.path };
-            }),
-            idx,
-            false
-          );
-          return;
-        }
+        if (found >= 0) idx = found;
       }
-      openLightbox(
-        (fallbackList || []).map(function (x) {
-          return { url: x.url, absPath: null };
-        }),
-        fallbackIdx,
-        false
-      );
+      openLightbox(mapped, idx, false);
     }
 
     function lbCurrentPath() {
@@ -2022,6 +2319,7 @@
 
     function lbRefreshControls() {
       if (!lbList.length) return;
+      lbZoomResetHard();
       lbSetSlideWidths();
       lbFillTriplet();
       qs('#lbCounter').textContent = lbIdx + 1 + ' / ' + lbList.length;
@@ -2099,6 +2397,7 @@
     }
 
     qs('#lbClose').onclick = function () {
+      lbZoomResetHard();
       qs('#imgDlg').close();
     };
     qs('#lbPrev').onclick = lbPrev;
@@ -2134,8 +2433,7 @@
           } else {
             qs('#imgDlg').close();
           }
-          await loadMediaLibrary({ force: true });
-          if (qs('#panel-gallery').classList.contains('active')) renderGallery();
+          await loadMediaLibrary({ background: true });
           toast('已删除图片', 'ok');
         } catch (e) {
           toast(String(e.message || e), 'err');
@@ -2143,7 +2441,10 @@
       })();
     };
     qs('#imgDlg').onclick = function (ev) {
-      if (ev.target === qs('#imgDlg')) qs('#imgDlg').close();
+      if (ev.target === qs('#imgDlg')) {
+        lbZoomResetHard();
+        qs('#imgDlg').close();
+      }
     };
     qs('#imgDlgInner').onclick = function (ev) {
       ev.stopPropagation();
@@ -2159,33 +2460,91 @@
       { passive: true }
     );
 
-    (function lbSwipe() {
+    (function lbTouchNav() {
       var sx = null;
       var sy = null;
       var tracking = false;
       var w = 0;
       var vp = qs('#lbViewport');
 
+      function pinchEndMaybe() {
+        if (lbZoomScale < 1.05 && !lbPanningZoom) {
+          lbZoomScale = 1;
+          lbPanX = lbPanY = 0;
+          lbCenterImgApplyTransform();
+        }
+      }
+
       vp.addEventListener(
         'touchstart',
         function (e) {
-          if (!e.touches || e.touches.length !== 1 || lbList.length < 2) {
+          if (!qs('#imgDlg').open) return;
+          var n = e.touches.length;
+          if (n === 2) {
+            e.preventDefault();
+            window.clearTimeout(lbSlideTid);
+            lbPinching = true;
+            tracking = false;
+            lbPanningZoom = false;
+            sx = null;
+            lbPinchDist0 = Math.max(12, lbTouchDist(e.touches));
+            lbPinchScale0 = lbZoomScale;
+            qs('#lbTrack').classList.add('lb-no-anim');
+            return;
+          }
+          if (n === 1 && lbZoomScale > 1.03) {
+            window.clearTimeout(lbSlideTid);
+            lbPanningZoom = true;
+            tracking = false;
+            lbPinching = false;
+            sx = null;
+            lbPanSx = e.touches[0].clientX;
+            lbPanSy = e.touches[0].clientY;
+            lbPanOx = lbPanX;
+            lbPanOy = lbPanY;
+            qs('#lbTrack').classList.add('lb-no-anim');
+            e.preventDefault();
+            return;
+          }
+          if (!e.touches || n !== 1 || lbZoomScale > 1.03) {
             sx = null;
             return;
           }
+          if (lbList.length < 2) return;
           window.clearTimeout(lbSlideTid);
+          lbPanningZoom = false;
+          lbPinching = false;
           sx = e.touches[0].clientX;
           sy = e.touches[0].clientY;
           tracking = true;
           w = lbStageW();
           qs('#lbTrack').classList.add('lb-no-anim');
         },
-        { passive: true }
+        { passive: false }
       );
 
       vp.addEventListener(
         'touchmove',
         function (e) {
+          if (!qs('#imgDlg').open) return;
+          var n = e.touches.length;
+          if (lbPinching && n >= 2) {
+            e.preventDefault();
+            var d = Math.max(14, lbTouchDist(e.touches));
+            var ratio = d / lbPinchDist0;
+            lbZoomScale = Math.min(5, Math.max(1, lbPinchScale0 * ratio));
+            lbCenterImgApplyTransform();
+            return;
+          }
+          if (lbPanningZoom && n === 1) {
+            e.preventDefault();
+            lbPanX =
+              lbPanOx + (e.touches[0].clientX - lbPanSx);
+            lbPanY =
+              lbPanOy + (e.touches[0].clientY - lbPanSy);
+            lbCenterImgApplyTransform();
+            return;
+          }
           if (!tracking || sx === null || !e.touches || e.touches.length !== 1) return;
           var x = e.touches[0].clientX;
           var y = e.touches[0].clientY;
@@ -2197,17 +2556,27 @@
             lbSnapCenterNoAnim();
             return;
           }
+          e.preventDefault();
           var baseX = -w;
           var nx = baseX + dx;
           nx = Math.max(-2 * w, Math.min(0, nx));
           lbTrackSetX(nx);
         },
-        { passive: true }
+        { passive: false }
       );
 
       vp.addEventListener(
         'touchcancel',
         function () {
+          if (lbPinching) {
+            lbPinching = false;
+            pinchEndMaybe();
+            return;
+          }
+          if (lbPanningZoom) {
+            lbPanningZoom = false;
+            return;
+          }
           if (!tracking) return;
           tracking = false;
           sx = null;
@@ -2219,10 +2588,18 @@
       vp.addEventListener(
         'touchend',
         function (e) {
+          if (!qs('#imgDlg').open) return;
+          if (lbPinching && e.touches.length < 2) {
+            lbPinching = false;
+            pinchEndMaybe();
+          }
+          if (lbPanningZoom) {
+            if (e.touches.length === 0) lbPanningZoom = false;
+            return;
+          }
           if (!tracking) return;
           tracking = false;
-          var tr = qs('#lbTrack');
-          tr.classList.remove('lb-no-anim');
+          qs('#lbTrack').classList.remove('lb-no-anim');
           if (sx == null || !e.changedTouches || !e.changedTouches.length) return;
           var dx = e.changedTouches[0].clientX - sx;
           sx = null;
@@ -2446,8 +2823,120 @@
       });
     }
 
-    function renderThread() {
+    function threadSigSessionPayload() {
+      var ordered = sortSessions((window.__lastState && window.__lastState.sessions) || []);
+      var d =
+        ordered.find(function (x) {
+          return x.id === currentId;
+        }) || null;
+      if (!d && ordered[0]) d = ordered[0];
+      return d;
+    }
+
+    function computeThreadRenderSig() {
+      var st = window.__lastState;
+      var lid = st && st.loadingSessionId != null ? String(st.loadingSessionId) : '';
+      var d = threadSigSessionPayload();
+      if (!d) return 'empty|' + String(currentId || '') + '|' + lid;
+      var parts = [
+        String(d.id),
+        String(currentId || ''),
+        lid,
+        String((d.messages || []).length),
+      ];
+      var msgs = d.messages || [];
+      for (var mi = 0; mi < msgs.length; mi++) {
+        var m = msgs[mi];
+        var ig = m.imageGenProgress;
+        var igStr = '0';
+        if (ig && typeof ig.total === 'number') {
+          igStr =
+            String(ig.total) +
+            '/' +
+            String(ig.done != null ? ig.done : '') +
+            '/' +
+            String(ig.phase || '');
+        }
+        var xh = m.exportHint;
+        var xhStr = '';
+        if (xh && xh.document) xhStr = 'doc:' + String(xh.document.status || '');
+        var files = m.files || [];
+        var fileBits = String(files.length);
+        for (var fi = 0; fi < files.length; fi++) {
+          var f = files[fi];
+          fileBits += ',' + String(f.path || '') + ',' + String(f.name || '');
+        }
+        parts.push(
+          String(m.id || '') +
+            ':' +
+            String(m.role || '') +
+            ':' +
+            String((m.content || '').length) +
+            ':' +
+            String((m.reasoning || '').length) +
+            ':' +
+            fileBits +
+            ':' +
+            igStr +
+            ':' +
+            xhStr
+        );
+      }
+      return parts.join('\n');
+    }
+
+    /**
+     * @param {'bottom' | 'preserve'} mode
+     * @param {{ nearBottom: boolean, distFromBottom: number }} [preserveCtx]
+     */
+    function applyThreadScrollAfterRender(mode, preserveCtx) {
       var thread = qs('#thread');
+      var run = function () {
+        if (mode === 'bottom') {
+          thread.scrollTop = thread.scrollHeight;
+          return;
+        }
+        var ctx = preserveCtx || { nearBottom: true, distFromBottom: 0 };
+        if (ctx.nearBottom) {
+          thread.scrollTop = thread.scrollHeight;
+        } else {
+          var maxScroll = Math.max(0, thread.scrollHeight - thread.clientHeight);
+          var t = Math.max(0, maxScroll - ctx.distFromBottom);
+          thread.scrollTop = Math.min(t, maxScroll);
+        }
+      };
+      requestAnimationFrame(function () {
+        run();
+        requestAnimationFrame(run);
+      });
+    }
+
+    /** @param {boolean|{ force?: boolean, scroll?: 'bottom' | 'preserve' }} [opt] */
+    function renderThread(opt) {
+      var opts = {};
+      if (opt === true) opts.force = true;
+      else if (opt && typeof opt === 'object') opts = opt;
+      var force = !!opts.force;
+      var scrollMode = opts.scroll === 'bottom' ? 'bottom' : 'preserve';
+
+      var thread = qs('#thread');
+      if (!force) {
+        var sigProbe = computeThreadRenderSig();
+        if (sigProbe === cachedThreadRenderSig && thread.children.length > 0) {
+          return;
+        }
+      }
+
+      var nearBottom = true;
+      var distFromBottom = 0;
+      if (scrollMode === 'preserve') {
+        var sh0 = thread.scrollHeight;
+        var ch0 = thread.clientHeight || 0;
+        var st0 = thread.scrollTop;
+        distFromBottom = Math.max(0, sh0 - ch0 - st0);
+        nearBottom = distFromBottom <= 80;
+      }
+
       var ordered = sortSessions((window.__lastState && window.__lastState.sessions) || []);
       var d =
         ordered.find(function (x) {
@@ -2458,14 +2947,18 @@
       if (!d) {
         thread.innerHTML = '<div class="toast" style="border-style:dashed">无会话</div>';
         refreshMediaLibBadge();
+        cachedThreadRenderSig = computeThreadRenderSig();
         scrollThreadToBottom();
         return;
       }
       var msgImagesFallback = [];
 
-      function pushFallback(url) {
+      function pushFallback(url, libAbsPath) {
         if (!url) return -1;
-        msgImagesFallback.push({ url: url });
+        msgImagesFallback.push({
+          url: url,
+          absPath: typeof libAbsPath === 'string' && libAbsPath ? libAbsPath : '',
+        });
         return msgImagesFallback.length - 1;
       }
 
@@ -2477,7 +2970,32 @@
           : '';
       var thisSessionStreaming = !!(loadingSid && String(d.id) === loadingSid);
 
+      /** 助手消息是否已有可展示内容（避免空占位 + 底部「三点」双气泡） */
+      function assistantMessageHasVisibleUi(m) {
+        if (!m || m.role !== 'assistant') return true;
+        var hasFf = ((m.files || []).length || 0) > 0;
+        var ct0 = String(m.content || '').trim();
+        if (ct0) return true;
+        if (String(m.reasoning || '').trim()) return true;
+        if (hasFf) return true;
+        var xh = m.exportHint;
+        if (xh && xh.document && xh.document.status === 'thinking' && !hasFf && !ct0) return true;
+        if (xh && xh.document && xh.document.status === 'generating' && !hasFf) return true;
+        var ig = m.imageGenProgress;
+        if (ig && typeof ig.total === 'number' && ig.total >= 1) return true;
+        return false;
+      }
+
       sessionMessages.forEach(function (m, idx) {
+        if (
+          thisSessionStreaming &&
+          idx === lastMsgIx &&
+          m.role === 'assistant' &&
+          !assistantMessageHasVisibleUi(m)
+        ) {
+          return;
+        }
+
         var isUser = m.role === 'user';
         var isSystem = m.role === 'system';
         var wrap = document.createElement('div');
@@ -2567,7 +3085,7 @@
               var _uhere = fileToImageUrl(fhere);
               if (_uhere) {
                 var _pk = typeof fhere.path === 'string' ? fhere.path : '';
-                var _ixFb = pushFallback(_uhere);
+                var _ixFb = pushFallback(_uhere, _pk);
                 var him = document.createElement('img');
                 him.src = _uhere;
                 him.alt = fhere.name || '';
@@ -2639,7 +3157,7 @@
             var u = fileToImageUrl(f);
             if (!u) return;
             var pathKey = typeof f.path === 'string' ? f.path : '';
-            var ixFb = pushFallback(u);
+            var ixFb = pushFallback(u, pathKey);
             var im = document.createElement('img');
             im.src = u;
             im.onclick = function () {
@@ -2661,11 +3179,41 @@
         thread.appendChild(wrap);
       });
 
+      if (sessionMessages.length) {
+        var waitingAssistant = false;
+        if (thisSessionStreaming) {
+          var Ll = sessionMessages[sessionMessages.length - 1];
+          if (Ll.role === 'user') {
+            waitingAssistant = true;
+          } else if (Ll.role === 'assistant') {
+            if (!assistantMessageHasVisibleUi(Ll)) waitingAssistant = true;
+          }
+        }
+        if (waitingAssistant) {
+          var twRow = document.createElement('div');
+          twRow.className = 'bubble-wrap align-ast';
+          var roleTy = document.createElement('div');
+          roleTy.className = 'msg-role-out out-ast';
+          roleTy.textContent = '助手';
+          twRow.appendChild(roleTy);
+          var bubTy = document.createElement('div');
+          bubTy.className = 'bubble ast typing-wait-bubble';
+          bubTy.setAttribute('aria-busy', 'true');
+          bubTy.innerHTML =
+            '<div class="remote-type-dots" role="status" aria-live="polite">' +
+            '<span></span><span></span><span></span>' +
+            '</div>';
+          twRow.appendChild(bubTy);
+          thread.appendChild(twRow);
+        }
+      }
+
       refreshMediaLibBadge();
-      scrollThreadToBottom();
+      cachedThreadRenderSig = computeThreadRenderSig();
+      applyThreadScrollAfterRender(scrollMode, { nearBottom: nearBottom, distFromBottom: distFromBottom });
 
       var panelG = qs('#panel-gallery');
-      if (panelG.classList.contains('active')) renderGallery();
+      if (panelG.classList.contains('active')) renderGallery({ reuseDom: true });
     }
 
     function renderSessionsUI() {
@@ -2707,71 +3255,17 @@
       });
     }
 
-    function renderGallery() {
-      var grid = qs('#galleryGrid');
-      grid.innerHTML = '';
-      if (!mediaLibItems.length && galleryLoadErrorMsg) {
-        grid.innerHTML =
-          '<div class="toast err" style="flex-basis:100%;width:100%;margin:0;line-height:1.45">' +
-          esc(galleryLoadErrorMsg) +
-          '</div>';
-        return;
-      }
-      if (!mediaLibItems.length) {
-        grid.innerHTML =
-          '<div class="toast" style="border-style:dashed;text-align:center;flex-basis:100%;width:100%">暂无图片</div>';
-        return;
-      }
-      var listSlides = mediaLibItems.map(function (x) {
-        return { url: x.url, absPath: x.path };
-      });
-      mediaLibItems.forEach(function (it, i) {
-        var wrap = document.createElement('div');
-        wrap.className = 'gcell';
-        var del = document.createElement('button');
-        del.type = 'button';
-        del.className = 'gdel';
-        del.setAttribute('aria-label', '删除');
-        del.textContent = '×';
-        del.onclick = function (ev) {
-          ev.stopPropagation();
-          if (!confirm('删除此图片？')) return;
-          void (async function () {
-            try {
-              await apiDeleteGalleryImage(it.path);
-              renderGallery();
-            } catch (e) {
-              toast(String(e.message || e), 'err');
-            }
-          })();
-        };
-        wrap.appendChild(del);
-        var im = document.createElement('img');
-        im.alt = '';
-        im.loading = 'lazy';
-        im.referrerPolicy = 'no-referrer';
-        im.src = it.url;
-        im.onclick = function () {
-          openLightbox(listSlides, i, true);
-        };
-        var pad = document.createElement('div');
-        pad.className = 'gcell-pad';
-        var thumb = document.createElement('div');
-        thumb.className = 'gcell-thumb';
-        thumb.appendChild(im);
-        pad.appendChild(thumb);
-        wrap.appendChild(pad);
-        grid.appendChild(wrap);
-      });
-    }
-
     function setTab(which) {
       qs('#panel-chat').classList.toggle('active', which === 'chat');
       qs('#panel-gallery').classList.toggle('active', which === 'gallery');
       qs('.tabbar button[data-tab="chat"]').classList.toggle('on', which === 'chat');
       qs('.tabbar button[data-tab="gallery"]').classList.toggle('on', which === 'gallery');
       if (which === 'gallery') {
-        void loadMediaLibrary();
+        refreshMediaLibBadge();
+        if (mediaLibItems.length || galleryLoadErrorMsg) {
+          renderGallery({ reuseDom: !!mediaLibraryListOk && mediaLibItems.length > 0 });
+        }
+        void loadMediaLibrary(mediaLibraryListOk ? { background: true } : {});
       }
       if (which === 'chat') scrollThreadToBottom();
     }
@@ -2800,7 +3294,7 @@
         if (!currentId && d.sessions && d.sessions[0]) {
           currentId = d.sessions[0].id;
         }
-        renderThread();
+        renderThread({ force: true, scroll: 'bottom' });
         await loadMediaLibrary({ force: true });
       } catch (e) {
         toast(String(e.message || e), 'err');
@@ -2888,7 +3382,7 @@
         msgEl.value = '';
         window.__lastState = await api('/remote/api/state', { method: 'GET' });
         renderSessionsUI();
-        renderThread();
+        renderThread({ force: true, scroll: 'bottom' });
         startChatPolling(sidStable);
       } catch (e) {
         toast(String(e.message || e), 'err');
@@ -2943,6 +3437,7 @@
       dlg.showModal();
     };
     qs('#editMsgCancel').onclick = function () {
+      qs('#editMsgTa').blur();
       qs('#editMsgDlg').close();
     };
     qs('#editMsgSave').onclick = function () {
@@ -2954,9 +3449,13 @@
         return;
       }
       dlg.removeAttribute('data-msg-id');
+      qs('#editMsgTa').blur();
       dlg.close();
       void apiResubmitEditedUserMessage(id, nv);
     };
+    qs('#editMsgDlg').addEventListener('close', function () {
+      qs('#editMsgTa').blur();
+    });
 
     syncAttachNote();
     loadSessions();
