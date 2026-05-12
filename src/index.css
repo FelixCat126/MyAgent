@@ -163,6 +163,17 @@
 .myagent-md-p {
   margin: 0.4rem 0;
 }
+/** 移动端：助手正文里 Markdown 链接（常为生成文档文件名）过长时单行省略，不挤出气泡 */
+@media (max-width: 639px) {
+  .myagent-md a:not(.inline-keep-wrap) {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
+  }
+}
 .myagent-md blockquote {
   border-left: 3px solid rgba(20, 184, 166, 0.5);
   padding-left: 0.65rem;

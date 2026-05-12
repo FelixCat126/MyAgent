@@ -765,7 +765,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
                         return (
                           <div
                             key={index}
-                            className="relative group/file max-w-full transition-all"
+                            className="relative group/file max-w-full min-w-0 transition-all"
                             title={file.name}
                           >
                             {canShowImage ? (
@@ -795,7 +795,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
                                 </div>
                               </div>
                             ) : (
-                              <div className="inline-flex max-w-full items-center gap-1 rounded-md border border-white/40 bg-white/20 px-2.5 py-1 text-[11px] font-medium text-white shadow-sm">
+                              <div className="inline-flex max-w-full min-w-0 items-center gap-1 rounded-md border border-white/40 bg-white/20 px-2.5 py-1 text-[11px] font-medium text-white shadow-sm">
                                 <span className="shrink-0 opacity-90">📎</span>
                                 <span className="min-w-0 truncate">{file.name}</span>
                                 {renderFileDownloadButton(file)}
@@ -1004,7 +1004,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
                         return (
                           <div
                             key={index}
-                            className="relative group/file max-w-full transition-all"
+                            className="relative group/file max-w-full min-w-0 transition-all"
                             title={file.name}
                           >
                             {canShowImage ? (
@@ -1034,7 +1034,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
                                 </div>
                               </div>
                             ) : (
-                              <div className="inline-flex max-w-full items-center gap-1 rounded-md border border-stone-300/70 bg-stone-200/90 px-2.5 py-1 text-[11px] font-medium text-stone-800 dark:border-white/10 dark:bg-slate-700 dark:text-slate-100">
+                              <div className="inline-flex max-w-full min-w-0 items-center gap-1 rounded-md border border-stone-300/70 bg-stone-200/90 px-2.5 py-1 text-[11px] font-medium text-stone-800 dark:border-white/10 dark:bg-slate-700 dark:text-slate-100">
                                 <span className="shrink-0 opacity-90">📎</span>
                                 <span className="min-w-0 truncate">{file.name}</span>
                                 {renderFileDownloadButton(file)}

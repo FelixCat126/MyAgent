@@ -195,6 +195,19 @@ function shellHtmlPathForServe(): string {
   return r.chosenPath;
 }
 
+/** 加主屏幕用的 manifest / 图标；pathname 可为 /前缀/remote/...（反代子路径挂载）。 */
+function pickRemoteStandaloneAsset(pathNorm: string): 'manifest' | 'touchIcon' | null {
+  if (/\/remote\/manifest\.webmanifest$/i.test(pathNorm)) return 'manifest';
+  if (/\/remote\/apple-touch-icon\.png$/i.test(pathNorm)) return 'touchIcon';
+  return null;
+}
+
+function publicRemoteGatewayGet(method: string, pathNorm: string): boolean {
+  if (method !== 'GET') return false;
+  if (pathNorm === '/' || pathNorm === '/remote') return true;
+  return pickRemoteStandaloneAsset(pathNorm) !== null;
+}
+
 function mimeForPath(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
   const map: Record<string, string> = {
@@ -204,6 +217,7 @@ function mimeForPath(filePath: string): string {
     '.gif': 'image/gif',
     '.webp': 'image/webp',
     '.svg': 'image/svg+xml',
+    '.webmanifest': 'application/manifest+json',
     '.bmp': 'image/bmp',
     '.pdf': 'application/pdf',
     '.txt': 'text/plain; charset=utf-8',
@@ -476,12 +490,33 @@ async function handleRequest(req: IncomingMessage, res: http.ServerResponse): Pr
       return;
     }
 
-    /** 静态远端页可被浏览器地址栏打开，无法用 Authorization 请求头带上令牌（令牌仅在页面脚本里填） */
-    const publicShellGet = method === 'GET' && (pathNorm === '/' || pathNorm === '/remote');
+    /** 远端壳与 PWA manifest/图标可不带头令牌（令牌仍在页面内用于 API）；与 pathNorm === /remote 同属公开 GET */
+    const publicShellGet = publicRemoteGatewayGet(method, pathNorm);
 
     const token = activeConfig.token;
     if (!publicShellGet && !authorize(req, url, token)) {
       sendJson(res, 401, { error: 'Unauthorized' });
+      return;
+    }
+
+    const standaloneAsset = pickRemoteStandaloneAsset(pathNorm);
+    if (method === 'GET' && standaloneAsset) {
+      const htmlPath = shellHtmlPathForServe();
+      const shelldir = path.dirname(htmlPath);
+      const fname =
+        standaloneAsset === 'manifest' ? 'remote-manifest.webmanifest' : 'remote-apple-touch-icon.png';
+      const fp = path.join(shelldir, fname);
+      if (!fsSync.existsSync(fp)) {
+        sendJson(res, 404, { error: `Missing remote PWA asset (${fp})`, kind: standaloneAsset });
+        return;
+      }
+      const buf = await fs.readFile(fp);
+      res.statusCode = 200;
+      touchCors(res);
+      res.setHeader('Content-Type', mimeForPath(fp));
+      res.setHeader('Content-Length', buf.length);
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      res.end(buf);
       return;
     }
 

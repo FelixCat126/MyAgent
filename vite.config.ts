@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, type Plugin } from 'vite';
@@ -12,6 +12,10 @@ const PRELOAD_SRC = join(_dirname, 'electron/preload.cjs');
 const PRELOAD_OUT = join(_dirname, 'dist-electron/preload.cjs');
 const REMOTE_SHELL_SRC = join(_dirname, 'electron/remote-shell.html');
 const REMOTE_SHELL_OUT = join(_dirname, 'dist-electron/remote-shell.html');
+const REMOTE_TOUCH_ICON_SRC = join(_dirname, 'electron/remote-apple-touch-icon.png');
+const REMOTE_TOUCH_ICON_OUT = join(_dirname, 'dist-electron/remote-apple-touch-icon.png');
+const REMOTE_MANIFEST_SRC = join(_dirname, 'electron/remote-manifest.webmanifest');
+const REMOTE_MANIFEST_OUT = join(_dirname, 'dist-electron/remote-manifest.webmanifest');
 
 /** 打包会错误地生成 ESM 的 `import`，而 Electron 对 preload 使用 require 加载，故原样复制 CJS 源文件。 */
 function copyPreloadCjs() {
@@ -22,6 +26,10 @@ function copyPreloadCjs() {
 function copyRemoteShellHtml() {
   mkdirSync(dirname(REMOTE_SHELL_OUT), { recursive: true });
   copyFileSync(REMOTE_SHELL_SRC, REMOTE_SHELL_OUT);
+  if (existsSync(REMOTE_TOUCH_ICON_SRC))
+    copyFileSync(REMOTE_TOUCH_ICON_SRC, REMOTE_TOUCH_ICON_OUT);
+  if (existsSync(REMOTE_MANIFEST_SRC))
+    copyFileSync(REMOTE_MANIFEST_SRC, REMOTE_MANIFEST_OUT);
 }
 
 function electronPreloadCopyPlugin(): Plugin {

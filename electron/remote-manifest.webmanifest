@@ -1,0 +1,13 @@
+{
+  "name": "MyAgent",
+  "short_name": "MyAgent",
+  "description": "通过本机与MyAgent对话",
+  "lang": "zh-CN",
+  "display": "standalone",
+  "orientation": "any",
+  "start_url": ".",
+  "scope": ".",
+  "theme_color": "#0f1117",
+  "background_color": "#0f1117",
+  "icons": [{ "src": "apple-touch-icon.png", "type": "image/png" }]
+}
