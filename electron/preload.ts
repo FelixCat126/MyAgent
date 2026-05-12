@@ -58,4 +58,7 @@ contextBridge.exposeInMainWorld('electron', {
     ipcRenderer.invoke('save-local-file-copy', cloneForIpc(params)),
   createDocumentArtifact: (arg: unknown) =>
     ipcRenderer.invoke('create-document-artifact', cloneForIpc(arg)),
+  remoteGatewayGetConfig: () => ipcRenderer.invoke('remote-gateway-get-config'),
+  remoteGatewaySetConfig: (patch: unknown) =>
+    ipcRenderer.invoke('remote-gateway-set-config', cloneForIpc(patch)),
 });

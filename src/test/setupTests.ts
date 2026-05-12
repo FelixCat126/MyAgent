@@ -53,6 +53,16 @@ const electronStub: ElectronAPI = {
   volcAsrPushChunk: async () => ({ ok: false }),
   volcAsrFinish: async () => ({ ok: false }),
   volcAsrAbort: async () => ({ ok: false }),
+  remoteGatewayGetConfig: async () => ({
+    enabled: false,
+    port: 9742,
+    token: 'stub-token',
+  }),
+  remoteGatewaySetConfig: async (patch) => ({
+    enabled: typeof patch?.enabled === 'boolean' ? patch.enabled : false,
+    port: typeof patch?.port === 'number' ? patch.port : 9742,
+    token: 'stub-token',
+  }),
 };
 
 if (typeof window !== 'undefined') {

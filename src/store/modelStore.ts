@@ -59,9 +59,10 @@ export const useModelStore = create<ModelStore>()(
       isInitialized: false,
 
       initializeDefaultModels: () => {
-        const { isInitialized, models } = get();
-        if (isInitialized || models.length > 0) return;
-        
+        const { models } = get();
+        /** 远端/桌面均需：只要列表为空就补默认本机候选，避免因「曾初始化但又删光」永远无法选模型 */
+        if (models.length > 0) return;
+
         set({
           models: defaultOllamaModels,
           activeModelId: defaultOllamaModels[0]?.id || null,

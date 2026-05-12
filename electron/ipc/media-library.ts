@@ -49,52 +49,66 @@ async function walkImageDir(dir: string, map: Map<string, number>): Promise<void
   }
 }
 
-ipcMain.handle(
-  'list-media-library-images',
-  async (_evt, payload?: { extraPaths?: string[] } | null) => {
-    try {
-      const map = new Map<string, number>();
+/** 远端网关与 IPC 共用：生成图目录 + 上传目录 + optional 会话中曾出现的路径 */
+export async function listMediaLibraryImageItems(payload?: {
+  extraPaths?: string[] | null;
+}): Promise<
+  | { ok: true; items: Array<{ absolutePath: string; mtimeMs: number }> }
+  | { ok: false; error: string; items: [] }
+> {
+  try {
+    const map = new Map<string, number>();
 
-      await walkImageDir(generatedImagesDir(), map);
-      await walkImageDir(uploadsDir(), map);
+    await walkImageDir(generatedImagesDir(), map);
+    await walkImageDir(uploadsDir(), map);
 
-      const extras = Array.isArray(payload?.extraPaths) ? payload!.extraPaths : [];
-      for (const raw of extras) {
-        if (typeof raw !== 'string' || !raw.trim()) continue;
-        const p = path.normalize(raw.trim());
-        await addImageFileToMap(p, map);
-      }
-
-      const items = [...map.entries()].map(([absolutePath, mtimeMs]) => ({
-        absolutePath,
-        mtimeMs,
-      }));
-      items.sort((a, b) => b.mtimeMs - a.mtimeMs);
-
-      return { ok: true as const, items };
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return { ok: false as const, error: msg, items: [] };
+    const extras = Array.isArray(payload?.extraPaths) ? payload.extraPaths : [];
+    for (const raw of extras) {
+      if (typeof raw !== 'string' || !raw.trim()) continue;
+      const p = path.normalize(raw.trim());
+      await addImageFileToMap(p, map);
     }
+
+    const items = [...map.entries()].map(([absolutePath, mtimeMs]) => ({
+      absolutePath,
+      mtimeMs,
+    }));
+    items.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+    return { ok: true as const, items };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false as const, error: msg, items: [] };
   }
-);
+}
+
+ipcMain.handle('list-media-library-images', async (_evt, payload?: { extraPaths?: string[] } | null) => {
+  return listMediaLibraryImageItems({ extraPaths: payload?.extraPaths });
+});
+
+/** 主进程共用：仅能删生成图/上传缓存目录内的支持格式图片 */
+export async function deleteMediaLibraryImageByAbsolutePath(rawPath: string): Promise<
+  { ok: true } | { ok: false; error: string }
+> {
+  try {
+    const p = path.resolve(String(rawPath || '').trim());
+    if (!p) return { ok: false as const, error: '路径为空' };
+    if (!isInsideDir(p, generatedImagesDir()) && !isInsideDir(p, uploadsDir())) {
+      return { ok: false as const, error: '只能删除 MyAgent 生成图或上传缓存目录中的图片' };
+    }
+    const ext = path.extname(p).toLowerCase();
+    if (!IMAGE_EXT.has(ext)) return { ok: false as const, error: '不是支持的图片文件' };
+    await fs.rm(p, { force: true });
+    return { ok: true as const };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false as const, error: msg };
+  }
+}
 
 ipcMain.handle(
   'delete-media-library-image',
   async (_evt, payload?: { absolutePath?: string } | null) => {
-    try {
-      const p = path.resolve(String(payload?.absolutePath || '').trim());
-      if (!p) return { ok: false as const, error: '路径为空' };
-      if (!isInsideDir(p, generatedImagesDir()) && !isInsideDir(p, uploadsDir())) {
-        return { ok: false as const, error: '只能删除 MyAgent 生成图或上传缓存目录中的图片' };
-      }
-      const ext = path.extname(p).toLowerCase();
-      if (!IMAGE_EXT.has(ext)) return { ok: false as const, error: '不是支持的图片文件' };
-      await fs.rm(p, { force: true });
-      return { ok: true as const };
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return { ok: false as const, error: msg };
-    }
+    return deleteMediaLibraryImageByAbsolutePath(String(payload?.absolutePath ?? ''));
   }
 );

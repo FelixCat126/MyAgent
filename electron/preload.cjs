@@ -122,4 +122,7 @@ window.electron = {
     ipcRenderer.invoke('list-media-library-images', cloneForIpc(arg ?? null)),
   deleteMediaLibraryImage: (arg) =>
     ipcRenderer.invoke('delete-media-library-image', cloneForIpc(arg)),
+  remoteGatewayGetConfig: () => ipcRenderer.invoke('remote-gateway-get-config'),
+  remoteGatewaySetConfig: (patch) =>
+    ipcRenderer.invoke('remote-gateway-set-config', cloneForIpc(patch)),
 };

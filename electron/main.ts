@@ -18,6 +18,10 @@ import './ipc/persist';
 import './ipc/media-library';
 import './ipc/speech-transcribe';
 import './ipc/volc-stream-asr';
+import {
+  attachRemoteGatewayMainWindow,
+  bootstrapRemoteGatewayFromDisk,
+} from './ipc/remote-gateway';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -166,6 +170,10 @@ if (PRIMARY_INSTANCE) {
     });
 
     createWindow();
+    attachRemoteGatewayMainWindow(() => mainWindow);
+    void bootstrapRemoteGatewayFromDisk().catch((err) => {
+      console.error('[RemoteGateway] 启动网关失败:', err);
+    });
 
     const pasteHotkey =
       process.platform === 'darwin' ? 'Command+Option+V' : 'CommandOrControl+Shift+V';

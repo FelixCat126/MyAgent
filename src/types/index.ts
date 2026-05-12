@@ -183,6 +183,10 @@ export interface ElectronAPI {
   volcAsrPushChunk: (pcmInt16AsNumbers: number[]) => Promise<{ ok: boolean }>;
   volcAsrFinish: () => Promise<{ ok: boolean }>;
   volcAsrAbort: () => Promise<{ ok: boolean }>;
+  remoteGatewayGetConfig: () => Promise<{ enabled: boolean; port: number; token: string }>;
+  remoteGatewaySetConfig: (
+    patch: Partial<{ enabled: boolean; port: number; token: string; regenerateToken: boolean }>
+  ) => Promise<{ enabled: boolean; port: number; token: string }>;
 }
 
 // 模型配置类型
@@ -231,6 +235,8 @@ export interface Message {
     formats?: Array<'md' | 'docx'>;
     status?: 'thinking' | 'generating';
   };
+  /** 生图进行时供远端快照展示占位格；不写盘（见 chatStore.partialize） */
+  imageGenProgress?: { current: number; total: number };
   files?: FileInfo[];
   timestamp: number;
   model: string;

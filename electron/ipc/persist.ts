@@ -23,6 +23,18 @@ function readFileSyncOrNull(f: string): string | null {
   }
 }
 
+/** 主进程可读：供远端网关等在无渲染线程桥接时回填模型列表等 */
+export function readPersistParsedSync(name: string): unknown | null {
+  try {
+    if (typeof name !== 'string' || !/^[a-z0-9._-]+$/i.test(name)) return null;
+    const txt = readFileSyncOrNull(filePath(name));
+    if (!txt) return null;
+    return JSON.parse(txt) as unknown;
+  } catch {
+    return null;
+  }
+}
+
 ipcMain.handle('persist-state-get', async (_e, name: string) => {
   return readFileSyncOrNull(filePath(name));
 });

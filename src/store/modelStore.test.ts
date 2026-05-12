@@ -23,12 +23,18 @@ describe('modelStore', () => {
     resetModelStore();
   });
 
-  it('initializeDefaultModels 仅在空且未初始化时注入默认 Ollama', () => {
+  it('initializeDefaultModels 在无模型时注入默认 Ollama', () => {
     useModelStore.getState().initializeDefaultModels();
     const st = useModelStore.getState();
     expect(st.models.length).toBe(3);
     expect(st.isInitialized).toBe(true);
     expect(st.activeModelId).toBe(st.models[0].id);
+  });
+
+  it('列表已空即使 isInitialized 为 true 也会重新注入默认', () => {
+    useModelStore.setState({ models: [], activeModelId: null, isInitialized: true });
+    useModelStore.getState().initializeDefaultModels();
+    expect(useModelStore.getState().models.length).toBe(3);
   });
 
   it('已有模型时 initialize 不覆盖', () => {

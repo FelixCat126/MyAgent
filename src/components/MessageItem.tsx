@@ -16,9 +16,18 @@ import {
 const MAX_MARKDOWN_RENDER_CHARS = 24_000;
 const MAX_ASSISTANT_PREPROCESS_CHARS = 28_000;
 
-/** 多图附件：每行 4 张，不足一行时从左依次排列，超过 4 张按 4 的倍数换行 */
+/** 多图附件与生图占位共用：每行 4 张，不足一行从左排，超过 4 自动换行；缩略尺寸一致避免生成前后跳动 */
 const MULTI_IMAGE_ATTACHMENT_GRID =
   'grid w-max max-w-full grid-cols-[repeat(4,max-content)] gap-2 justify-items-start overflow-x-auto';
+
+const ASSISTANT_IMAGE_THUMB_FRAME =
+  'h-[90px] w-[120px] shrink-0 sm:h-[112px] sm:w-[150px]';
+
+const ASSISTANT_IMAGE_THUMB_IMG =
+  `${ASSISTANT_IMAGE_THUMB_FRAME} cursor-zoom-in rounded-md object-contain border border-stone-300/60 shadow-sm transition-transform hover:scale-[1.02] dark:border-white/10`;
+
+const ASSISTANT_IMAGE_THUMB_META_ROW =
+  'flex min-h-[calc(15px+0.125rem)] w-[120px] items-center gap-1 sm:w-[150px]';
 
 /** 对应 App.tsx 顶栏拖拽区 TITLEBAR_H(44)，避免按钮落在 Electron drag 带上被吞点击 */
 const MODAL_CLEAR_TITLEBAR_PT = 'pt-[52px]';
@@ -70,19 +79,19 @@ function InlineStreamDots() {
 
 function DocumentGeneratingPlaceholder({ t }: { t: (key: string) => string }) {
   return (
-    <div className="overflow-hidden rounded-xl border border-stone-300/50 bg-stone-50/75 dark:border-slate-600/55 dark:bg-slate-900/35" role="status" aria-live="polite">
-      <div className="flex items-center gap-2 px-3 py-2 dark:border-slate-700/65">
-        <FiLoader size={14} className="shrink-0 animate-spin text-primary-600 dark:text-primary-400" aria-hidden />
-        <div className="min-w-0">
-          <div className="text-sm font-medium text-stone-700 dark:text-slate-200">{t('chat.documentGenWorking')}</div>
-          <div className="text-[11px] leading-snug text-stone-500 dark:text-slate-400">{t('chat.documentGenWorkingSub')}</div>
-        </div>
-      </div>
-      <div className="px-3 pb-2">
-        <div className="relative myagent-image-gen-loading-shimmer flex h-8 items-center gap-2 overflow-hidden rounded-md bg-gradient-to-r from-stone-200/90 via-stone-100 to-emerald-500/18 px-2 dark:from-slate-700 dark:via-slate-900/85 dark:to-emerald-600/22">
-          <FiFileText size={15} className="relative z-10 text-stone-500 dark:text-slate-400" aria-hidden />
-          <div className="relative z-10 h-1.5 flex-1 overflow-hidden rounded-full bg-white/60 dark:bg-slate-950/55">
-            <div className="h-full w-1/2 animate-pulse rounded-full bg-emerald-500/55 dark:bg-emerald-400/45" />
+    <div className="font-mono text-[11px] leading-relaxed text-emerald-100/88" role="status" aria-live="polite">
+      <div className="flex items-start gap-2 text-emerald-400/90">
+        <span aria-hidden className="select-none shrink-0">
+          ▸
+        </span>
+        <div className="min-w-0 flex-1 space-y-1">
+          <div className="text-emerald-200/95">{t('chat.documentGenWorking')}</div>
+          <div className="text-emerald-600/85 dark:text-emerald-500/80">{t('chat.documentGenWorkingSub')}</div>
+          <div className="myagent-image-gen-loading-shimmer relative mt-1 flex h-6 items-center overflow-hidden rounded border border-emerald-800/40 bg-gradient-to-r from-emerald-950/85 via-slate-950/50 to-emerald-900/35 px-2">
+            <FiFileText size={13} className="relative z-10 text-emerald-500/88" aria-hidden />
+            <div className="relative z-10 ml-2 h-1 flex-1 overflow-hidden rounded-full bg-black/45">
+              <div className="h-full w-2/5 animate-pulse rounded-full bg-emerald-400/42" />
+            </div>
           </div>
         </div>
       </div>
@@ -104,21 +113,27 @@ function ImageGeneratingPlaceholder({
   t: (key: string, params?: Record<string, string | number>) => string;
 }) {
   const imageFiles = (files ?? []).filter((f) => f.type.startsWith('image/'));
+  const slotCount = Math.min(Math.max(progress.total, 1), 24);
+
   return (
-    <div className="overflow-hidden rounded-xl border border-stone-300/50 bg-stone-50/75 dark:border-slate-600/55 dark:bg-slate-900/35" role="status" aria-live="polite">
-      <div className="flex items-center gap-2 border-b border-stone-200/80 px-3 py-2 dark:border-slate-700/65">
-        <FiLoader size={14} className="shrink-0 animate-spin text-primary-600 dark:text-primary-400" aria-hidden />
-        <span className="text-sm font-medium text-stone-700 dark:text-slate-200">
+    <div
+      className="rounded-lg border border-stone-300/55 bg-white/85 p-2.5 text-stone-800 shadow-sm dark:border-slate-600/60 dark:bg-slate-800/75 dark:text-slate-100"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="mb-2 flex flex-wrap items-center gap-2 border-b border-stone-200/90 pb-2 text-[11px] text-stone-600 dark:border-slate-600/65 dark:text-slate-400">
+        <FiLoader size={13} className="shrink-0 animate-spin text-primary-600 dark:text-primary-300" aria-hidden />
+        <span>
           {t('chat.imageGenWorking')}
           {progress.total > 1 ? (
-            <span className="ml-1.5 tabular-nums text-[13px] font-normal text-stone-500 dark:text-slate-400">
+            <span className="ml-1.5 tabular-nums text-stone-500 dark:text-slate-500">
               {t('chat.imageGenWorkingTotal', { total: progress.total })}
             </span>
           ) : null}
         </span>
       </div>
-      <div className={`${MULTI_IMAGE_ATTACHMENT_GRID} p-3`}>
-        {Array.from({ length: Math.min(progress.total, 12) }).map((_, idx) => {
+      <div className={MULTI_IMAGE_ATTACHMENT_GRID}>
+        {Array.from({ length: slotCount }).map((_, idx) => {
           const file = imageFiles[idx];
           if (file) {
             const hasPreview = file.preview && file.preview.startsWith('data:');
@@ -128,25 +143,22 @@ function ImageGeneratingPlaceholder({
                 ? pathToFileURL(file.path).href.replace(/^file:/i, 'local-file:')
                 : '';
             return (
-              <div key={file.path || idx} className="relative group/file max-w-full transition-all" title={file.name}>
-                <div className="flex flex-col gap-1">
+              <div key={file.path || `img-${idx}`} className="relative min-w-0 transition-all" title={file.name}>
+                <div className="flex w-max flex-col gap-1">
                   <img
                     src={displaySrc}
                     alt={file.name}
-                    onClick={() =>
-                      displaySrc &&
-                      openAttachmentPreview?.(file.name, displaySrc, file.path, idx)
-                    }
-                    className="h-[90px] w-[120px] cursor-zoom-in rounded-md object-contain border border-stone-300/60 shadow-sm transition-transform hover:scale-[1.02] dark:border-white/10 sm:h-[112px] sm:w-[150px]"
+                    onClick={() => displaySrc && openAttachmentPreview?.(file.name, displaySrc, file.path, idx)}
+                    className={`${ASSISTANT_IMAGE_THUMB_IMG} bg-stone-50 dark:bg-slate-900/35`}
                   />
-                  <div className="flex w-[120px] items-center gap-1 sm:w-[150px]">
+                  <div className={ASSISTANT_IMAGE_THUMB_META_ROW}>
                     <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-stone-700 dark:text-slate-300">
                       {file.name}
                     </span>
                     {downloadAttachmentCopy ? (
                       <button
                         type="button"
-                        className="shrink-0 rounded p-0.5 text-stone-500 hover:bg-stone-200 hover:text-primary-600 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-primary-300"
+                        className="shrink-0 rounded p-0.5 text-stone-500 hover:bg-stone-100 dark:text-slate-400 dark:hover:bg-slate-700/80"
                         title={t('message.imagePreviewDownload')}
                         aria-label={t('message.imagePreviewDownload')}
                         onClick={(e) => void downloadAttachmentCopy(e, file.path, file.name)}
@@ -159,23 +171,28 @@ function ImageGeneratingPlaceholder({
               </div>
             );
           }
-          const active = idx + 1 === progress.current;
-          const done = idx + 1 < progress.current;
+          const active = idx === imageFiles.length;
           return (
-            <div
-              key={idx}
-              className={`relative myagent-image-gen-loading-shimmer flex h-[90px] w-[120px] items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-stone-200/90 via-stone-100 to-primary-500/18 sm:h-[112px] sm:w-[150px] dark:from-slate-700 dark:via-slate-900/85 dark:to-primary-600/22 ${
-                active ? 'ring-2 ring-primary-500/55' : done ? 'opacity-70' : ''
-              }`}
-            >
+            <div key={`slot-${idx}`} className="flex w-max flex-col gap-1">
               <div
-                className="pointer-events-none absolute inset-0 animate-pulse bg-[radial-gradient(ellipse_at_center,_rgba(255,255,255,0.42)_0%,_transparent_65%)] opacity-55 dark:bg-[radial-gradient(ellipse_at_center,_rgba(255,255,255,0.12)_0%,_transparent_60%)] dark:opacity-40"
-                aria-hidden
-              />
-              <FiImage size={progress.total > 1 ? 26 : 38} className="relative z-10 text-stone-400/95 dark:text-slate-600" aria-hidden />
-              <span className="absolute bottom-2 right-2 rounded bg-white/70 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-stone-500 dark:bg-slate-900/55 dark:text-slate-400">
-                {idx + 1}/{progress.total}
-              </span>
+                className={`relative myagent-image-gen-loading-shimmer flex ${ASSISTANT_IMAGE_THUMB_FRAME} flex-col items-center justify-center overflow-hidden rounded-md border bg-stone-100/95 dark:bg-slate-700/35 ${
+                  active
+                    ? 'border-primary-400/65 ring-2 ring-primary-400/35 dark:border-primary-500/50 dark:ring-primary-500/28'
+                    : 'border-stone-300/60 dark:border-slate-600/55'
+                }`}
+              >
+                {active ? (
+                  <FiLoader size={20} className="relative z-10 animate-spin text-primary-600 dark:text-primary-300" aria-hidden />
+                ) : (
+                  <FiImage size={21} className="relative z-10 text-stone-400 dark:text-slate-500" aria-hidden />
+                )}
+                <span className="absolute bottom-1 right-1 rounded bg-stone-800/78 px-1 py-0.5 text-[9px] font-medium tabular-nums text-stone-100 dark:bg-slate-950/82 dark:text-slate-100">
+                  {idx + 1}/{progress.total}
+                </span>
+              </div>
+              <div className={`${ASSISTANT_IMAGE_THUMB_META_ROW} pointer-events-none`} aria-hidden>
+                <span className="invisible select-none text-[11px]">.</span>
+              </div>
             </div>
           );
         })}
@@ -667,9 +684,15 @@ const MessageItem: React.FC<MessageItemProps> = ({
     message.exportHint.status === 'thinking' &&
     !message.files?.length &&
     !assistantDisplayBody.trim();
+  const reasoningTrimmed = (message.reasoning ?? '').trim();
+  const hasReasoningContent = reasoningTrimmed.length > 0;
+  const showDocDraftingTerminalStripe = hideBodyForDocumentThinking && !hasReasoningContent;
+  const mergedImageGenProgress = imageGenProgress ?? message.imageGenProgress;
   const showImageGeneratingPlaceholder =
-    message.role === 'assistant' &&
-    Boolean(imageGenProgress);
+    message.role === 'assistant' && mergedImageGenProgress != null;
+  /** 深色「终端」条仅承载文档起草/写入，与生图占位分离 */
+  const assistantDocTerminalActive =
+    showDocumentGeneratingPlaceholder || showDocDraftingTerminalStripe;
   const markdownBody =
     assistantDisplayBody.length > MAX_MARKDOWN_RENDER_CHARS
       ? `${assistantDisplayBody.slice(0, MAX_MARKDOWN_RENDER_CHARS)}\n\n[内容过长，已截断显示；复制按钮仍会复制完整内容]`
@@ -860,29 +883,29 @@ const MessageItem: React.FC<MessageItemProps> = ({
             </div>
             <div className="flex min-w-0 max-w-full flex-1 flex-col items-stretch">
               <div className="max-w-full rounded-2xl rounded-tl-sm border border-stone-300/45 bg-stone-100 px-5 py-3.5 text-stone-800 shadow-sm leading-relaxed dark:border-white/5 dark:bg-slate-800 dark:text-slate-100">
-                {(message.reasoning ?? '').trim().length > 0 && (
+                {hasReasoningContent ? (
                   <AssistantReasoningCollapsible
                     reasoning={message.reasoning ?? ''}
                     isThoughtStreaming={isThoughtStreaming}
                     t={t}
                   />
-                )}
+                ) : null}
+                {assistantDocTerminalActive ? (
+                  <div className="assistant-stream-terminal mb-3 space-y-3 overflow-hidden rounded-lg border border-emerald-900/38 bg-[#070b10] px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] dark:border-emerald-500/26">
+                    {showDocDraftingTerminalStripe ? (
+                      <p className="m-0 text-[11px] leading-relaxed text-stone-400 dark:text-slate-500" role="status">
+                        {t('chat.documentDraftingTerminal')}
+                      </p>
+                    ) : null}
+                    {showDocumentGeneratingPlaceholder ? <DocumentGeneratingPlaceholder t={t} /> : null}
+                  </div>
+                ) : null}
                 {showInlineStreamPlaceholder ? (
                   <div className="pt-0.5">
                     <InlineStreamDots />
                   </div>
                 ) : null}
-                {showDocumentGeneratingPlaceholder ? (
-                  <DocumentGeneratingPlaceholder t={t} />
-                ) : showImageGeneratingPlaceholder && imageGenProgress ? (
-                  <ImageGeneratingPlaceholder
-                    progress={imageGenProgress}
-                    files={message.files}
-                    openAttachmentPreview={openAttachmentPreview}
-                    downloadAttachmentCopy={downloadAttachmentCopy}
-                    t={t}
-                  />
-                ) : skipHeavyAssistantMutationsDuringStream &&
+                {skipHeavyAssistantMutationsDuringStream &&
                   !showInlineStreamPlaceholder &&
                   !hideBodyForDocumentThinking ? (
                   <div className="max-w-full whitespace-pre-wrap break-words pt-0.5 text-[13px] leading-relaxed text-stone-800 dark:text-slate-100">
@@ -945,6 +968,17 @@ const MessageItem: React.FC<MessageItemProps> = ({
                     ) : null}
                   </div>
                 ) : null}
+                {showImageGeneratingPlaceholder && mergedImageGenProgress ? (
+                  <div className="mt-3">
+                    <ImageGeneratingPlaceholder
+                      progress={mergedImageGenProgress}
+                      files={message.files}
+                      openAttachmentPreview={openAttachmentPreview}
+                      downloadAttachmentCopy={downloadAttachmentCopy}
+                      t={t}
+                    />
+                  </div>
+                ) : null}
                 {message.files && message.files.length > 0 && !showImageGeneratingPlaceholder && (
                   <div
                     className={
@@ -974,7 +1008,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
                             title={file.name}
                           >
                             {canShowImage ? (
-                              <div className="flex flex-col gap-1">
+                              <div className="flex w-max flex-col gap-1">
                                 <img
                                   src={displaySrc}
                                   alt={file.name}
@@ -982,9 +1016,9 @@ const MessageItem: React.FC<MessageItemProps> = ({
                                     displaySrc &&
                                     openAttachmentPreview(file.name, displaySrc, file.path, index)
                                   }
-                                  className="h-[90px] w-[120px] cursor-zoom-in rounded-md object-contain border border-stone-300/60 shadow-sm transition-transform hover:scale-[1.02] dark:border-white/10 sm:h-[112px] sm:w-[150px]"
+                                  className={`${ASSISTANT_IMAGE_THUMB_IMG} bg-stone-50/80 dark:bg-slate-900/25`}
                                 />
-                                <div className="flex w-[120px] items-center gap-1 sm:w-[150px]">
+                                <div className={ASSISTANT_IMAGE_THUMB_META_ROW}>
                                   <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-stone-700 dark:text-slate-300">
                                     {file.name}
                                   </span>

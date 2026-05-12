@@ -1,0 +1,2965 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f4f4f5" />
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1117" />
+  <title>MyAgent 远端</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0f1117;
+      --bg-elevated: #151922;
+      --card: #171a21;
+      --bd: #2a3140;
+      --tx: #e6e9ef;
+      --muted: #8892a6;
+      --accent: #5b9cf6;
+      --accent-soft: rgba(91, 156, 246, 0.15);
+      --user-bubble: #212835;
+      --ast-bubble: #181c26;
+      --chip-on: #1e2a3d;
+      --ok-bg: #1f2f24;
+      --ok-bd: #35604a;
+      --err-bg: #3d1f24;
+      --err-bd: #7a2933;
+      --err-tx: #fdd;
+      --shadow: 0 4px 24px rgba(0,0,0,.35);
+      --unread: #ef4444;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f4f4f5;
+        --bg-elevated: #fff;
+        --card: #fff;
+        --bd: #d4d4d8;
+        --tx: #18181b;
+        --muted: #71717a;
+        --accent: #2563eb;
+        --accent-soft: rgba(37, 99, 235, 0.12);
+        --user-bubble: #e4e4e7;
+        --ast-bubble: #fafafa;
+        --chip-on: #dbeafe;
+        --shadow: 0 4px 20px rgba(0,0,0,.08);
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; height: 100dvh; }
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--tx);
+      padding: 0;
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+
+    .app {
+      max-width: 720px;
+      margin: 0 auto;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .top-bar {
+      flex-shrink: 0;
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr) auto;
+      align-items: center;
+      padding: calc(6px + env(safe-area-inset-top)) 10px 8px;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--bd);
+      /** 保证模型下拉浮在 tab/主内容之上（否则伸到下方会被遮住） */
+      position: relative;
+      z-index: 40;
+    }
+    .top-bar-brand {
+      grid-column: 1 / -1;
+      grid-row: 1;
+      justify-self: center;
+      max-width: 70vw;
+      font-weight: 650;
+      font-size: 1rem;
+      letter-spacing: -0.02em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      pointer-events: none;
+    }
+    .top-bar-slot-l {
+      grid-column: 1;
+      grid-row: 1;
+      justify-self: start;
+      z-index: 1;
+    }
+    .top-bar-slot-r {
+      grid-column: 3;
+      grid-row: 1;
+      justify-self: end;
+      z-index: 2;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 4px;
+    }
+    .model-pick-wrap {
+      position: relative;
+    }
+    .btn-model-compact {
+      appearance: none;
+      max-width: 118px;
+      height: 36px;
+      padding: 0 8px;
+      border-radius: 10px;
+      border: 1px solid var(--bd);
+      background: var(--card);
+      color: var(--tx);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      white-space: nowrap;
+    }
+    .btn-model-compact:active { opacity: 0.9; }
+    .btn-model-compact #modelMenuLabel {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+      flex: 1;
+      text-align: left;
+    }
+    .btn-model-che { flex-shrink: 0; opacity: 0.75; font-size: 10px; margin-top: 1px; }
+    .model-popover {
+      position: absolute;
+      top: calc(100% + 5px);
+      right: 0;
+      width: min(278px, calc(100vw - 56px));
+      max-height: min(340px, 52vh);
+      overflow-y: auto;
+      overflow-x: hidden;
+      border-radius: 12px;
+      border: 1px solid var(--bd);
+      background: var(--bg-elevated);
+      box-shadow: var(--shadow);
+      -webkit-overflow-scrolling: touch;
+      z-index: 120;
+    }
+    .model-popover.hidden { display: none; }
+    .model-pop-tip {
+      font-size: 11px;
+      color: var(--muted);
+      padding: 10px 10px 6px;
+      border-bottom: 1px solid var(--bd);
+    }
+    button.model-opt {
+      display: block;
+      width: 100%;
+      margin: 0;
+      padding: 10px 11px;
+      border: none;
+      border-bottom: 1px solid var(--bd);
+      background: transparent;
+      color: var(--tx);
+      font-size: 14px;
+      text-align: left;
+      cursor: pointer;
+      line-height: 1.3;
+      word-break: break-word;
+    }
+    button.model-opt:last-child { border-bottom: none; }
+    button.model-opt.on {
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 600;
+    }
+    button.model-opt:active { filter: brightness(0.95); }
+    .icon-btn {
+      appearance: none;
+      flex-shrink: 0;
+      min-width: 38px;
+      height: 36px;
+      border-radius: 10px;
+      border: 1px solid var(--bd);
+      background: var(--card);
+      color: var(--tx);
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 1;
+    }
+    .icon-btn:active { opacity: .92; }
+
+    .drawer-mask {
+      position: fixed;
+      inset: 0;
+      z-index: 90;
+      background: rgba(0,0,0,.45);
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.2s ease, visibility 0.2s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .drawer-mask.on {
+      opacity: 1;
+      visibility: visible;
+    }
+    .drawer {
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: min(316px, 100vw - 36px);
+      z-index: 100;
+      background: var(--bg-elevated);
+      border-right: 1px solid var(--bd);
+      transform: translateX(-105%);
+      transition: transform 0.26s ease-out;
+      display: flex;
+      flex-direction: column;
+      padding-top: env(safe-area-inset-top);
+      box-shadow: var(--shadow);
+    }
+    .drawer.on { transform: translateX(0); }
+
+    .drawer-head {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 10px;
+      border-bottom: 1px solid var(--bd);
+    }
+    .drawer-title {
+      flex: 1;
+      font-weight: 650;
+      font-size: 15px;
+    }
+    .drawer-token {
+      flex-shrink: 0;
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--bd);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .drawer-token .tok-lbl {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+    .drawer-token-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .drawer-token-row input[type="text"] {
+      flex: 1;
+      min-width: 0;
+      font-size: 14px;
+      border-radius: 10px;
+      border: 1px solid var(--bd);
+      padding: 8px 11px;
+      background: var(--card);
+      color: var(--tx);
+    }
+    .drawer .drawer-sess-lbl {
+      padding: 0 10px;
+      font-size: 11px;
+      color: var(--muted);
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+
+    button.drawer-x {
+      border: none;
+      background: transparent !important;
+      box-shadow: none !important;
+      font-size: 24px;
+      font-weight: 300;
+      min-width: 36px;
+    }
+
+    .drawer #sess.sess-list-wrap {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      padding: 8px 10px calc(14px + env(safe-area-inset-bottom));
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    button.btn, a.btn-link {
+      appearance: none;
+      font: inherit;
+      border-radius: 10px;
+      border: 1px solid var(--bd);
+      padding: 7px 12px;
+      font-size: 13px;
+      font-weight: 500;
+      background: var(--card);
+      color: var(--tx);
+      cursor: pointer;
+    }
+    button.btn:active { transform: scale(.98); opacity: .92; }
+    button.btn-primary {
+      border-color: transparent;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+    }
+    a.btn-link {
+      text-decoration: none;
+      font-size: 12px;
+      padding: 6px 10px;
+      display: inline-flex;
+      align-items: center;
+      color: var(--accent);
+      border-color: var(--accent-soft);
+      background: var(--accent-soft);
+    }
+    .btn-sm {
+      padding: 6px 10px;
+      font-size: 12px;
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+
+    button.sess-card {
+      appearance: none;
+      font: inherit;
+      text-align: left;
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 14px;
+      border: 1px solid var(--bd);
+      background: var(--card);
+      color: var(--tx);
+      cursor: pointer;
+      box-shadow: 0 1px 0 rgba(255,255,255,.03);
+      position: relative;
+    }
+    button.sess-card:active { opacity: .92; }
+    button.sess-card.on {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+    .sess-card-title { font-size: 14px; font-weight: 600; line-height: 1.3; padding-right: 56px; }
+    .sess-card-meta { margin-top: 4px; font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+    .sess-card .pill-unread {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--unread);
+    }
+
+    .tabbar {
+      flex-shrink: 0;
+      display: flex;
+      margin: 0 12px 6px;
+      border: 1px solid var(--bd);
+      border-radius: 11px;
+      padding: 3px;
+      background: var(--card);
+      gap: 4px;
+      position: relative;
+      z-index: 25;
+    }
+    .tabbar button {
+      flex: 1;
+      border: none;
+      padding: 9px 10px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      background: transparent;
+      color: var(--muted);
+    }
+    .tabbar button.on {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .panels-wrap {
+      flex: 1 1 auto;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      z-index: 18;
+    }
+
+    main.panel {
+      display: none;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+    }
+    main.panel.active { display: flex; }
+
+    #thread {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 10px 12px;
+      min-height: 0;
+      -webkit-overflow-scrolling: touch;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .bubble-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-width: 92%;
+      margin-bottom: 10px;
+    }
+    .bubble-wrap.align-user { align-self: flex-end; align-items: flex-end; margin-left: 10%; }
+    .bubble-wrap.align-ast { align-self: flex-start; align-items: flex-start; margin-right: 6%; }
+
+    .msg-role-out {
+      align-self: stretch;
+      width: 100%;
+      font-size: 12px;
+      font-weight: 650;
+      color: var(--muted);
+      line-height: 1.2;
+      margin-bottom: 2px;
+    }
+    .msg-role-out.out-user { text-align: right; }
+    .msg-role-out.out-ast { text-align: left; }
+
+    .bubble {
+      padding: 10px 12px;
+      border-radius: 14px;
+      border: 1px solid var(--bd);
+      font-size: 14px;
+      line-height: 1.45;
+      word-break: break-word;
+      white-space: normal;
+      /** 长按自定义菜单时屏蔽系统「全选 / 拖动选区 / iOS 放大镜与链接预览」 */
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    #thread .bubble * {
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    .bubble.user {
+      background: linear-gradient(145deg, #14b8a6 0%, #0d9488 100%);
+      color: #fff;
+      border-color: rgba(45, 212, 191, 0.35);
+    }
+    .bubble.ast {
+      background: var(--card);
+      color: var(--tx);
+      border-color: var(--bd);
+    }
+    .bubble.user .msg-body a {
+      color: #ecfdfa;
+      text-decoration: underline;
+    }
+    .bubble.user .attach-row a.attach-chip,
+    .bubble.user .attach-row button.attach-chip {
+      border-color: rgba(255, 255, 255, 0.45);
+      background: rgba(0, 0, 0, 0.08);
+      color: rgba(240, 253, 250, 0.96);
+    }
+    .bubble.user .msg-table-wrap {
+      border-color: rgba(255, 255, 255, 0.35);
+    }
+    .bubble.user .msg-table-wrap th {
+      background: rgba(0, 0, 0, 0.18);
+      color: #fff;
+    }
+    .bubble.user .msg-table-wrap td {
+      border-color: rgba(255, 255, 255, 0.32);
+    }
+    .bubble.ast .msg-table-wrap th {
+      background: rgba(136, 146, 166, 0.14);
+      color: var(--tx);
+    }
+
+    .bubble.user details.msg-thought {
+      border-color: rgba(255, 255, 255, 0.4);
+      background: rgba(0, 0, 0, 0.1);
+    }
+    .bubble.user details.msg-thought summary {
+      color: rgba(255, 255, 255, 0.85);
+    }
+    .bubble.user .thought-pre {
+      color: rgba(255, 255, 255, 0.92);
+    }
+
+    details.msg-thought {
+      margin: 8px 0;
+      font-size: 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(16, 185, 129, 0.25);
+      background: rgba(7, 11, 16, 0.92);
+      padding: 8px 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      details.msg-thought { background: rgba(5, 8, 12, 0.94); }
+    }
+    details.msg-thought summary { cursor: pointer; color: rgba(167, 243, 208, 0.88); font-weight: 600; list-style: none; font-size: 11px; }
+    details.msg-thought summary::-webkit-details-marker { display: none; }
+    .thought-pre {
+      margin: 6px 0 0;
+      white-space: pre-wrap;
+      font-size: 11px;
+      line-height: 1.5;
+      color: rgba(236, 253, 245, 0.93);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    .stream-doc-term {
+      margin: 8px 0;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(16, 185, 129, 0.22);
+      background: rgba(7, 11, 16, 0.88);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      color: rgba(167, 243, 208, 0.9);
+    }
+
+    .img-gen-ph {
+      margin: 10px 0;
+      padding: 10px 10px;
+      border-radius: 10px;
+      border: 1px solid var(--bd);
+      background: rgba(255, 255, 255, 0.08);
+    }
+    @media (prefers-color-scheme: light) {
+      .img-gen-ph {
+        background: rgba(244, 244, 245, 0.96);
+      }
+    }
+    .img-gen-ph-hd {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      line-height: 1.35;
+      color: var(--muted);
+      margin-bottom: 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--bd);
+    }
+    @keyframes img-gen-spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+    .img-gen-spin {
+      flex-shrink: 0;
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      border: 2px solid var(--bd);
+      border-top-color: var(--accent);
+      animation: img-gen-spin 0.8s linear infinite;
+    }
+    .img-gen-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      width: 100%;
+    }
+    .img-gen-slot {
+      position: relative;
+      aspect-ratio: 1;
+      min-height: 74px;
+      border-radius: 10px;
+      border: 1px solid var(--bd);
+      background: rgba(136, 146, 166, 0.1);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    @media (prefers-color-scheme: light) {
+      .img-gen-slot {
+        background: rgba(120, 113, 108, 0.08);
+      }
+    }
+    .img-gen-slot.on {
+      box-shadow: 0 0 0 2px var(--accent-soft);
+    }
+    .img-gen-slot .img-ph {
+      background: linear-gradient(110deg, transparent 42%, rgba(255,255,255,.34) 50%, transparent 58%);
+      background-size: 220% 100%;
+      animation: img-ph-shimmer 2s ease-in-out infinite;
+    }
+    @keyframes img-ph-shimmer {
+      0% {
+        background-position: 140% 0;
+      }
+      100% {
+        background-position: -40% 0;
+      }
+    }
+    .img-gen-slot-num {
+      position: absolute;
+      bottom: 5px;
+      right: 5px;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 3px 6px;
+      border-radius: 5px;
+      background: rgba(15, 17, 23, 0.78);
+      color: #e8eaef;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+    }
+    @media (prefers-color-scheme: light) {
+      .img-gen-slot-num {
+        background: rgba(24, 24, 27, 0.75);
+      }
+    }
+    .img-gen-slot img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      cursor: zoom-in;
+    }
+    .msg-body a { color: var(--accent); text-decoration: underline; }
+    .bubble.ast .msg-body a {
+      color: inherit;
+      text-decoration: underline;
+      opacity: 0.92;
+    }
+    .msg-table-wrap {
+      overflow-x: auto;
+      margin: 8px 0;
+      border-radius: 10px;
+      border: 1px solid var(--bd);
+      -webkit-overflow-scrolling: touch;
+    }
+    .msg-table-wrap table.msg-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .msg-table-wrap th,
+    .msg-table-wrap td {
+      border: 1px solid var(--bd);
+      padding: 6px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .msg-table-wrap th { background: var(--accent-soft); font-weight: 600; }
+
+    .attach-row {
+      margin-top: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      width: 100%;
+      max-width: 100%;
+    }
+    a.attach-chip,
+    button.attach-chip {
+      display: flex;
+      align-items: center;
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+      gap: 0;
+      font-size: 13px;
+      padding: 6px 10px;
+      border-radius: 10px;
+      border: 1px solid var(--bd);
+      background: rgba(255,255,255,.05);
+      text-decoration: none;
+      color: var(--accent);
+      line-height: 1.3;
+      box-sizing: border-box;
+    }
+    button.attach-chip {
+      appearance: none;
+      font: inherit;
+      cursor: pointer;
+      text-align: left;
+    }
+    a.attach-chip .attach-name,
+    button.attach-chip .attach-name {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .imgs {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      margin-top: 8px;
+    }
+    @media (min-width: 480px) {
+      .imgs { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    }
+    .imgs img {
+      width: 100%;
+      border-radius: 10px;
+      background: #000;
+      aspect-ratio: 1;
+      object-fit: cover;
+      cursor: pointer;
+    }
+
+    .composer {
+      flex-shrink: 0;
+      padding: 8px 12px calc(10px + env(safe-area-inset-bottom));
+      background: var(--bg-elevated);
+      border-top: 1px solid var(--bd);
+    }
+    .composer-one {
+      display: flex;
+      flex-direction: row;
+      align-items: stretch;
+      gap: 8px;
+      width: 100%;
+      min-width: 0;
+    }
+    .btn-mini-att {
+      flex: 0 0 42px;
+      width: 42px;
+      min-height: 40px;
+      align-self: flex-end;
+      border-radius: 10px;
+      border: 1px solid var(--bd);
+      background: var(--card);
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      flex-shrink: 0;
+    }
+    .btn-mini-att:active { opacity: .9; }
+    .composer-field {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+    }
+    .composer-field textarea {
+      display: block;
+      width: 100%;
+      margin: 0;
+      box-sizing: border-box;
+      min-height: 40px;
+      max-height: 100px;
+      resize: none;
+      line-height: 1.45;
+      font-size: 15px;
+      border-radius: 12px;
+      border: 1px solid var(--bd);
+      padding: 9px 10px;
+      background: var(--card);
+      color: var(--tx);
+    }
+    .composer-send-mini {
+      flex: 0 0 auto;
+      align-self: flex-end;
+      min-width: 56px;
+      min-height: 40px;
+      height: 40px;
+      padding: 0 12px;
+      font-size: 14px;
+      font-weight: 600;
+      border-radius: 10px;
+      border: none;
+    }
+
+    .msg-ctx {
+      position: fixed;
+      inset: 0;
+      z-index: 210;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      visibility: visible;
+      pointer-events: none;
+    }
+    .msg-ctx.hidden {
+      visibility: hidden;
+      pointer-events: none !important;
+    }
+    /** 关闭后强制归位面板，避免瞬时闪影 */
+    .msg-ctx.hidden .msg-ctx-panel {
+      opacity: 0;
+      transform: translateY(16px);
+    }
+    .msg-ctx .msg-ctx-mask {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.38);
+      -webkit-backdrop-filter: blur(12px);
+      backdrop-filter: blur(12px);
+      border: none;
+      padding: 0;
+      margin: 0;
+      cursor: pointer;
+      appearance: none;
+      font: inherit;
+      color: inherit;
+      opacity: 0;
+      transition: opacity 0.38s cubic-bezier(0.32, 0.72, 0, 1);
+    }
+    .msg-ctx .msg-ctx-panel {
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      max-width: 420px;
+      margin: 10px;
+      margin-bottom: calc(14px + env(safe-area-inset-bottom));
+      border-radius: 14px;
+      background: rgba(249, 250, 252, 0.92);
+      -webkit-backdrop-filter: blur(26px);
+      backdrop-filter: blur(26px);
+      border: 1px solid rgba(120, 120, 128, 0.16);
+      box-shadow:
+        0 8px 32px rgba(0, 0, 0, 0.32),
+        0 0 0 0.5px rgba(255, 255, 255, 0.06) inset;
+      overflow: hidden;
+      opacity: 0;
+      transform: translateY(calc(100% + 24px)) scale(0.97);
+      transform-origin: bottom center;
+      transition:
+        opacity 0.34s cubic-bezier(0.32, 0.72, 0, 1),
+        transform 0.42s cubic-bezier(0.32, 0.72, 0, 1);
+    }
+    @media (prefers-color-scheme: dark) {
+      .msg-ctx .msg-ctx-panel {
+        background: rgba(28, 30, 36, 0.88);
+        border-color: rgba(255, 255, 255, 0.1);
+      }
+    }
+    .msg-ctx.is-open .msg-ctx-mask {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .msg-ctx.is-open .msg-ctx-panel {
+      pointer-events: auto;
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+    /** 打开后立即显示遮罩下层可点关闭 */
+    .msg-ctx.is-open {
+      pointer-events: auto;
+    }
+    .msg-ctx-row {
+      display: block;
+      width: 100%;
+      padding: 14px 16px;
+      margin: 0;
+      border: none;
+      border-bottom: 1px solid var(--bd);
+      background: transparent;
+      color: var(--tx);
+      font-size: 16px;
+      text-align: center;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .msg-ctx-row:active { filter: brightness(0.97); }
+    .msg-ctx-row.msg-ctx-danger { color: #f87171; }
+    .msg-ctx-cancel {
+      display: block;
+      width: 100%;
+      padding: 12px;
+      margin: 0;
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      font-size: 14px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .msg-ctx .msg-ctx-mask,
+      .msg-ctx .msg-ctx-panel,
+      .msg-ctx.is-open .msg-ctx-mask,
+      .msg-ctx.is-open .msg-ctx-panel {
+        transition: none !important;
+      }
+      .lb-track {
+        transition: none !important;
+      }
+    }
+    dialog.edit-msg-dlg {
+      border: none;
+      padding: 0;
+      border-radius: 14px;
+      max-width: calc(100vw - 28px);
+      width: min(440px, 100vw - 28px);
+      background: var(--bg-elevated);
+      color: var(--tx);
+      box-shadow: var(--shadow);
+    }
+    dialog.edit-msg-dlg::backdrop {
+      background: rgba(0, 0, 0, 0.5);
+    }
+    .edit-msg-box {
+      padding: 14px 14px calc(14px + env(safe-area-inset-bottom));
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .edit-msg-hdr { font-weight: 650; font-size: 15px; }
+    #editMsgTa {
+      width: 100%;
+      min-height: 140px;
+      box-sizing: border-box;
+      border-radius: 10px;
+      border: 1px solid var(--bd);
+      padding: 10px;
+      font-size: 14px;
+      line-height: 1.45;
+      background: var(--card);
+      color: var(--tx);
+      font-family: inherit;
+      resize: vertical;
+    }
+    .edit-msg-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .gallery-head {
+      flex-shrink: 0;
+      padding: 10px 16px 12px;
+      border-bottom: 1px solid var(--bd);
+      font-size: 13px;
+      line-height: 1.45;
+      color: var(--muted);
+    }
+    #galleryGrid {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 14px 16px 20px;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: row;
+      flex-wrap: wrap;
+      align-content: flex-start;
+      gap: 14px 12px;
+      min-height: 0;
+    }
+    /** 均分三列：每行三张；gap 为 12px → 行间 12px × 2 从宽度中扣除（与 Flex gap 语义一致） */
+    #galleryGrid > .gcell {
+      flex: 0 0 calc((100% - 24px) / 3);
+      width: calc((100% - 24px) / 3);
+      max-width: calc((100% - 24px) / 3);
+      min-width: 0;
+      box-sizing: border-box;
+    }
+    @media (max-width: 340px) {
+      #galleryGrid {
+        gap: 10px 8px;
+        padding-left: 10px;
+        padding-right: 10px;
+      }
+      #galleryGrid > .gcell {
+        flex: 0 0 calc((100% - 16px) / 3);
+        width: calc((100% - 16px) / 3);
+        max-width: calc((100% - 16px) / 3);
+      }
+    }
+    .gcell {
+      position: relative;
+      overflow: hidden;
+      border-radius: 12px;
+      border: 1px solid var(--bd);
+      background: var(--card);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+    }
+    .gcell-pad {
+      padding: 8px;
+      box-sizing: border-box;
+      display: flex;
+      align-items: stretch;
+      justify-content: center;
+      width: 100%;
+      min-height: 0;
+    }
+    .gcell-thumb {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 1;
+      border-radius: 10px;
+      overflow: hidden;
+      background: linear-gradient(155deg, rgba(0, 0, 0, 0.06), rgba(0, 0, 0, 0.11));
+      flex-shrink: 0;
+    }
+    @media (prefers-color-scheme: dark) {
+      .gcell-thumb {
+        background: linear-gradient(155deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
+      }
+    }
+    .gcell-thumb img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: center;
+      cursor: pointer;
+    }
+    .gcell .gdel {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      z-index: 4;
+      width: 32px;
+      height: 32px;
+      padding: 0;
+      margin: 0;
+      border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, 0.42);
+      background: rgba(15, 23, 42, 0.48);
+      -webkit-backdrop-filter: blur(10px);
+      backdrop-filter: blur(10px);
+      color: rgba(255, 255, 255, 0.95);
+      font-size: 20px;
+      font-weight: 300;
+      line-height: 1;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow:
+        0 2px 10px rgba(0, 0, 0, 0.22),
+        inset 0 1px 0 rgba(255, 255, 255, 0.12);
+      transition:
+        transform 0.15s ease,
+        background 0.15s ease,
+        border-color 0.15s ease,
+        box-shadow 0.15s ease;
+    }
+    .gcell .gdel:hover {
+      background: rgba(220, 38, 38, 0.88);
+      border-color: rgba(255, 255, 255, 0.55);
+      transform: scale(1.06);
+      box-shadow:
+        0 4px 16px rgba(220, 38, 38, 0.35),
+        inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    }
+    .gcell .gdel:active {
+      transform: scale(0.96);
+    }
+
+    #toast {
+      flex-shrink: 0;
+      padding: 0 12px 8px;
+      min-height: 0;
+    }
+    .toast { padding: 8px 10px; border-radius: 10px; margin-top: 6px; font-size: 12px; line-height: 1.4; }
+    .toast.err { background: var(--err-bg); border: 1px solid var(--err-bd); color: var(--err-tx); }
+    .toast.ok { background: var(--ok-bg); border: 1px solid var(--ok-bd); color: #b6e0c8; }
+    @media (prefers-color-scheme: light) {
+      .toast.ok { color: #166534; background: #ecfdf5; border-color: #86efac; }
+    }
+
+    .attach-badge { font-size: 11px; color: var(--muted); margin-top: 5px; min-height: 1.2em; }
+
+    dialog.img-dlg {
+      border: none;
+      padding: 0;
+      max-width: none;
+      width: 100%;
+      height: 100%;
+      max-height: none;
+      margin: 0;
+      background: rgba(0,0,0,.88);
+    }
+    dialog.img-dlg::backdrop { background: #000; }
+    .img-dlg-box {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      padding: env(safe-area-inset-top) 12px env(safe-area-inset-bottom);
+    }
+    .lb-viewport {
+      width: 100%;
+      max-width: min(100vw - 24px, 920px);
+      overflow: hidden;
+      align-self: center;
+      touch-action: pan-y;
+      /** 避免灯箱内垂直滚动劫持：水平跟手看图 */
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    .lb-track {
+      display: flex;
+      flex-direction: row;
+      width: fit-content;
+      will-change: transform;
+      transition: transform 0.38s cubic-bezier(0.25, 0.82, 0.25, 1);
+      transform: translateX(0);
+    }
+    .lb-track.lb-no-anim {
+      transition: none !important;
+    }
+    .lb-slide {
+      display: block;
+      flex-shrink: 0;
+      max-height: calc(100dvh - 112px);
+      object-fit: contain;
+      border-radius: 8px;
+      pointer-events: none;
+    }
+    .lb-bar {
+      margin-top: 12px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      color: #e5e5e5;
+    }
+    .lb-bar button {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      border: 1px solid rgba(255,255,255,.25);
+      background: rgba(255,255,255,.1);
+      color: #fff;
+      font-size: 22px;
+      cursor: pointer;
+      line-height: 1;
+    }
+    .lb-bar .lb-x { font-size: 20px; font-weight: 300; }
+    .lb-bar .lb-del {
+      width: auto;
+      min-width: 44px;
+      padding: 0 12px;
+      border-radius: 12px;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div id="drawerMask" class="drawer-mask" aria-hidden="true"></div>
+  <aside class="drawer" id="drawerPanel" aria-hidden="true">
+    <div class="drawer-head">
+      <span class="drawer-title">菜单</span>
+      <button type="button" class="icon-btn drawer-x" id="drawerClose" aria-label="关闭">×</button>
+    </div>
+    <div class="drawer-token">
+      <div class="tok-lbl">访问令牌（与桌面网关一致）</div>
+      <div class="drawer-token-row">
+        <input type="text" id="tok" autocomplete="off" placeholder="粘贴令牌" />
+        <button type="button" class="btn btn-sm btn-primary" id="saveTok">保存</button>
+      </div>
+    </div>
+    <div style="padding:0 10px 10px;display:flex;gap:8px;">
+      <button type="button" class="btn btn-primary" id="newSesDrawer" style="flex:1">新建对话</button>
+    </div>
+    <div class="drawer-sess-lbl">会话</div>
+    <div class="sess-list-wrap" id="sess"></div>
+  </aside>
+
+  <div class="app">
+    <header class="top-bar">
+      <div class="top-bar-slot-l">
+        <button type="button" class="icon-btn" id="openDrawer" aria-label="菜单">☰</button>
+      </div>
+      <div class="top-bar-brand">MyAgent</div>
+      <div class="top-bar-slot-r">
+        <div class="model-pick-wrap">
+          <button
+            type="button"
+            class="btn-model-compact"
+            id="modelMenuBtn"
+            aria-haspopup="listbox"
+            aria-expanded="false"
+            title="模型"
+          >
+            <span id="modelMenuLabel">模型</span><span class="btn-model-che" aria-hidden="true">▾</span>
+          </button>
+          <div id="modelPopover" class="model-popover hidden" role="listbox" aria-labelledby="modelMenuBtn"></div>
+        </div>
+        <button type="button" class="icon-btn" id="reload" aria-label="刷新" title="刷新">↻</button>
+      </div>
+    </header>
+
+    <div class="tabbar" role="tablist">
+      <button type="button" class="on" data-tab="chat" role="tab">消息</button>
+      <button type="button" data-tab="gallery" role="tab">图库 · <span id="galleryCount">0</span></button>
+    </div>
+
+    <div class="panels-wrap">
+      <main class="panel active" id="panel-chat" aria-label="消息">
+        <div id="thread"></div>
+        <div class="composer">
+          <div class="composer-one">
+            <button type="button" class="btn-mini-att" id="pick" aria-label="添加附件">📎</button>
+            <div class="composer-field">
+              <textarea id="msg" rows="1" placeholder=""></textarea>
+            </div>
+            <button type="button" class="btn btn-primary composer-send-mini" id="send">发送</button>
+          </div>
+          <div class="attach-badge" id="attachNote"></div>
+          <input type="file" id="file" multiple hidden />
+        </div>
+      </main>
+
+      <main class="panel" id="panel-gallery" aria-label="图库">
+        <div class="gallery-head">
+          大图预览底栏可删除；对话里点图仅预览、不删本地文件。
+        </div>
+        <div id="galleryGrid"></div>
+      </main>
+    </div>
+
+    <div id="toast"></div>
+  </div>
+
+  <dialog class="img-dlg" id="imgDlg">
+    <div class="img-dlg-box" id="imgDlgInner">
+      <div class="lb-viewport" id="lbViewport">
+        <div class="lb-track lb-no-anim" id="lbTrack">
+          <img alt="" class="lb-slide" draggable="false" decoding="async" />
+          <img alt="" class="lb-slide" draggable="false" decoding="async" />
+          <img alt="" class="lb-slide" draggable="false" decoding="async" />
+        </div>
+      </div>
+      <div class="lb-bar">
+        <button type="button" id="lbPrev" aria-label="上一张">‹</button>
+        <span class="lb-count" id="lbCounter">1 / 1</span>
+        <button type="button" id="lbNext" aria-label="下一张">›</button>
+        <button type="button" id="lbDel" class="lb-del" aria-label="删除当前图">删图</button>
+        <button type="button" id="lbClose" class="lb-x" aria-label="关闭">×</button>
+      </div>
+    </div>
+  </dialog>
+
+  <div id="msgCtx" class="msg-ctx hidden" aria-hidden="true">
+    <button type="button" class="msg-ctx-mask" id="msgCtxMask" aria-label="关闭"></button>
+    <div class="msg-ctx-panel" role="dialog" aria-modal="true">
+      <button type="button" class="msg-ctx-row" id="msgCtxEdit">修改</button>
+      <button type="button" class="msg-ctx-row" id="msgCtxCopy">复制</button>
+      <button type="button" class="msg-ctx-row msg-ctx-danger" id="msgCtxDel">删除</button>
+      <button type="button" class="msg-ctx-cancel" id="msgCtxCancel">取消</button>
+    </div>
+  </div>
+
+  <dialog class="edit-msg-dlg" id="editMsgDlg">
+    <div class="edit-msg-box">
+      <div class="edit-msg-hdr">编辑后发送</div>
+      <textarea id="editMsgTa"></textarea>
+      <div class="edit-msg-actions">
+        <button type="button" class="btn" id="editMsgCancel">取消</button>
+        <button type="button" class="btn btn-primary" id="editMsgSave">发送</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script>
+    const qs = function (s) { return document.querySelector(s); };
+
+    /** @type {{ path: string, url: string, mtimeMs: number }[]} */
+    var mediaLibItems = [];
+    /** 对话里点开预览时为 false；仅图库入口打开灯箱时为 true */
+    var lbAllowDelete = false;
+    var lbIdx = 0;
+    var lbSlideEls = null;
+    /** @type {ReturnType<typeof setTimeout>|null} */
+    var lbSlideTid = null;
+    var currentId = null;
+    var attaching = [];
+    /** @type {ReturnType<typeof setInterval>|null} */
+    var pollChatIv = null;
+    /** 图库接口失败后用于区分「暂无」与加载失败 */
+    var galleryLoadErrorMsg = '';
+    /** 已成功拉取过一次图库列表时，切 tab 不再重复请求（改令牌/删图/刷新会话等会强制更新） */
+    var mediaLibraryListOk = false;
+
+    var tokIn = qs('#tok');
+    var sessEl = qs('#sess');
+    var msgEl = qs('#msg');
+    var attachNote = qs('#attachNote');
+    var modelMenuBtn = qs('#modelMenuBtn');
+    var modelPopover = qs('#modelPopover');
+    var modelMenuLabel = qs('#modelMenuLabel');
+    var cachedModelsList = [];
+    var cachedActiveModelId = '';
+
+    function closeModelMenu() {
+      modelPopover.classList.add('hidden');
+      modelMenuBtn.setAttribute('aria-expanded', 'false');
+    }
+
+    tokIn.value = localStorage.getItem('myagent_remote_token') || '';
+
+    qs('#saveTok').onclick = function () {
+      localStorage.setItem('myagent_remote_token', tokIn.value.trim());
+      toast('已保存', 'ok');
+      closeModelMenu();
+      mediaLibraryListOk = false;
+      void reloadModelPickerUi(true);
+      void loadMediaLibrary({ force: true });
+    };
+    function closeDrawer() {
+      qs('#drawerPanel').classList.remove('on');
+      qs('#drawerMask').classList.remove('on');
+      qs('#drawerPanel').setAttribute('aria-hidden', 'true');
+      qs('#drawerMask').setAttribute('aria-hidden', 'true');
+    }
+    function openDrawer() {
+      qs('#drawerPanel').classList.add('on');
+      qs('#drawerMask').classList.add('on');
+      qs('#drawerPanel').setAttribute('aria-hidden', 'false');
+      qs('#drawerMask').setAttribute('aria-hidden', 'false');
+    }
+    qs('#drawerMask').onclick = closeDrawer;
+    qs('#openDrawer').onclick = openDrawer;
+    qs('#drawerClose').onclick = closeDrawer;
+
+    function stopChatPoll() {
+      if (pollChatIv !== null) {
+        clearInterval(pollChatIv);
+        pollChatIv = null;
+      }
+    }
+
+    /** 远端 chat 异步执行后，轮询 state 刷新，直到 loadingSessionId 不等于当前会话或已清空（贴近桌面端流式更新） */
+    function startChatPolling(sessionIdForPoll) {
+      stopChatPoll();
+      var deadline = Date.now() + 10 * 60 * 1000;
+      var sid = sessionIdForPoll ? String(sessionIdForPoll) : '';
+      async function pullOnce() {
+        try {
+          if (Date.now() > deadline) {
+            stopChatPoll();
+            return;
+          }
+          var d = await api('/remote/api/state', { method: 'GET' });
+          window.__lastState = d;
+          renderSessionsUI();
+          renderThread();
+          var lid = d.loadingSessionId != null ? String(d.loadingSessionId) : '';
+          if (!lid || !sid || lid !== sid) {
+            stopChatPoll();
+            await loadMediaLibrary({ force: true }).catch(function () {});
+          }
+        } catch (_) {
+          /* 继续轮询，避免瞬时网络抖动误停 */
+        }
+      }
+      pollChatIv = setInterval(function () {
+        void pullOnce();
+      }, 380);
+      void pullOnce();
+    }
+
+    function hdr() {
+      var t = tokIn.value.trim();
+      return { 'Content-Type': 'application/json', ...(t ? { Authorization: 'Bearer ' + t } : {}) };
+    }
+
+    /**
+     * 子路径挂载/反代时，不可用 fetch('/remote/...')（会打到站点根路径变成 404）。
+     * HTML 若为 https://域名/前缀/ ，接口应为 https://域名/前缀/remote/api/...
+     * 壳页在 https://域名/前缀/remote 时，接口仍是 .../前缀/remote/api/...（不可拼成 .../remote/remote/api）。
+     * 仅路径为 /remote 的别名入口仍以站点根作为 API 基底。
+     */
+    function gatewayBaseHrefDir() {
+      var u = new URL(window.location.href);
+      var pn = u.pathname || '/';
+      var norm = pn.replace(/\/+$/, '');
+      if (!norm || norm === '/') return u.origin + '/';
+      if (norm.toLowerCase() === '/remote') return u.origin + '/';
+      var shellRemote = /^(.*)\/remote$/i.exec(norm);
+      if (shellRemote) {
+        var pre = shellRemote[1] || '';
+        var dir = pre ? (pre.startsWith('/') ? pre + '/' : '/' + pre + '/') : '/';
+        return u.origin + dir;
+      }
+      return u.origin + (pn.endsWith('/') ? pn : pn + '/');
+    }
+
+    /** @param {string} rawPath 如 '/remote/api/models?x=1' */
+    function resolveRemoteFetchUrl(rawPath) {
+      var raw = String(rawPath || '').trim();
+      if (/^https?:\/\//i.test(raw)) return raw;
+      var iq = raw.indexOf('?');
+      var pathPart = iq >= 0 ? raw.slice(0, iq) : raw;
+      var search = iq >= 0 ? raw.slice(iq) : '';
+      var tail = pathPart.startsWith('/') ? pathPart.slice(1) : pathPart;
+      try {
+        return new URL(tail + search, gatewayBaseHrefDir()).href;
+      } catch (_) {
+        return pathPart + search;
+      }
+    }
+
+    function toast(t, kind) {
+      if (kind !== 'err') {
+        qs('#toast').innerHTML = '';
+        return;
+      }
+      qs('#toast').innerHTML = '<div class="toast err">' + esc(t) + '</div>';
+    }
+
+    function esc(s) {
+      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    }
+
+    function escAttr(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/'/g, '&#39;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;');
+    }
+
+    function normalizeDiskPathFromHref(raw) {
+      var h = String(raw || '').trim();
+      if (!h) return '';
+      if (/^local-file:/i.test(h)) {
+        try {
+          var tail = h.replace(/^local-file:\/*/i, '');
+          return decodeURIComponent(tail);
+        } catch (_) {
+          return '';
+        }
+      }
+      if (/^file:/i.test(h)) {
+        try {
+          var u = new URL(h);
+          var pn = u.pathname;
+          return decodeURIComponent(/^\/([A-Za-z]:)/.test(pn) ? pn.slice(1) : pn);
+        } catch (_) {
+          return '';
+        }
+      }
+      if (h.indexOf('://') < 0 && /^(\/|[A-Za-z]:[\\/])/.test(h)) return h;
+      return '';
+    }
+
+    function rewriteHrefForRemote(hrefRaw) {
+      if (/^https?:\/\//i.test(hrefRaw)) return hrefRaw;
+      var p = normalizeDiskPathFromHref(hrefRaw);
+      if (p) return mediaUrl(p);
+      return '';
+    }
+
+    function linkifyMdFragment(s) {
+      if (!s) return '';
+      var re = /\[([^\]]+)\]\(([^)]+)\)/g;
+      var i = 0;
+      var out = '';
+      var m;
+      while ((m = re.exec(s)) !== null) {
+        out += esc(s.slice(i, m.index)).replace(/\n/g, '<br>');
+        var lab = esc(m[1]);
+        var hrefRaw = m[2].trim();
+        var href = rewriteHrefForRemote(hrefRaw);
+        if (href) {
+          var ext = /^https?:\/\//i.test(hrefRaw);
+        var isFileApi =
+          !ext && (href.indexOf('/remote/api/file') >= 0 || href.indexOf('remote/api/file') >= 0);
+          out +=
+            '<a href="' +
+            escAttr(href) +
+            '" class="' +
+            (isFileApi ? 'msg-file-link' : '') +
+            '"' +
+            (ext ? ' target="_blank" rel="noopener noreferrer"' : '') +
+            '>' +
+            lab +
+            '</a>';
+        } else {
+          out += '<span title="不可从此页打开">' + lab + '</span>';
+        }
+        i = re.lastIndex;
+      }
+      out += esc(s.slice(i)).replace(/\n/g, '<br>');
+      return out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    }
+
+    function isTableSepLine(line) {
+      var t = line.trim();
+      return /^\|[\s\-:|]+\|/.test(t) || (/^\|/.test(t) && /-/.test(t) && /\|/.test(t));
+    }
+
+    function isPipeTableLine(line) {
+      var t = line.trim();
+      if (!t || t.indexOf('|') < 0) return false;
+      return t.split('|').length >= 2;
+    }
+
+    function splitMarkdownWithTables(md) {
+      var lines = String(md || '').split(/\r?\n/);
+      var out = [];
+      var buf = [];
+      function flushText() {
+        if (buf.length) {
+          out.push({ type: 'text', text: buf.join('\n') });
+          buf = [];
+        }
+      }
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        var next = lines[i + 1];
+        if (next !== undefined && isPipeTableLine(line) && isTableSepLine(next)) {
+          flushText();
+          var tbl = [];
+          while (i < lines.length && isPipeTableLine(lines[i])) {
+            tbl.push(lines[i]);
+            i++;
+          }
+          i--;
+          out.push({ type: 'table', lines: tbl });
+          continue;
+        }
+        buf.push(line);
+      }
+      flushText();
+      return out;
+    }
+
+    function parseTableRowCells(line) {
+      var t = line.trim();
+      if (t.startsWith('|')) t = t.slice(1);
+      if (t.endsWith('|')) t = t.slice(0, -1);
+      return t.split('|').map(function (c) {
+        return c.trim();
+      });
+    }
+
+    function tableLinesToHtml(lines) {
+      if (!lines || !lines.length) return '';
+      var sepIdx = -1;
+      for (var si = 0; si < lines.length; si++) {
+        if (isTableSepLine(lines[si])) {
+          sepIdx = si;
+          break;
+        }
+      }
+      if (sepIdx < 0 || sepIdx > lines.length - 1) {
+        return '';
+      }
+      var headCells = parseTableRowCells(lines[0]);
+      var bodyStart = sepIdx + 1;
+      var html = '<div class="msg-table-wrap"><table class="msg-table"><thead><tr>';
+      headCells.forEach(function (c) {
+        html += '<th>' + linkifyMdFragment(c) + '</th>';
+      });
+      html += '</tr></thead><tbody>';
+      for (var r = bodyStart; r < lines.length; r++) {
+        if (!lines[r].trim()) continue;
+        var cells = parseTableRowCells(lines[r]);
+        html += '<tr>';
+        cells.forEach(function (c) {
+          html += '<td>' + linkifyMdFragment(c) + '</td>';
+        });
+        html += '</tr>';
+      }
+      html += '</tbody></table></div>';
+      return html;
+    }
+
+    function renderAssistantBodies(content) {
+      var raw = content == null ? '' : String(content);
+      var chunks = splitMarkdownWithTables(raw);
+      var frag = '';
+      chunks.forEach(function (ch) {
+        if (ch.type === 'text') {
+          frag += '<div class="msg-body">' + linkifyMdFragment(ch.text) + '</div>';
+        } else if (ch.type === 'table') {
+          frag += tableLinesToHtml(ch.lines);
+        }
+      });
+      return frag || '<div class="msg-body">' + linkifyMdFragment(raw) + '</div>';
+    }
+
+    async function apiRemoveMessages(messageIds) {
+      if (!currentId || !messageIds || !messageIds.length) return;
+      await api('/remote/api/messages/remove', {
+        method: 'POST',
+        body: JSON.stringify({ sessionId: currentId, messageIds: messageIds }),
+      });
+      window.__lastState = await api('/remote/api/state', { method: 'GET' });
+      renderSessionsUI();
+      renderThread();
+      await loadMediaLibrary({ force: true });
+      toast('已删除', 'ok');
+    }
+
+    async function apiResubmitEditedUserMessage(messageId, content) {
+      if (!currentId || !messageId) return;
+      var sidStable = currentId;
+      await api('/remote/api/messages/resubmit', {
+        method: 'POST',
+        body: JSON.stringify({
+          sessionId: sidStable,
+          messageId: messageId,
+          content: String(content == null ? '' : content),
+        }),
+      });
+      window.__lastState = await api('/remote/api/state', { method: 'GET' });
+      renderSessionsUI();
+      renderThread();
+      await loadMediaLibrary({ force: true });
+      toast('已发送', 'ok');
+      startChatPolling(sidStable);
+    }
+
+    /** @type {{ id: string, content: string, role: string } | null} */
+    var msgCtxPending = null;
+    /** @type {ReturnType<typeof setTimeout>|null} */
+    var msgCtxHideTimer = null;
+
+    function finishMsgCtxHidden() {
+      var box = qs('#msgCtx');
+      box.classList.add('hidden');
+    }
+
+    function closeMsgCtx() {
+      msgCtxPending = null;
+      var box = qs('#msgCtx');
+      window.clearTimeout(msgCtxHideTimer);
+      box.classList.remove('is-open');
+      box.setAttribute('aria-hidden', 'true');
+      msgCtxHideTimer = window.setTimeout(finishMsgCtxHidden, 440);
+    }
+
+    function openMsgCtx(payload) {
+      if (!payload || !payload.id) return;
+      msgCtxPending = payload;
+      var ed = qs('#msgCtxEdit');
+      ed.style.display = payload.role === 'user' ? 'block' : 'none';
+      var box = qs('#msgCtx');
+      window.clearTimeout(msgCtxHideTimer);
+      box.classList.remove('hidden');
+      box.classList.remove('is-open');
+      box.setAttribute('aria-hidden', 'false');
+      void box.offsetWidth;
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          box.classList.add('is-open');
+        });
+      });
+    }
+
+    /** @param {HTMLElement} el @param {{ id: string, content: string, role: string }} payload */
+    function armBubbleLongPress(el, payload) {
+      var tTouch = null;
+      var tMouse = null;
+      var sx = 0;
+      var sy = 0;
+      var mx = 0;
+      var my = 0;
+
+      function clearTouchTimer() {
+        if (tTouch) {
+          clearTimeout(tTouch);
+          tTouch = null;
+        }
+      }
+      function clearMouseTimer() {
+        if (tMouse) {
+          clearTimeout(tMouse);
+          tMouse = null;
+        }
+      }
+
+      el.addEventListener(
+        'touchstart',
+        function (ev) {
+          if (!payload.id) return;
+          clearTouchTimer();
+          var te = ev.changedTouches && ev.changedTouches[0];
+          sx = te ? te.clientX : 0;
+          sy = te ? te.clientY : 0;
+          tTouch = setTimeout(function () {
+            tTouch = null;
+            openMsgCtx(payload);
+          }, 500);
+        },
+        { passive: true }
+      );
+      el.addEventListener('touchmove', function (ev) {
+        if (!tTouch) return;
+        var te = ev.changedTouches && ev.changedTouches[0];
+        if (te && (Math.abs(te.clientX - sx) > 12 || Math.abs(te.clientY - sy) > 12)) clearTouchTimer();
+      });
+      el.addEventListener('touchend', clearTouchTimer);
+      el.addEventListener('touchcancel', clearTouchTimer);
+
+      el.addEventListener('contextmenu', function (ev) {
+        if (!payload.id) return;
+        ev.preventDefault();
+        clearTouchTimer();
+        clearMouseTimer();
+        openMsgCtx(payload);
+      });
+
+      el.addEventListener('mousedown', function (ev) {
+        if (ev.button !== 0 || !payload.id) return;
+        clearMouseTimer();
+        mx = ev.clientX;
+        my = ev.clientY;
+        tMouse = setTimeout(function () {
+          tMouse = null;
+          openMsgCtx(payload);
+        }, 550);
+      });
+      el.addEventListener('mouseup', clearMouseTimer);
+      el.addEventListener('mouseleave', clearMouseTimer);
+      el.addEventListener('mousemove', function (ev) {
+        if (!tMouse) return;
+        if (Math.abs(ev.clientX - mx) > 10 || Math.abs(ev.clientY - my) > 10) clearMouseTimer();
+      });
+    }
+
+    async function clipboardWriteMaybe(text) {
+      var s = String(text == null ? '' : text);
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(s);
+        else throw new Error('no clipboard api');
+      } catch (_) {
+        try {
+          var x = document.createElement('textarea');
+          x.value = s;
+          x.setAttribute('readonly', '');
+          x.style.position = 'fixed';
+          x.style.left = '-9999px';
+          document.body.appendChild(x);
+          x.select();
+          document.execCommand('copy');
+          x.remove();
+        } catch (e2) {
+          toast('复制失败', 'err');
+          return;
+        }
+      }
+      toast('已复制', 'ok');
+    }
+
+    async function apiDeleteGalleryImage(absPath) {
+      await api('/remote/api/media-library/delete', {
+        method: 'POST',
+        body: JSON.stringify({ path: absPath }),
+      });
+      await loadMediaLibrary({ force: true });
+      toast('已删除图片', 'ok');
+    }
+
+    function mediaUrl(path) {
+      var t = tokIn.value.trim();
+      var pq =
+        '/remote/api/file?p=' +
+        encodeURIComponent(path) +
+        (t ? '&t=' + encodeURIComponent(t) : '');
+      return resolveRemoteFetchUrl(pq);
+    }
+
+    function mimeLooksPreview(ct) {
+      var c = String(ct || '').toLowerCase();
+      return /^image\//i.test(c) || c.indexOf('pdf') >= 0 || /^text\//i.test(c) || c.indexOf('xml') >= 0;
+    }
+
+    function parseFilenameFromContentDisposition(hdr) {
+      var h = String(hdr || '');
+      var mAst = /\bfilename\*=UTF-8''([^;\s]+)/i.exec(h);
+      if (mAst) {
+        try {
+          return decodeURIComponent(mAst[1].replace(/\"/g, ''));
+        } catch (_) {
+          return '';
+        }
+      }
+      var mQ = /\bfilename="([^"]+)"/i.exec(h);
+      if (mQ) return mQ[1];
+      var mNQ = /\bfilename=([^;\s]+)/i.exec(h);
+      return mNQ ? mNQ[1].trim() : '';
+    }
+
+    async function fetchRemoteFileBlob(pathWithQuery) {
+      var pq = String(pathWithQuery || '').trim();
+      if (pq.indexOf('/') !== 0) pq = '/' + pq.replace(/^\/+/, '');
+      var tok = tokIn.value.trim();
+      var h = {};
+      if (tok) h.Authorization = 'Bearer ' + tok;
+      var r = await fetch(resolveRemoteFetchUrl(pq), { headers: h });
+      var ctFull = r.headers.get('Content-Type') || '';
+      var ab = await r.arrayBuffer();
+      if (!r.ok) {
+        var tip = '';
+        try {
+          if (ctFull.indexOf('json') >= 0) {
+            var j = JSON.parse(new TextDecoder().decode(ab));
+            tip = j && j.error ? String(j.error) : '';
+          } else {
+            tip = new TextDecoder().decode(ab).slice(0, 180);
+          }
+        } catch (_) {}
+        throw new Error((String(r.status) + (tip ? ' — ' + tip : '')).trim());
+      }
+      var mimeSimple = ctFull.split(';')[0].trim() || 'application/octet-stream';
+      return {
+        blob: new Blob([ab], { type: mimeSimple }),
+        contentType: ctFull,
+        contentDisposition: r.headers.get('Content-Disposition'),
+      };
+    }
+
+    async function openOrDownloadRemoteFile(pathWithQuery, displayName) {
+      try {
+        var got = await fetchRemoteFileBlob(pathWithQuery);
+        var fname =
+          parseFilenameFromContentDisposition(got.contentDisposition || '') ||
+          (displayName && String(displayName).trim()) ||
+          '附件';
+        var mimeSimple = got.blob.type || '';
+        var preview = mimeLooksPreview(mimeSimple);
+        var u = URL.createObjectURL(got.blob);
+        if (preview) {
+          window.open(u, '_blank', 'noopener,noreferrer');
+          setTimeout(function () {
+            URL.revokeObjectURL(u);
+          }, 180000);
+        } else {
+          var a = document.createElement('a');
+          a.href = u;
+          a.download = fname;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(function () {
+            URL.revokeObjectURL(u);
+          }, 5000);
+        }
+      } catch (err) {
+        toast(String(err && err.message ? err.message : err), 'err');
+      }
+    }
+
+    function threadHrefToApiFileQuery(hrefRaw) {
+      var h = String(hrefRaw || '').trim();
+      if (h.indexOf('/remote/api/file') === 0) return h;
+      try {
+        var U = new URL(h, location.href);
+        if (/\/remote\/api\/file$/i.test(U.pathname) || U.pathname.indexOf('/remote/api/file') >= 0)
+          return U.pathname + (U.search || '');
+      } catch (_) {}
+      return '';
+    }
+
+    function fileToImageUrl(f) {
+      if (f.preview && String(f.preview).startsWith('data:')) return f.preview;
+      return f.path ? mediaUrl(f.path) : '';
+    }
+
+    function fmtShortTime(ms) {
+      if (ms == null || !Number.isFinite(ms)) return '';
+      try {
+        return new Date(ms).toLocaleString(undefined, {
+          month: 'numeric',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+      } catch (_) {
+        return '';
+      }
+    }
+
+    /** 按更新时间倒序 */
+    function sortSessions(arr) {
+      return [].concat(arr || []).sort(function (a, b) {
+        return (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0);
+      });
+    }
+
+    function refreshMediaLibBadge() {
+      qs('#galleryCount').textContent = String(mediaLibItems.length);
+    }
+
+    async function loadMediaLibrary(opts) {
+      var force = !!(opts && opts.force);
+      if (!force && mediaLibraryListOk) {
+        refreshMediaLibBadge();
+        if (qs('#panel-gallery').classList.contains('active')) renderGallery();
+        return;
+      }
+      try {
+        galleryLoadErrorMsg = '';
+        var j = await api('/remote/api/media-library', { method: 'GET' });
+        var items = Array.isArray(j.items) ? j.items : [];
+        mediaLibItems = items
+          .filter(function (x) { return x && typeof x.path === 'string' && x.path; })
+          .map(function (x) {
+            return { path: x.path, url: mediaUrl(x.path), mtimeMs: Number(x.mtimeMs) || 0 };
+          })
+          .sort(function (a, b) {
+            return b.mtimeMs - a.mtimeMs;
+          });
+        mediaLibraryListOk = true;
+        refreshMediaLibBadge();
+        if (qs('#panel-gallery').classList.contains('active')) renderGallery();
+      } catch (e) {
+        mediaLibraryListOk = false;
+        mediaLibItems = [];
+        refreshMediaLibBadge();
+        galleryLoadErrorMsg = String((e && e.message) ? e.message : e) || '图库加载失败';
+        if (qs('#panel-gallery').classList.contains('active')) renderGallery();
+        toast(galleryLoadErrorMsg, 'err');
+      }
+    }
+
+    function openLightboxFromLibPath(absPathOrEmpty, fallbackList, fallbackIdx) {
+      if (mediaLibItems.length) {
+        var idx = mediaLibItems.findIndex(function (x) {
+          return x.path === absPathOrEmpty;
+        });
+        if (idx >= 0) {
+          openLightbox(
+            mediaLibItems.map(function (x) {
+              return { url: x.url, absPath: x.path };
+            }),
+            idx,
+            false
+          );
+          return;
+        }
+      }
+      openLightbox(
+        (fallbackList || []).map(function (x) {
+          return { url: x.url, absPath: null };
+        }),
+        fallbackIdx,
+        false
+      );
+    }
+
+    function lbCurrentPath() {
+      var cur = lbList[lbIdx];
+      return cur && cur.absPath ? cur.absPath : null;
+    }
+
+    function lbSlides() {
+      if (!lbSlideEls) lbSlideEls = [].slice.call(qs('#lbTrack').querySelectorAll('.lb-slide'));
+      return lbSlideEls;
+    }
+
+    function lbStageW() {
+      var v = qs('#lbViewport');
+      return Math.max(1, Math.floor(v.clientWidth || window.innerWidth - 24));
+    }
+
+    function lbTrackSetX(px) {
+      qs('#lbTrack').style.transform = 'translateX(' + px + 'px)';
+    }
+
+    function lbSetSlideWidths() {
+      var w = lbStageW();
+      lbSlides().forEach(function (im) {
+        im.style.width = w + 'px';
+      });
+      qs('#lbTrack').style.width = 3 * w + 'px';
+      return w;
+    }
+
+    function lbTripleIndices() {
+      var n = lbList.length;
+      if (n < 2) return { p: lbIdx, c: lbIdx, nx: lbIdx };
+      return { p: (lbIdx - 1 + n) % n, c: lbIdx, nx: (lbIdx + 1) % n };
+    }
+
+    function lbFillTriplet() {
+      var n = lbList.length;
+      if (!n) return;
+      var t = lbTripleIndices();
+      var imgs = lbSlides();
+      imgs[0].src = lbList[t.p].url;
+      imgs[1].src = lbList[t.c].url;
+      imgs[2].src = lbList[t.nx].url;
+    }
+
+    function lbSnapCenterNoAnim() {
+      var w = lbStageW();
+      var tr = qs('#lbTrack');
+      tr.classList.add('lb-no-anim');
+      lbTrackSetX(-w);
+      void tr.offsetWidth;
+      tr.classList.remove('lb-no-anim');
+    }
+
+    function lbRefreshControls() {
+      if (!lbList.length) return;
+      lbSetSlideWidths();
+      lbFillTriplet();
+      qs('#lbCounter').textContent = lbIdx + 1 + ' / ' + lbList.length;
+      var multi = lbList.length > 1;
+      qs('#lbPrev').style.visibility = multi ? 'visible' : 'hidden';
+      qs('#lbNext').style.visibility = multi ? 'visible' : 'hidden';
+      var delBtn = qs('#lbDel');
+      if (!lbAllowDelete) {
+        delBtn.hidden = true;
+        delBtn.disabled = true;
+      } else {
+        delBtn.hidden = false;
+        var canDel = !!lbCurrentPath();
+        delBtn.disabled = !canDel;
+        delBtn.style.opacity = canDel ? '1' : '0.4';
+      }
+      lbSnapCenterNoAnim();
+    }
+
+    function openLightbox(slides, idx, allowDeleteImg) {
+      if (!slides || !slides.length) return;
+      lbAllowDelete = Boolean(allowDeleteImg);
+      lbList = slides;
+      lbIdx = Math.max(0, Math.min(idx, slides.length - 1));
+      window.clearTimeout(lbSlideTid);
+      qs('#imgDlg').showModal();
+      requestAnimationFrame(function () {
+        lbRefreshControls();
+      });
+    }
+
+    function lbAfterSlideTransition(dir) {
+      var n = lbList.length;
+      var tr = qs('#lbTrack');
+      window.clearTimeout(lbSlideTid);
+      function done(ev) {
+        if (ev && ev.propertyName && ev.propertyName !== 'transform') return;
+        tr.removeEventListener('transitionend', done);
+        window.clearTimeout(lbSlideTid);
+        lbIdx = (lbIdx + dir + n) % n;
+        lbRefreshControls();
+      }
+      tr.removeEventListener('transitionend', done);
+      tr.addEventListener('transitionend', done);
+      lbSlideTid = /** @type {ReturnType<typeof setTimeout>} */ (
+        window.setTimeout(done, 500)
+      );
+    }
+
+    function lbDragFinish(dir) {
+      /** dir +1 -> 看下一张，-1 -> 上一张（与箭头按钮一致） */
+      var n = lbList.length;
+      if (n < 2) return;
+      var w = lbStageW();
+      var tr = qs('#lbTrack');
+      tr.classList.remove('lb-no-anim');
+      void tr.offsetWidth;
+      if (dir === 1) lbTrackSetX(-2 * w);
+      else lbTrackSetX(0);
+      lbAfterSlideTransition(dir);
+    }
+
+    function lbAnimateSnapCenter() {
+      var tr = qs('#lbTrack');
+      tr.classList.remove('lb-no-anim');
+      void tr.offsetWidth;
+      lbTrackSetX(-lbStageW());
+    }
+
+    function lbPrev() {
+      lbDragFinish(-1);
+    }
+    function lbNext() {
+      lbDragFinish(1);
+    }
+
+    qs('#lbClose').onclick = function () {
+      qs('#imgDlg').close();
+    };
+    qs('#lbPrev').onclick = lbPrev;
+    qs('#lbNext').onclick = lbNext;
+    qs('#lbDel').onclick = function () {
+      if (!lbAllowDelete) return;
+      var ap = lbCurrentPath();
+      if (!ap || !confirm('删除此本地图片文件？')) return;
+      void (async function () {
+        try {
+          await api('/remote/api/media-library/delete', {
+            method: 'POST',
+            body: JSON.stringify({ path: ap }),
+          });
+          var delAt = -1;
+          for (var i = 0; i < lbList.length; i++) {
+            if (lbList[i].absPath === ap) {
+              delAt = i;
+              break;
+            }
+          }
+          if (delAt >= 0) {
+            lbList = lbList.filter(function (_x, j) {
+              return j !== delAt;
+            });
+            if (!lbList.length) {
+              qs('#imgDlg').close();
+            } else {
+              if (lbIdx >= delAt && lbIdx > 0) lbIdx--;
+              lbIdx = Math.min(lbIdx, lbList.length - 1);
+              lbRefreshControls();
+            }
+          } else {
+            qs('#imgDlg').close();
+          }
+          await loadMediaLibrary({ force: true });
+          if (qs('#panel-gallery').classList.contains('active')) renderGallery();
+          toast('已删除图片', 'ok');
+        } catch (e) {
+          toast(String(e.message || e), 'err');
+        }
+      })();
+    };
+    qs('#imgDlg').onclick = function (ev) {
+      if (ev.target === qs('#imgDlg')) qs('#imgDlg').close();
+    };
+    qs('#imgDlgInner').onclick = function (ev) {
+      ev.stopPropagation();
+    };
+
+    window.addEventListener(
+      'resize',
+      function () {
+        try {
+          if (qs('#imgDlg').open) lbRefreshControls();
+        } catch (_) {}
+      },
+      { passive: true }
+    );
+
+    (function lbSwipe() {
+      var sx = null;
+      var sy = null;
+      var tracking = false;
+      var w = 0;
+      var vp = qs('#lbViewport');
+
+      vp.addEventListener(
+        'touchstart',
+        function (e) {
+          if (!e.touches || e.touches.length !== 1 || lbList.length < 2) {
+            sx = null;
+            return;
+          }
+          window.clearTimeout(lbSlideTid);
+          sx = e.touches[0].clientX;
+          sy = e.touches[0].clientY;
+          tracking = true;
+          w = lbStageW();
+          qs('#lbTrack').classList.add('lb-no-anim');
+        },
+        { passive: true }
+      );
+
+      vp.addEventListener(
+        'touchmove',
+        function (e) {
+          if (!tracking || sx === null || !e.touches || e.touches.length !== 1) return;
+          var x = e.touches[0].clientX;
+          var y = e.touches[0].clientY;
+          var dx = x - sx;
+          var dy = y - sy;
+          if (Math.abs(dy) > Math.abs(dx) + 22) {
+            tracking = false;
+            sx = null;
+            lbSnapCenterNoAnim();
+            return;
+          }
+          var baseX = -w;
+          var nx = baseX + dx;
+          nx = Math.max(-2 * w, Math.min(0, nx));
+          lbTrackSetX(nx);
+        },
+        { passive: true }
+      );
+
+      vp.addEventListener(
+        'touchcancel',
+        function () {
+          if (!tracking) return;
+          tracking = false;
+          sx = null;
+          lbSnapCenterNoAnim();
+        },
+        { passive: true }
+      );
+
+      vp.addEventListener(
+        'touchend',
+        function (e) {
+          if (!tracking) return;
+          tracking = false;
+          var tr = qs('#lbTrack');
+          tr.classList.remove('lb-no-anim');
+          if (sx == null || !e.changedTouches || !e.changedTouches.length) return;
+          var dx = e.changedTouches[0].clientX - sx;
+          sx = null;
+          var wNow = lbStageW();
+          var threshold = Math.min(72, Math.max(44, Math.floor(wNow * 0.14)));
+          if (dx < -threshold) lbDragFinish(1);
+          else if (dx > threshold) lbDragFinish(-1);
+          else lbAnimateSnapCenter();
+        },
+        { passive: true }
+      );
+    })();
+
+    function syncAttachNote() {
+      attachNote.textContent = attaching.length ? '待发附件 ' + attaching.length : '';
+    }
+
+    async function api(path, opt) {
+      opt = opt || {};
+      var merged = Object.assign({}, opt);
+      merged.headers = Object.assign({}, hdr(), (opt && opt.headers) || {});
+      var urlStr = resolveRemoteFetchUrl(path);
+      var methodUp = String(merged.method || 'GET').toUpperCase();
+      if (
+        methodUp === 'GET' &&
+        /remote\/api\/(?:models|media-library|state|meta)\b/i.test(urlStr)
+      ) {
+        merged.cache = 'no-store';
+      }
+      var r = await fetch(urlStr, merged);
+      var raw = await r.text();
+      var j = {};
+      if (raw) {
+        try {
+          j = JSON.parse(raw);
+        } catch (_) {
+          /**/
+        }
+      }
+      if (!r.ok) {
+        var extra = j && j.error ? String(j.error) : raw.slice(0, 220);
+        var msg = (String(r.status) + ' ' + r.statusText + (extra ? ' — ' + extra : '')).trim();
+        if (r.status === 401) msg = '未授权：请在侧栏粘贴与桌面远端网关一致的访问令牌后再试。';
+        else if (r.status === 404)
+          msg =
+            '请求 404（' +
+            msg +
+            '）。若网关挂在子路径或通过反代访问，浏览器会走错 API 路径；也可用「电脑 IP:网关端口」直开远端页试一下。';
+        throw new Error(msg);
+      }
+      return j;
+    }
+
+    function updateModelMenuCompactLabel() {
+      var nm = '模型';
+      for (var i = 0; i < cachedModelsList.length; i++) {
+        if (String(cachedModelsList[i].id) === String(cachedActiveModelId)) {
+          nm = String(cachedModelsList[i].name || cachedModelsList[i].id || '模型');
+          break;
+        }
+      }
+      if (nm.length > 11) nm = nm.slice(0, 10) + '…';
+      modelMenuLabel.textContent = nm;
+    }
+
+    function fillModelPopover() {
+      modelPopover.innerHTML = '';
+      var tip = document.createElement('div');
+      tip.className = 'model-pop-tip';
+      tip.textContent = '选择对话模型';
+      modelPopover.appendChild(tip);
+      if (!cachedModelsList.length) {
+        var emp = document.createElement('div');
+        emp.className = 'model-pop-tip';
+        emp.style.borderBottom = 'none';
+        emp.style.paddingTop = '6px';
+        emp.textContent = '没有可用模型：请在菜单中校对令牌，或在桌面端配置模型。';
+        modelPopover.appendChild(emp);
+        return;
+      }
+      cachedModelsList.forEach(function (m) {
+        var id = String(m.id ?? '').trim();
+        if (!id) return;
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'model-opt' + (String(cachedActiveModelId) === id ? ' on' : '');
+        btn.setAttribute('role', 'option');
+        btn.textContent = String(m.name || id);
+        btn.onclick = function (ev) {
+          ev.stopPropagation();
+          void pickModelRemote(id);
+        };
+        modelPopover.appendChild(btn);
+      });
+    }
+
+    async function reloadModelPickerUi(silent) {
+      try {
+        var d = await api('/remote/api/models', { method: 'GET' });
+        if (d && typeof d === 'object' && !Array.isArray(d.models) && d.data && typeof d.data === 'object') {
+          d = d.data;
+        }
+        var arr = Array.isArray(d.models) ? d.models : [];
+        var normalized = [];
+        arr.forEach(function (m) {
+          var id = String(m.id ?? '').trim();
+          if (!id) return;
+          normalized.push({
+            id: id,
+            name: String((m.name != null ? m.name : id) || id),
+          });
+        });
+        cachedModelsList = normalized;
+        var want =
+          typeof d.activeModelId === 'string'
+            ? d.activeModelId.trim()
+            : d.activeModelId != null
+              ? String(d.activeModelId).trim()
+              : '';
+        var prevLocal = cachedActiveModelId;
+        if (want && normalized.some(function (x) { return x.id === want; })) {
+          cachedActiveModelId = want;
+        } else if (prevLocal && normalized.some(function (x) { return x.id === prevLocal; })) {
+          cachedActiveModelId = prevLocal;
+        } else if (normalized[0]) {
+          cachedActiveModelId = normalized[0].id;
+        }
+        fillModelPopover();
+        updateModelMenuCompactLabel();
+      } catch (e) {
+        cachedModelsList = [];
+        if (!silent) {
+          toast(String(e.message || e), 'err');
+        }
+        modelPopover.innerHTML = '';
+        var errTop = document.createElement('div');
+        errTop.className = 'model-pop-tip';
+        errTop.textContent = silent ? '无法加载模型' : '加载模型失败';
+        modelPopover.appendChild(errTop);
+        var errBo = document.createElement('div');
+        errBo.className = 'model-pop-tip';
+        errBo.style.borderBottom = 'none';
+        errBo.style.fontSize = '12px';
+        errBo.textContent = silent ? '' : String(e.message || e);
+        if (
+          silent &&
+          errBo.textContent &&
+          (/401\b/i.test(errBo.textContent) || /未授权/i.test(errBo.textContent))
+        ) {
+          errBo.textContent = '未授权：请在侧栏保存与桌面远端网关一致的访问令牌。';
+        } else if (
+          silent &&
+          errBo.textContent &&
+          (/404\b/i.test(errBo.textContent) || /请求 404/i.test(errBo.textContent))
+        ) {
+          errBo.textContent =
+            '接口 404：若通过带路径的反代访问，请改用「IP:网关端口」直连，或检查反代路径改写。';
+        } else if (!errBo.textContent && silent) {
+          errBo.textContent =
+            '请求失败：请检查令牌、网络，或尝试用「IP:端口」打开本页（避免子路径 404）。';
+        }
+        if (!silent || errBo.textContent) modelPopover.appendChild(errBo);
+        modelMenuLabel.textContent = '模型';
+      }
+    }
+
+    async function pickModelRemote(id) {
+      var sid = String(id || '').trim();
+      if (!sid) return;
+      try {
+        await api('/remote/api/model/active', {
+          method: 'POST',
+          body: JSON.stringify({ modelId: sid }),
+        });
+        cachedActiveModelId = sid;
+        updateModelMenuCompactLabel();
+        fillModelPopover();
+        closeModelMenu();
+        toast('已切换模型', 'ok');
+      } catch (e) {
+        toast(String(e.message || e), 'err');
+        await reloadModelPickerUi(false);
+      }
+    }
+
+    modelMenuBtn.onclick = function (ev) {
+      ev.stopPropagation();
+      if (!modelPopover.classList.contains('hidden')) {
+        closeModelMenu();
+        return;
+      }
+      void (async function () {
+        await reloadModelPickerUi(true);
+        modelPopover.classList.remove('hidden');
+        modelMenuBtn.setAttribute('aria-expanded', 'true');
+      })();
+    };
+
+    document.addEventListener('click', function () {
+      if (!modelPopover.classList.contains('hidden')) closeModelMenu();
+    });
+
+    modelPopover.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+    });
+
+    async function activateSessionDesktop(id) {
+      await api('/remote/api/session/active', {
+        method: 'POST',
+        body: JSON.stringify({ sessionId: id }),
+      });
+    }
+
+    function scrollThreadToBottom() {
+      var thread = qs('#thread');
+      requestAnimationFrame(function () {
+        thread.scrollTop = thread.scrollHeight;
+        requestAnimationFrame(function () {
+          thread.scrollTop = thread.scrollHeight;
+        });
+      });
+    }
+
+    function renderThread() {
+      var thread = qs('#thread');
+      var ordered = sortSessions((window.__lastState && window.__lastState.sessions) || []);
+      var d =
+        ordered.find(function (x) {
+          return x.id === currentId;
+        }) || null;
+      if (!d && ordered[0]) d = ordered[0];
+      thread.innerHTML = '';
+      if (!d) {
+        thread.innerHTML = '<div class="toast" style="border-style:dashed">无会话</div>';
+        refreshMediaLibBadge();
+        scrollThreadToBottom();
+        return;
+      }
+      var msgImagesFallback = [];
+
+      function pushFallback(url) {
+        if (!url) return -1;
+        msgImagesFallback.push({ url: url });
+        return msgImagesFallback.length - 1;
+      }
+
+      var sessionMessages = d.messages || [];
+      var lastMsgIx = sessionMessages.length - 1;
+      var loadingSid =
+        window.__lastState && window.__lastState.loadingSessionId != null
+          ? String(window.__lastState.loadingSessionId)
+          : '';
+      var thisSessionStreaming = !!(loadingSid && String(d.id) === loadingSid);
+
+      sessionMessages.forEach(function (m, idx) {
+        var isUser = m.role === 'user';
+        var isSystem = m.role === 'system';
+        var wrap = document.createElement('div');
+        wrap.className = 'bubble-wrap ' + (isUser ? 'align-user' : 'align-ast');
+
+        var role = document.createElement('div');
+        role.className = 'msg-role-out ' + (isUser ? 'out-user' : 'out-ast');
+        role.textContent = isUser ? '我' : '助手';
+        wrap.appendChild(role);
+
+        var b = document.createElement('div');
+        b.className = 'bubble ' + (isUser ? 'user' : 'ast');
+
+        var bodyHost = document.createElement('div');
+        if (isUser || isSystem) {
+          bodyHost.innerHTML =
+            '<div class="msg-body">' + linkifyMdFragment(m.content || '') + '</div>';
+        } else {
+          bodyHost.innerHTML = renderAssistantBodies(m.content || '');
+        }
+
+        var thought = typeof m.reasoning === 'string' && m.reasoning.trim();
+        if (thought) {
+          var det = document.createElement('details');
+          det.className = 'msg-thought';
+          det.open =
+            !!(thisSessionStreaming && idx === lastMsgIx && !isUser && !isSystem && m.role === 'assistant');
+          var sm = document.createElement('summary');
+          sm.textContent = '思维过程';
+          det.appendChild(sm);
+          var pre = document.createElement('div');
+          pre.className = 'thought-pre';
+          pre.textContent = m.reasoning;
+          det.appendChild(pre);
+          b.appendChild(det);
+        }
+        if (!isUser && !isSystem && m.role === 'assistant') {
+          var xh = m.exportHint;
+          var hasFf = ((m.files || []).length || 0) > 0;
+          var ct0 = String(m.content || '').trim();
+          var docThinking = xh && xh.document && xh.status === 'thinking' && !hasFf && !ct0;
+          var docGen = xh && xh.document && xh.status === 'generating' && !hasFf;
+          if (docThinking || docGen) {
+            var dt = document.createElement('div');
+            dt.className = 'stream-doc-term';
+            dt.textContent = docGen ? '▸ 正在写入文档（md/docx）…' : '> 正在流式起草文档…';
+            b.appendChild(dt);
+          }
+        }
+
+        var files = m.files || [];
+        var imgs = files.filter(function (f) {
+          return f.type && f.type.indexOf('image/') === 0;
+        });
+        var docs = files.filter(function (f) {
+          return !f.type || f.type.indexOf('image/') !== 0;
+        });
+        var igProg = !isUser && !isSystem && m.role === 'assistant' ? m.imageGenProgress : null;
+        var showImgGenPh =
+          !!(igProg && typeof igProg.total === 'number' && igProg.total >= 1);
+        var imgSlotTotal = showImgGenPh ? Math.min(Math.max(igProg.total, 1), 24) : 0;
+
+        b.appendChild(bodyHost);
+
+        if (showImgGenPh && imgSlotTotal > 0) {
+          var phWrap = document.createElement('div');
+          phWrap.className = 'img-gen-ph';
+          var phHd = document.createElement('div');
+          phHd.className = 'img-gen-ph-hd';
+          var spr = document.createElement('span');
+          spr.className = 'img-gen-spin';
+          phHd.appendChild(spr);
+          var labHd = document.createElement('span');
+          labHd.textContent =
+            imgSlotTotal > 1 ? '正在生成图像（共 ' + imgSlotTotal + ' 张）…' : '正在生成图像…';
+          phHd.appendChild(labHd);
+          phWrap.appendChild(phHd);
+          var gr = document.createElement('div');
+          gr.className = 'img-gen-grid';
+          var nLoadedSlots = imgs.length;
+          var _si;
+          for (_si = 0; _si < imgSlotTotal; _si++) {
+            var sl = document.createElement('div');
+            sl.className = 'img-gen-slot';
+            var fhere = imgs[_si];
+            if (fhere) {
+              var _uhere = fileToImageUrl(fhere);
+              if (_uhere) {
+                var _pk = typeof fhere.path === 'string' ? fhere.path : '';
+                var _ixFb = pushFallback(_uhere);
+                var him = document.createElement('img');
+                him.src = _uhere;
+                him.alt = fhere.name || '';
+                (function (pathKey, fbIx) {
+                  him.onclick = function () {
+                    openLightboxFromLibPath(pathKey, msgImagesFallback, fbIx);
+                  };
+                })(_pk, _ixFb);
+                sl.appendChild(him);
+              }
+            } else {
+              if (_si === nLoadedSlots) sl.classList.add('on');
+              var shim = document.createElement('div');
+              shim.className = 'img-ph';
+              shim.setAttribute(
+                'style',
+                'position:absolute;inset:0;pointer-events:none;opacity:.5;border-radius:inherit'
+              );
+              sl.appendChild(shim);
+              if (_si === nLoadedSlots) {
+                var ld = document.createElement('div');
+                ld.className = 'img-gen-spin';
+                sl.appendChild(ld);
+              } else {
+                var phIc = document.createElement('span');
+                phIc.setAttribute('aria-hidden', 'true');
+                phIc.textContent = '\u25A3';
+                phIc.style.cssText =
+                  'position:relative;z-index:2;font-size:17px;line-height:1;font-weight:600;opacity:0.42;color:var(--muted)';
+                sl.appendChild(phIc);
+              }
+            }
+            var sn = document.createElement('span');
+            sn.className = 'img-gen-slot-num';
+            sn.textContent = _si + 1 + '/' + imgSlotTotal;
+            sl.appendChild(sn);
+            gr.appendChild(sl);
+          }
+          phWrap.appendChild(gr);
+          b.appendChild(phWrap);
+        }
+        if (docs.length) {
+          var row = document.createElement('div');
+          row.className = 'attach-row';
+          docs.forEach(function (f) {
+            if (!f.path) return;
+            var fn = f.name || '附件';
+            var url = mediaUrl(f.path);
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'attach-chip';
+            btn.title = fn;
+            var sp = document.createElement('span');
+            sp.className = 'attach-name';
+            sp.textContent = fn;
+            btn.appendChild(sp);
+            btn.onclick = function () {
+              void openOrDownloadRemoteFile(url, fn);
+            };
+            row.appendChild(btn);
+          });
+          b.appendChild(row);
+        }
+
+        if (imgs.length && !showImgGenPh) {
+          var g = document.createElement('div');
+          g.className = 'imgs';
+          imgs.forEach(function (f) {
+            var u = fileToImageUrl(f);
+            if (!u) return;
+            var pathKey = typeof f.path === 'string' ? f.path : '';
+            var ixFb = pushFallback(u);
+            var im = document.createElement('img');
+            im.src = u;
+            im.onclick = function () {
+              openLightboxFromLibPath(pathKey, msgImagesFallback, ixFb);
+            };
+            g.appendChild(im);
+          });
+          b.appendChild(g);
+        }
+
+        wrap.appendChild(b);
+        if (m.id) {
+          armBubbleLongPress(b, {
+            id: String(m.id),
+            content: String(m.content == null ? '' : m.content),
+            role: String(m.role || ''),
+          });
+        }
+        thread.appendChild(wrap);
+      });
+
+      refreshMediaLibBadge();
+      scrollThreadToBottom();
+
+      var panelG = qs('#panel-gallery');
+      if (panelG.classList.contains('active')) renderGallery();
+    }
+
+    function renderSessionsUI() {
+      var st = window.__lastState;
+      sessEl.innerHTML = '';
+      if (!st || !(st.sessions || []).length) return;
+      var ordered = sortSessions(st.sessions);
+      ordered.forEach(function (s) {
+        var n = document.createElement('button');
+        n.type = 'button';
+        n.className = 'sess-card' + (s.id === currentId ? ' on' : '');
+        var t = document.createElement('div');
+        t.className = 'sess-card-title';
+        t.textContent = s.title || '未命名';
+        n.appendChild(t);
+        var meta = document.createElement('div');
+        meta.className = 'sess-card-meta';
+        meta.appendChild(document.createTextNode(fmtShortTime(s.updatedAt)));
+        if (s.unread) {
+          var dot = document.createElement('span');
+          dot.className = 'pill-unread';
+          dot.setAttribute('aria-label', '未读');
+          n.appendChild(dot);
+        }
+        n.appendChild(meta);
+        n.onclick = function () {
+          void (async function () {
+            try {
+              await activateSessionDesktop(s.id);
+              currentId = s.id;
+              await loadSessions();
+              closeDrawer();
+            } catch (e) {
+              toast(String(e.message || e), 'err');
+            }
+          })();
+        };
+        sessEl.appendChild(n);
+      });
+    }
+
+    function renderGallery() {
+      var grid = qs('#galleryGrid');
+      grid.innerHTML = '';
+      if (!mediaLibItems.length && galleryLoadErrorMsg) {
+        grid.innerHTML =
+          '<div class="toast err" style="flex-basis:100%;width:100%;margin:0;line-height:1.45">' +
+          esc(galleryLoadErrorMsg) +
+          '</div>';
+        return;
+      }
+      if (!mediaLibItems.length) {
+        grid.innerHTML =
+          '<div class="toast" style="border-style:dashed;text-align:center;flex-basis:100%;width:100%">暂无图片</div>';
+        return;
+      }
+      var listSlides = mediaLibItems.map(function (x) {
+        return { url: x.url, absPath: x.path };
+      });
+      mediaLibItems.forEach(function (it, i) {
+        var wrap = document.createElement('div');
+        wrap.className = 'gcell';
+        var del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'gdel';
+        del.setAttribute('aria-label', '删除');
+        del.textContent = '×';
+        del.onclick = function (ev) {
+          ev.stopPropagation();
+          if (!confirm('删除此图片？')) return;
+          void (async function () {
+            try {
+              await apiDeleteGalleryImage(it.path);
+              renderGallery();
+            } catch (e) {
+              toast(String(e.message || e), 'err');
+            }
+          })();
+        };
+        wrap.appendChild(del);
+        var im = document.createElement('img');
+        im.alt = '';
+        im.loading = 'lazy';
+        im.referrerPolicy = 'no-referrer';
+        im.src = it.url;
+        im.onclick = function () {
+          openLightbox(listSlides, i, true);
+        };
+        var pad = document.createElement('div');
+        pad.className = 'gcell-pad';
+        var thumb = document.createElement('div');
+        thumb.className = 'gcell-thumb';
+        thumb.appendChild(im);
+        pad.appendChild(thumb);
+        wrap.appendChild(pad);
+        grid.appendChild(wrap);
+      });
+    }
+
+    function setTab(which) {
+      qs('#panel-chat').classList.toggle('active', which === 'chat');
+      qs('#panel-gallery').classList.toggle('active', which === 'gallery');
+      qs('.tabbar button[data-tab="chat"]').classList.toggle('on', which === 'chat');
+      qs('.tabbar button[data-tab="gallery"]').classList.toggle('on', which === 'gallery');
+      if (which === 'gallery') {
+        void loadMediaLibrary();
+      }
+      if (which === 'chat') scrollThreadToBottom();
+    }
+
+    qs('.tabbar').querySelectorAll('button[data-tab]').forEach(function (b) {
+      b.onclick = function () {
+        setTab(b.getAttribute('data-tab'));
+      };
+    });
+
+    async function loadSessions() {
+      try {
+        await reloadModelPickerUi(true);
+        var d = await api('/remote/api/state', { method: 'GET' });
+        window.__lastState = d;
+        currentId = d.currentSessionId || null;
+        renderSessionsUI();
+        if (
+          currentId &&
+          !(d.sessions || []).some(function (x) {
+            return x.id === currentId;
+          })
+        ) {
+          currentId = (d.sessions && d.sessions[0] && d.sessions[0].id) || null;
+        }
+        if (!currentId && d.sessions && d.sessions[0]) {
+          currentId = d.sessions[0].id;
+        }
+        renderThread();
+        await loadMediaLibrary({ force: true });
+      } catch (e) {
+        toast(String(e.message || e), 'err');
+      }
+    }
+
+    async function newSession() {
+      closeDrawer();
+      try {
+        var d = await api('/remote/api/session', { method: 'POST' });
+        currentId = d.sessionId;
+        toast('已创建', 'ok');
+        await activateSessionDesktop(currentId);
+        await loadSessions();
+      } catch (e) {
+        toast(String(e.message || e), 'err');
+      }
+    }
+
+    qs('#reload').onclick = loadSessions;
+    qs('#newSesDrawer').onclick = newSession;
+
+    qs('#pick').onclick = function () {
+      qs('#file').click();
+    };
+    qs('#file').onchange = function (e) {
+      void attachFiles(e.target.files);
+      e.target.value = '';
+    };
+
+    /** @param {FileList|null} fl */
+    async function attachFiles(fl) {
+      if (!fl || !fl.length) {
+        attaching = [];
+        syncAttachNote();
+        return;
+      }
+      var fd = new FormData();
+      [].slice.call(fl).forEach(function (f) {
+        fd.append('f', f);
+      });
+      var tok = tokIn.value.trim();
+      try {
+        var r = await fetch(resolveRemoteFetchUrl('/remote/api/upload'), {
+          method: 'POST',
+          headers: tok ? { Authorization: 'Bearer ' + tok } : {},
+          body: fd,
+        });
+        var j = await r.json().catch(function () {
+          return {};
+        });
+        if (!r.ok) throw new Error(j.error || '上传失败');
+        attaching = attaching.concat(j.files || []);
+        syncAttachNote();
+      } catch (err) {
+        toast(String(err.message || err), 'err');
+      }
+    }
+
+    async function send() {
+      if (!currentId) {
+        toast('请先选会话或新建', 'err');
+        return;
+      }
+      var sidStable = currentId;
+      try {
+        var body = {
+          sessionId: sidStable,
+          content: msgEl.value.trim(),
+          attachments: attaching.map(function (f) {
+            return { path: f.path, name: f.name, type: f.type, size: f.size };
+          }),
+        };
+        attaching = [];
+        syncAttachNote();
+        var r = await fetch(resolveRemoteFetchUrl('/remote/api/chat'), {
+          method: 'POST',
+          headers: Object.assign({}, hdr()),
+          body: JSON.stringify(body),
+        });
+        var j = await r.json().catch(function () {
+          return {};
+        });
+        if (!r.ok) throw new Error(j.error || String(r.status));
+        msgEl.value = '';
+        window.__lastState = await api('/remote/api/state', { method: 'GET' });
+        renderSessionsUI();
+        renderThread();
+        startChatPolling(sidStable);
+      } catch (e) {
+        toast(String(e.message || e), 'err');
+      }
+    }
+    qs('#send').onclick = function () {
+      void send();
+    };
+
+    qs('#thread').addEventListener('click', function (ev) {
+      var t = ev.target;
+      if (!t || !t.closest) return;
+      var a = t.closest('a.msg-file-link');
+      if (!a) a = t.closest('a[href*="/remote/api/file"]');
+      if (!a || !qs('#thread').contains(a)) return;
+      var pq = threadHrefToApiFileQuery(a.getAttribute('href'));
+      if (!pq) return;
+      ev.preventDefault();
+      var lab = (a.textContent || '').trim() || '附件';
+      void openOrDownloadRemoteFile(pq, lab);
+    });
+
+    qs('#thread').addEventListener('selectstart', function (ev) {
+      var t = ev.target;
+      if (t && t.closest && t.closest('.bubble')) ev.preventDefault();
+    });
+
+    qs('#msgCtxMask').onclick = closeMsgCtx;
+    qs('#msgCtxCancel').onclick = closeMsgCtx;
+    qs('#msgCtxCopy').onclick = function () {
+      if (!msgCtxPending) return;
+      var c = msgCtxPending.content;
+      void clipboardWriteMaybe(c).then(function () {
+        closeMsgCtx();
+      });
+    };
+    qs('#msgCtxDel').onclick = function () {
+      if (!msgCtxPending) return;
+      if (!confirm('删除这条消息？')) return;
+      var id = msgCtxPending.id;
+      closeMsgCtx();
+      void apiRemoveMessages([id]);
+    };
+    qs('#msgCtxEdit').onclick = function () {
+      if (!msgCtxPending) return;
+      var id = msgCtxPending.id;
+      var c = msgCtxPending.content;
+      closeMsgCtx();
+      var dlg = qs('#editMsgDlg');
+      dlg.setAttribute('data-msg-id', id);
+      qs('#editMsgTa').value = c;
+      dlg.showModal();
+    };
+    qs('#editMsgCancel').onclick = function () {
+      qs('#editMsgDlg').close();
+    };
+    qs('#editMsgSave').onclick = function () {
+      var dlg = qs('#editMsgDlg');
+      var id = dlg.getAttribute('data-msg-id') || '';
+      var nv = qs('#editMsgTa').value;
+      if (!id || !String(nv).trim()) {
+        toast('请输入要发送的内容', 'err');
+        return;
+      }
+      dlg.removeAttribute('data-msg-id');
+      dlg.close();
+      void apiResubmitEditedUserMessage(id, nv);
+    };
+
+    syncAttachNote();
+    loadSessions();
+  </script>
+</body>
+</html>

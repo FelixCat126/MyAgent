@@ -203,7 +203,10 @@ export const useChatStore = create<ChatStore>()(
       name: 'chat-storage',
       storage: zustandPersistJson,
       partialize: (state) => ({
-        sessions: state.sessions,
+        sessions: state.sessions.map((s) => ({
+          ...s,
+          messages: s.messages.map(({ imageGenProgress: _skip, ...rest }) => rest),
+        })),
         currentSessionId: state.currentSessionId,
       }),
     }

@@ -10,6 +10,8 @@ import { resolve } from 'path';
 const _dirname = dirname(fileURLToPath(import.meta.url));
 const PRELOAD_SRC = join(_dirname, 'electron/preload.cjs');
 const PRELOAD_OUT = join(_dirname, 'dist-electron/preload.cjs');
+const REMOTE_SHELL_SRC = join(_dirname, 'electron/remote-shell.html');
+const REMOTE_SHELL_OUT = join(_dirname, 'dist-electron/remote-shell.html');
 
 /** 打包会错误地生成 ESM 的 `import`，而 Electron 对 preload 使用 require 加载，故原样复制 CJS 源文件。 */
 function copyPreloadCjs() {
@@ -17,14 +19,21 @@ function copyPreloadCjs() {
   copyFileSync(PRELOAD_SRC, PRELOAD_OUT);
 }
 
+function copyRemoteShellHtml() {
+  mkdirSync(dirname(REMOTE_SHELL_OUT), { recursive: true });
+  copyFileSync(REMOTE_SHELL_SRC, REMOTE_SHELL_OUT);
+}
+
 function electronPreloadCopyPlugin(): Plugin {
   return {
     name: 'electron-preload-cjs-copy',
     buildStart() {
       copyPreloadCjs();
+      copyRemoteShellHtml();
     },
     configureServer() {
       copyPreloadCjs();
+      copyRemoteShellHtml();
     },
   };
 }
@@ -56,6 +65,7 @@ export default defineConfig({
         },
         onstart(options) {
           copyPreloadCjs();
+          copyRemoteShellHtml();
           options.reload();
         },
       },

@@ -44,6 +44,7 @@ import {
   inferDocumentExportHint,
   shouldBypassModelForFullTextDownload,
 } from '../utils/documentExportIntent';
+import { flushZustandFilePersist } from '../utils/zustandFileStorage';
 
 function userQueryTextForRag(m: Message): string {
   const t = (m.content || '').trim();
@@ -737,6 +738,9 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   /** 中文/日文等 IME 组字中为 true，避免 Enter 上屏时被当成发送 */
   const imeComposingRef = useRef(false);
 
+  /** 与本机 UI 同步：把生图进度写入消息，便于远端壳页快照显示占位格 */
+  const imageGenSyncRef = useRef<{ sessionId: string; messageId: string } | null>(null);
+
   /** 语音识别：与 input 同步，避免 onresult 闭包陈旧 */
   const inputSyncRef = useRef('');
   inputSyncRef.current = input;
@@ -807,6 +811,23 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
       const webState = useWebSearchStore.getState();
       const webOn = effectiveWebEnabled(session, webState.enabled);
       setVectorRagStatus(null);
+
+      const syncImgGenUi = (v: { current: number; total: number; messageId: string } | null): void => {
+        if (v) {
+          imageGenSyncRef.current = { sessionId: sendSessionId, messageId: v.messageId };
+          setImageGenProgress(v);
+          updateMessage(sendSessionId, v.messageId, {
+            imageGenProgress: { current: v.current, total: v.total },
+          });
+          return;
+        }
+        setImageGenProgress(null);
+        const p = imageGenSyncRef.current;
+        if (p && p.sessionId === sendSessionId) {
+          updateMessage(p.sessionId, p.messageId, { imageGenProgress: undefined });
+          imageGenSyncRef.current = null;
+        }
+      };
 
       let chain: Message[];
       let ragHint: VectorRagSendHint;
@@ -1128,6 +1149,11 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                   return;
                 }
 
+                /** SSE 正文已全部写入本地消息；先于生图后处理解除「流式」态，使 strip 与生图占位顺序符合「先说清再画图」 */
+                setIsStreaming(false);
+                streamingAssistantIdRef.current = null;
+                setStreamingTargetAssistantId(null);
+
                 let nextContent = raw;
                 let nextFiles = msg?.files as Message['files'] | undefined;
                 if (raw.trim() || plannedIntent.shouldGenerate) {
@@ -1135,13 +1161,18 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                     const imageHooks: ImageGenProgressHooks = {
                       onBegin: ({ total }) => {
                         imageGenCancelledRef.current = false;
-                        setImageGenProgress({ current: 1, total, messageId: assistantId });
+                        syncImgGenUi({ current: 1, total, messageId: assistantId });
                       },
-                      onEachStart: ({ current, total }) => setImageGenProgress({ current, total, messageId: assistantId }),
+                      onEachStart: ({ current, total }) =>
+                        syncImgGenUi({ current, total, messageId: assistantId }),
                       onEachDone: ({ done, total }) =>
-                        setImageGenProgress(done >= total ? { current: total, total, messageId: assistantId } : { current: done + 1, total, messageId: assistantId }),
+                        syncImgGenUi(
+                          done >= total
+                            ? { current: total, total, messageId: assistantId }
+                            : { current: done + 1, total, messageId: assistantId }
+                        ),
                       onImage: ({ image }) => appendGeneratedImageToAssistant(assistantId, image),
-                      onDone: () => setImageGenProgress(null),
+                      onDone: () => syncImgGenUi(null),
                     };
                     const { content, files } = await postProcessAssistantContent(
                       raw,
@@ -1175,6 +1206,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                   content: nextContent,
                   files: mergeAssistantFiles(assistantId, nextFiles as FileInfo[] | undefined),
                   ...(exportHint ? { exportHint } : {}),
+                  imageGenProgress: undefined,
                 });
               } finally {
                 setIsStreaming(false);
@@ -1240,13 +1272,17 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         const imageHooks: ImageGenProgressHooks = {
           onBegin: ({ total }) => {
             imageGenCancelledRef.current = false;
-            setImageGenProgress({ current: 1, total, messageId: assistantId });
+            syncImgGenUi({ current: 1, total, messageId: assistantId });
           },
-          onEachStart: ({ current, total }) => setImageGenProgress({ current, total, messageId: assistantId }),
+          onEachStart: ({ current, total }) => syncImgGenUi({ current, total, messageId: assistantId }),
           onEachDone: ({ done, total }) =>
-            setImageGenProgress(done >= total ? { current: total, total, messageId: assistantId } : { current: done + 1, total, messageId: assistantId }),
+            syncImgGenUi(
+              done >= total
+                ? { current: total, total, messageId: assistantId }
+                : { current: done + 1, total, messageId: assistantId }
+            ),
           onImage: ({ image }) => appendGeneratedImageToAssistant(assistantId, image),
-          onDone: () => setImageGenProgress(null),
+          onDone: () => syncImgGenUi(null),
         };
         const plannedIntent = planImageIntent({
           userText: userMessage.content,
@@ -1272,6 +1308,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           ...(reasoningIn ? { reasoning: reasoningIn } : {}),
           ...(exportHint ? { exportHint } : {}),
           files: mergeAssistantFiles(assistantId, files),
+          imageGenProgress: undefined,
         });
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
@@ -1304,10 +1341,18 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     ]
   );
 
+  const runModelReplyRef = useRef(runModelReply);
+  runModelReplyRef.current = runModelReply;
+
   const handleStop = () => {
     streamCancelledByUserRef.current = true;
     imageGenCancelledRef.current = true;
     setImageGenProgress(null);
+    const p = imageGenSyncRef.current;
+    if (p) {
+      updateMessage(p.sessionId, p.messageId, { imageGenProgress: undefined });
+      imageGenSyncRef.current = null;
+    }
     window.electron.closeModelStream();
     streamUnsubRef.current?.();
     streamUnsubRef.current = null;
@@ -1457,6 +1502,260 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
       setInput((prev) => (prev ? `${prev}\n${c}` : c));
     });
     return off;
+  }, []);
+
+  useEffect(() => {
+    type RemoteBridgePayload = { sessionId: string; content: string; attachments?: FileInfo[] };
+    const snapshotMessage = (m: Message) => ({
+      id: m.id,
+      role: m.role,
+      content: m.content,
+      reasoning: m.reasoning,
+      files: m.files,
+      timestamp: m.timestamp,
+      model: m.model,
+      exportHint: m.exportHint,
+      imageGenProgress: m.imageGenProgress,
+    });
+    const bridge = {
+      getSnapshot: async () => {
+        const chat = useChatStore.getState();
+        const { sessions: ss, currentSessionId: cid, loadingSessionId } = chat;
+        return {
+          sessions: ss.map((s) => ({
+            id: s.id,
+            title: s.title,
+            updatedAt: s.updatedAt,
+            createdAt: s.createdAt,
+            unread: Boolean(s.unreadAssistantReply),
+            messages: s.messages.map(snapshotMessage),
+          })),
+          currentSessionId: cid,
+          loadingSessionId,
+        };
+      },
+      getActiveModelLabel: async () => {
+        await useModelStore.persist?.rehydrate?.();
+        useModelStore.getState().initializeDefaultModels();
+        return useModelStore.getState().getActiveModel()?.name ?? '';
+      },
+      getModelsSnapshot: async () => {
+        await useModelStore.persist?.rehydrate?.();
+        const ms = useModelStore.getState();
+        ms.initializeDefaultModels();
+        return {
+          models: ms.models.map((m) => ({ id: m.id, name: m.name })),
+          activeModelId: ms.activeModelId,
+        };
+      },
+      setActiveModelId: async (modelId: string) => {
+        await useModelStore.persist?.rehydrate?.();
+        useModelStore.getState().initializeDefaultModels();
+        const id = String(modelId ?? '').trim();
+        const locale = useSettingStore.getState().locale;
+        if (!id) throw new Error(tUi(locale, 'remoteGateway.modelIdRequired'));
+        const ms = useModelStore.getState();
+        if (!ms.models.some((m) => m.id === id)) {
+          throw new Error(tUi(locale, 'remoteGateway.modelNotFound'));
+        }
+        ms.setActiveModel(id);
+        await flushZustandFilePersist();
+      },
+      collectChatImageAttachmentPathsForMediaLibrary: async () => {
+        const paths = new Set<string>();
+        for (const s of useChatStore.getState().sessions) {
+          for (const m of s.messages ?? []) {
+            for (const f of m.files ?? []) {
+              if (!f?.type?.startsWith('image/')) continue;
+              const p = String(f.path ?? '').trim();
+              if (p) paths.add(p);
+            }
+          }
+        }
+        return [...paths];
+      },
+      createChatSession: async () => {
+        const sessionId = useChatStore.getState().createSession();
+        return { sessionId };
+      },
+      switchToSession: async (sessionId: string) => {
+        useChatStore.getState().switchSession(sessionId);
+      },
+      removeChatMessagesRemote: async (payload: { sessionId: string; messageIds: string[] }) => {
+        const sessionId = String(payload.sessionId ?? '').trim();
+        const ids = Array.isArray(payload.messageIds)
+          ? [...new Set(payload.messageIds.map((x) => String(x ?? '').trim()).filter(Boolean))]
+          : [];
+        const chat = useChatStore.getState();
+        if (!sessionId) throw new Error('remote: session missing');
+        if (!ids.length) throw new Error('remote: empty message ids');
+        if (!chat.sessions.some((s) => s.id === sessionId)) {
+          throw new Error('remote: session not found');
+        }
+        chat.removeMessages(sessionId, ids);
+        await flushZustandFilePersist();
+      },
+      patchChatMessageRemote: async (payload: { sessionId: string; messageId: string; content: string }) => {
+        const sessionId = String(payload.sessionId ?? '').trim();
+        const messageId = String(payload.messageId ?? '').trim();
+        const content = typeof payload.content === 'string' ? payload.content : '';
+        const chat = useChatStore.getState();
+        if (!sessionId || !messageId) throw new Error('remote: missing ids');
+        const sess = chat.sessions.find((s) => s.id === sessionId);
+        if (!sess) throw new Error('remote: session not found');
+        if (!sess.messages.some((m) => m.id === messageId)) throw new Error('remote: message not found');
+        chat.updateMessage(sessionId, messageId, { content });
+        await flushZustandFilePersist();
+      },
+      resubmitEditedUserMessageRemote: async (payload: {
+        sessionId: string;
+        messageId: string;
+        content: string;
+      }) => {
+        await useModelStore.persist?.rehydrate?.();
+        useModelStore.getState().initializeDefaultModels();
+
+        const sessionId = String(payload.sessionId ?? '').trim();
+        const messageId = String(payload.messageId ?? '').trim();
+        const textContent = String(payload.content ?? '').trim();
+        const locale = useSettingStore.getState().locale;
+
+        const activeModel = useModelStore.getState().getActiveModel();
+        if (!activeModel) throw new Error(tUi(locale, 'chat.configureModel'));
+
+        const chat = useChatStore.getState();
+        const sess = chat.sessions.find((s) => s.id === sessionId);
+        if (!sess) throw new Error(tUi(locale, 'remoteGateway.sessionMissing'));
+
+        chat.switchSession(sessionId);
+        if (chat.loadingSessionId === sessionId) {
+          throw new Error(tUi(locale, 'remoteGateway.busySession'));
+        }
+
+        const msgs = sess.messages;
+        const sourceIndex = msgs.findIndex((m) => m.id === messageId);
+        if (sourceIndex < 0) throw new Error('remote: message not found');
+        const sourceMessage = msgs[sourceIndex];
+        if (sourceMessage.role !== 'user') throw new Error('remote: only user messages can be resent');
+
+        if (!textContent) throw new Error(tUi(locale, 'remoteGateway.emptySend'));
+
+        const priorMessages = msgs.slice(0, sourceIndex);
+        const userMessage: Message = {
+          ...sourceMessage,
+          role: 'user',
+          content: textContent,
+          timestamp: Date.now(),
+          model: activeModel.name,
+        };
+        const staleMessageIds = msgs.slice(sourceIndex + 1).map((m) => m.id);
+
+        chat.setLoadingSession(sessionId);
+        try {
+          chat.updateMessage(sessionId, messageId, {
+            content: textContent,
+            timestamp: userMessage.timestamp,
+            model: activeModel.name,
+          });
+          if (staleMessageIds.length > 0) chat.removeMessages(sessionId, staleMessageIds);
+
+          if (shouldBypassModelForFullTextDownload(textContent, Boolean(sourceMessage.files?.length))) {
+            chat.addMessage(sessionId, {
+              id: `${Date.now() + 1}-a`,
+              role: 'assistant',
+              content:
+                '这个请求属于“既有作品全文下载”。我不会让模型在聊天里逐字打印全文，因为这会非常慢、容易超时，也容易生成不完整或混入错误文本。\n\n' +
+                '请把原文文件作为附件上传，或提供一个可读取的原文来源后再让我整理成 Word/Markdown。拿到源文本后，我会只把正文写入下载文档，不把聊天说明混进去。',
+              timestamp: Date.now(),
+              model: activeModel.name,
+            });
+            chat.clearLoadingForSession(sessionId);
+          } else {
+            await runModelReplyRef.current(sessionId, priorMessages, userMessage, activeModel);
+          }
+          await flushZustandFilePersist();
+        } catch (e) {
+          chat.clearLoadingForSession(sessionId);
+          throw e;
+        }
+      },
+      sendChat: async (payload: RemoteBridgePayload) => {
+        await useModelStore.persist?.rehydrate?.();
+        useModelStore.getState().initializeDefaultModels();
+        const { sessionId, content, attachments: attIn } = payload;
+        const attachments = Array.isArray(attIn)
+          ? attIn.filter(
+              (a): a is FileInfo =>
+                Boolean(a && typeof (a as FileInfo).path === 'string' && (a as FileInfo).path.length > 0)
+            )
+          : [];
+        const locale = useSettingStore.getState().locale;
+        const activeModel = useModelStore.getState().getActiveModel();
+        if (!activeModel) {
+          throw new Error(tUi(locale, 'chat.configureModel'));
+        }
+        const chat = useChatStore.getState();
+        const sess = chat.sessions.find((s) => s.id === sessionId);
+        if (!sess) {
+          throw new Error(tUi(locale, 'remoteGateway.sessionMissing'));
+        }
+        chat.switchSession(sessionId);
+        if (chat.loadingSessionId === sessionId) {
+          throw new Error(tUi(locale, 'remoteGateway.busySession'));
+        }
+        const priorMessages = sess.messages.slice();
+        const att = tUi(locale, 'chat.attachment');
+        const textContent = content.trim() || (attachments.length > 0 ? att : '');
+        if (!textContent.trim() && attachments.length === 0) {
+          throw new Error(tUi(locale, 'remoteGateway.emptySend'));
+        }
+        chat.setLoadingSession(sessionId);
+        try {
+          if (priorMessages.length === 0) {
+            const titleCandidate =
+              (textContent === att ? tUi(locale, 'chat.attachmentTitle') : textContent) ||
+              tUi(locale, 'session.newTitle');
+            chat.updateSessionTitle(
+              sessionId,
+              titleCandidate.length > 15 ? titleCandidate.substring(0, 15) + '...' : titleCandidate
+            );
+          }
+          const userMessage: Message = {
+            id: Date.now().toString(),
+            role: 'user',
+            content: textContent,
+            files: attachments.length > 0 ? attachments : undefined,
+            timestamp: Date.now(),
+            model: activeModel.name,
+          };
+          chat.addMessage(sessionId, userMessage);
+
+          if (shouldBypassModelForFullTextDownload(textContent, attachments.length > 0)) {
+            chat.addMessage(sessionId, {
+              id: `${Date.now() + 1}-a`,
+              role: 'assistant',
+              content:
+                '这个请求属于“既有作品全文下载”。我不会让模型在聊天里逐字打印全文，因为这会非常慢、容易超时，也容易生成不完整或混入错误文本。\n\n' +
+                '请把原文文件作为附件上传，或提供一个可读取的原文来源后再让我整理成 Word/Markdown。拿到源文本后，我会只把正文写入下载文档，不把聊天说明混进去。',
+              timestamp: Date.now(),
+              model: activeModel.name,
+            });
+            chat.clearLoadingForSession(sessionId);
+          } else {
+            await runModelReplyRef.current(sessionId, priorMessages, userMessage, activeModel);
+          }
+          await flushZustandFilePersist();
+        } catch (e) {
+          chat.clearLoadingForSession(sessionId);
+          throw e;
+        }
+      },
+    };
+    (window as unknown as { __MYAGENT_REMOTE_BRIDGE__?: typeof bridge }).__MYAGENT_REMOTE_BRIDGE__ = bridge;
+    return () => {
+      const w = window as unknown as { __MYAGENT_REMOTE_BRIDGE__?: typeof bridge };
+      if (w.__MYAGENT_REMOTE_BRIDGE__ === bridge) delete w.__MYAGENT_REMOTE_BRIDGE__;
+    };
   }, []);
 
   const handleExport = async (kind: 'md' | 'html') => {
@@ -1713,21 +2012,17 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         </div>
       )}
 
-      {vectorRagStatus && (
+      {vectorRagStatus?.tone === 'error' ? (
         <div
           className={
             'shrink-0 border-b px-6 py-2.5 text-[11px] leading-relaxed antialiased ' +
-            (vectorRagStatus.tone === 'error'
-              ? 'border-red-200/80 bg-red-50 text-red-900 dark:border-red-500/35 dark:bg-red-950/50 dark:text-red-100'
-              : vectorRagStatus.tone === 'success'
-                ? 'border-emerald-200/80 bg-emerald-50/95 text-emerald-950 dark:border-emerald-500/30 dark:bg-emerald-950/45 dark:text-emerald-50'
-                : 'border-amber-200/90 bg-amber-50/95 text-amber-950 dark:border-amber-500/30 dark:bg-amber-950/40 dark:text-amber-50')
+            'border-red-200/80 bg-red-50 text-red-900 dark:border-red-500/35 dark:bg-red-950/50 dark:text-red-100'
           }
-          role="status"
+          role="alert"
         >
           {vectorRagStatus.text}
         </div>
-      )}
+      ) : null}
 
       <div
         ref={scrollContainerRef}
@@ -1783,7 +2078,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
               imageGenProgress={
                 imageGenProgress?.messageId === message.id
                   ? { current: imageGenProgress.current, total: imageGenProgress.total }
-                  : null
+                  : message.imageGenProgress
               }
             />
           );

@@ -21,6 +21,7 @@ import {
   FiShield,
   FiLayers,
   FiMic,
+  FiSmartphone,
 } from 'react-icons/fi';
 import { IosSwitch } from './IosSwitch';
 import { useI18n } from '../hooks/useI18n';
@@ -155,6 +156,9 @@ const SettingsPanel: React.FC = () => {
   const [webSearchBlockExpanded, setWebSearchBlockExpanded] = useState(false);
   const [knowledgeBlockExpanded, setKnowledgeBlockExpanded] = useState(false);
   const [appBlockExpanded, setAppBlockExpanded] = useState(false);
+  const [gwStatus, setGwStatus] = useState<'unsupported' | 'ready'>('unsupported');
+  const [gwCfg, setGwCfg] = useState<{ enabled: boolean; port: number; token: string } | null>(null);
+  const [gwPortDraft, setGwPortDraft] = useState('9742');
   const [indexBusy, setIndexBusy] = useState(false);
   const knowledgeIndexLocked = indexBusy;
   const [indexMeta, setIndexMeta] = useState<{
@@ -268,6 +272,26 @@ const SettingsPanel: React.FC = () => {
     setEditingId(null);
     setFormData(defaultFormData);
   };
+
+  useEffect(() => {
+    try {
+      const e = window.electron;
+      if (!e?.remoteGatewayGetConfig) {
+        setGwStatus('unsupported');
+        return;
+      }
+      void e
+        .remoteGatewayGetConfig()
+        .then((c) => {
+          setGwCfg(c);
+          setGwPortDraft(String(c.port));
+          setGwStatus('ready');
+        })
+        .catch(() => setGwStatus('unsupported'));
+    } catch {
+      setGwStatus('unsupported');
+    }
+  }, []);
 
   const cardShell =
     'mx-3 rounded-xl border border-stone-300/45 bg-white/88 shadow-sm dark:border-white/10 dark:bg-slate-900/55 dark:shadow-none';
@@ -1044,6 +1068,113 @@ const SettingsPanel: React.FC = () => {
                   />
                 </div>
               </div>
+              {gwStatus === 'ready' && gwCfg && (
+                <div className="border-t border-stone-300/35 pt-3 dark:border-white/8">
+                  <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-stone-700 dark:text-slate-300">
+                    <FiSmartphone size={14} className="text-stone-500" aria-hidden />
+                    {t('settings.remoteGateway.title')}
+                  </div>
+                  <p className="mb-2 text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
+                    {t('settings.remoteGateway.desc')}
+                  </p>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs text-stone-700 dark:text-slate-300">
+                      {t('settings.remoteGateway.enable')}
+                    </span>
+                    <IosSwitch
+                      checked={gwCfg.enabled}
+                      aria-label={t('settings.remoteGateway.enable')}
+                      onChange={(on) => {
+                        void window.electron
+                          .remoteGatewaySetConfig({ enabled: on })
+                          .then((next) => {
+                            setGwCfg(next);
+                            setGwPortDraft(String(next.port));
+                          })
+                          .catch((err: unknown) => alert(err instanceof Error ? err.message : String(err)));
+                      }}
+                    />
+                  </div>
+                  <label className="mb-0.5 mt-3 block text-[10px] font-medium text-stone-600 dark:text-gray-400">
+                    {t('settings.remoteGateway.port')}
+                  </label>
+                  <div className="mt-2 flex flex-wrap items-stretch gap-2">
+                    <input
+                      type="number"
+                      min={1024}
+                      max={65535}
+                      value={gwPortDraft}
+                      onChange={(e) => setGwPortDraft(e.target.value)}
+                      className="min-w-0 flex-1 rounded-lg border border-stone-400/30 bg-stone-100/95 px-2.5 py-2 font-mono text-xs text-stone-900 shadow-sm dark:border-slate-600 dark:bg-slate-800/95 dark:text-slate-100"
+                      autoComplete="off"
+                    />
+                    <button
+                      type="button"
+                      className="shrink-0 rounded-lg bg-primary-600 px-3 py-2 text-xs font-medium text-white shadow-sm transition-colors hover:bg-primary-700"
+                      onClick={async () => {
+                        const p = parseInt(gwPortDraft, 10);
+                        if (!Number.isFinite(p) || p < 1024 || p > 65535) {
+                          alert(t('settings.remoteGateway.portInvalid'));
+                          return;
+                        }
+                        try {
+                          const next = await window.electron.remoteGatewaySetConfig({ port: p });
+                          setGwCfg(next);
+                          setGwPortDraft(String(next.port));
+                          alert(t('settings.remoteGateway.saved'));
+                        } catch (err) {
+                          alert(err instanceof Error ? err.message : String(err));
+                        }
+                      }}
+                    >
+                      {t('settings.remoteGateway.applyPort')}
+                    </button>
+                  </div>
+                  <label className="mb-0.5 mt-2 block text-[10px] font-medium text-stone-600 dark:text-gray-400">
+                    {t('settings.remoteGateway.token')}
+                  </label>
+                  <textarea
+                    readOnly
+                    value={gwCfg.token}
+                    rows={2}
+                    className="mb-2 w-full resize-none rounded-md border border-stone-400/25 bg-stone-100/80 px-2 py-1 font-mono text-[11px] text-stone-900 dark:border-gray-600 dark:bg-slate-800 dark:text-slate-100"
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className="rounded-lg border border-stone-400/35 bg-stone-100/95 px-3 py-2 text-xs font-medium text-stone-800 shadow-sm transition-colors hover:bg-stone-200/90 dark:border-slate-600 dark:bg-slate-800/95 dark:text-slate-100 dark:hover:bg-slate-700/95"
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(gwCfg.token);
+                          alert(t('settings.remoteGateway.saved'));
+                        } catch {
+                          alert(gwCfg.token);
+                        }
+                      }}
+                    >
+                      {t('settings.remoteGateway.copy')}
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-lg border border-stone-400/35 bg-stone-100/95 px-3 py-2 text-xs font-medium text-stone-800 shadow-sm transition-colors hover:bg-stone-200/90 dark:border-slate-600 dark:bg-slate-800/95 dark:text-slate-100 dark:hover:bg-slate-700/95"
+                      onClick={async () => {
+                        if (!confirm(t('settings.remoteGateway.confirmRegenerate'))) return;
+                        try {
+                          const next = await window.electron.remoteGatewaySetConfig({ regenerateToken: true });
+                          setGwCfg(next);
+                        } catch (err) {
+                          alert(err instanceof Error ? err.message : String(err));
+                        }
+                      }}
+                    >
+                      {t('settings.remoteGateway.regenerate')}
+                    </button>
+                  </div>
+                  <p className="mt-2 text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
+                    {t('settings.remoteGateway.hint')}
+                  </p>
+                </div>
+              )}
               <div className="rounded-lg border border-stone-300/50 bg-stone-50/80 p-2.5 dark:border-white/10 dark:bg-slate-800/40">
                 <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-stone-800 dark:text-slate-200">
                   <FiShield size={14} className="text-amber-600/90 dark:text-amber-400" aria-hidden />
