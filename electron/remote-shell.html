@@ -1063,14 +1063,6 @@
       gap: 8px;
       flex-wrap: wrap;
     }
-    .gallery-head {
-      flex-shrink: 0;
-      padding: 10px 16px 12px;
-      border-bottom: 1px solid var(--bd);
-      font-size: 13px;
-      line-height: 1.45;
-      color: var(--muted);
-    }
     #galleryGrid {
       flex: 1;
       overflow-y: auto;
@@ -1268,15 +1260,21 @@
       max-height: calc(100dvh - 112px);
       object-fit: contain;
       border-radius: 8px;
-      pointer-events: none;
-      -webkit-touch-callout: none;
+      pointer-events: auto;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: default;
       backface-visibility: hidden;
     }
     .lb-bar {
       margin-top: 12px;
       display: flex;
       align-items: center;
-      gap: 16px;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 10px 12px;
+      max-width: 100%;
+      padding: 0 4px;
       color: #e5e5e5;
     }
     .lb-bar button {
@@ -1297,6 +1295,16 @@
       padding: 0 12px;
       border-radius: 12px;
       font-size: 13px;
+    }
+
+    .lb-gallery-hint {
+      margin-top: 6px;
+      padding: 0 12px;
+      max-width: 92vw;
+      text-align: center;
+      font-size: 11px;
+      line-height: 1.35;
+      color: rgba(255, 255, 255, 0.52);
     }
   </style>
 </head>
@@ -1371,9 +1379,6 @@
       </main>
 
       <main class="panel" id="panel-gallery" aria-label="图库">
-        <div class="gallery-head">
-          大图预览底栏可删除；对话里点图仅预览、不删本地文件。
-        </div>
         <div id="galleryGrid"></div>
       </main>
     </div>
@@ -1397,6 +1402,7 @@
         <button type="button" id="lbDel" class="lb-del" aria-label="删除当前图">删图</button>
         <button type="button" id="lbClose" class="lb-x" aria-label="关闭">×</button>
       </div>
+      <p class="lb-gallery-hint">长按上方图片可通过系统菜单保存到相册。</p>
     </div>
   </dialog>
 
@@ -1428,6 +1434,8 @@
     var mediaLibItems = [];
     /** 对话里点开预览时为 false；仅图库入口打开灯箱时为 true */
     var lbAllowDelete = false;
+    /** @type {{ url: string, absPath: string|null }[]} */
+    var lbList = [];
     var lbIdx = 0;
     var lbSlideEls = null;
     /** @type {ReturnType<typeof setTimeout>|null} */
@@ -2538,6 +2546,8 @@
       var tracking = false;
       var w = 0;
       var vp = qs('#lbViewport');
+      /** 首张按下时间：短时间小位移内不 preventDefault，便于长按调起系统菜单 */
+      var swipeGestStartMs = 0;
 
       function pinchEndMaybe() {
         if (lbZoomScale < 1.05 && !lbPanningZoom) {
@@ -2579,13 +2589,21 @@
             return;
           }
           if (!e.touches || n !== 1 || lbZoomScale > 1.03) {
+            swipeGestStartMs = 0;
             sx = null;
             return;
           }
-          if (lbList.length < 2) return;
+          if (lbList.length < 2) {
+            swipeGestStartMs = 0;
+            return;
+          }
           window.clearTimeout(lbSlideTid);
           lbPanningZoom = false;
           lbPinching = false;
+          swipeGestStartMs =
+            typeof performance !== 'undefined' && performance.now ?
+              performance.now()
+            : Date.now();
           sx = e.touches[0].clientX;
           sy = e.touches[0].clientY;
           tracking = true;
@@ -2623,9 +2641,20 @@
           var dx = x - sx;
           var dy = y - sy;
           if (Math.abs(dy) > Math.abs(dx) + 22) {
+            swipeGestStartMs = 0;
             tracking = false;
             sx = null;
             lbSnapCenterNoAnim();
+            return;
+          }
+          var gestNow =
+            typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+          if (
+            swipeGestStartMs > 0 &&
+            gestNow - swipeGestStartMs < 520 &&
+            Math.abs(dx) < 28 &&
+            Math.abs(dy) < 28
+          ) {
             return;
           }
           e.preventDefault();
@@ -2651,6 +2680,7 @@
           }
           if (!tracking) return;
           tracking = false;
+          swipeGestStartMs = 0;
           sx = null;
           lbSnapCenterNoAnim();
         },
@@ -2671,6 +2701,7 @@
           }
           if (!tracking) return;
           tracking = false;
+          swipeGestStartMs = 0;
           qs('#lbTrack').classList.remove('lb-no-anim');
           if (sx == null || !e.changedTouches || !e.changedTouches.length) return;
           var dx = e.changedTouches[0].clientX - sx;

@@ -12,6 +12,7 @@ import {
   findConversationGalleryIndex,
   type ConversationImageGalleryItem,
 } from '@/utils/conversationImageGallery';
+import { downloadDisplayImage } from '@/utils/imageDownload';
 
 const MAX_MARKDOWN_RENDER_CHARS = 24_000;
 const MAX_ASSISTANT_PREPROCESS_CHARS = 28_000;
@@ -36,6 +37,13 @@ const MODAL_PORTAL_LAYER_CLASS = 'fixed inset-0 z-[10010] flex items-center just
 
 const modalPortalShellStyle: React.CSSProperties & { WebkitAppRegion?: string } = {
   WebkitAppRegion: 'no-drag',
+};
+
+/** 预览大图：启用系统长按菜单（存储图像等）；WebKit 专有属性 */
+const previewImgTouchMenuStyle: React.CSSProperties = {
+  WebkitTouchCallout: 'default',
+  WebkitUserSelect: 'none',
+  userSelect: 'none',
 };
 
 interface MessageItemProps {
@@ -109,7 +117,12 @@ function ImageGeneratingPlaceholder({
   progress: { current: number; total: number };
   files?: FileInfo[];
   openAttachmentPreview?: (name: string, src: string, path: string, index: number) => void;
-  downloadAttachmentCopy?: (e: React.MouseEvent, path: string, name: string) => void | Promise<void>;
+  downloadAttachmentCopy?: (
+    e: React.MouseEvent,
+    path: string,
+    name: string,
+    displaySrc?: string
+  ) => void | Promise<void>;
   t: (key: string, params?: Record<string, string | number>) => string;
 }) {
   const imageFiles = (files ?? []).filter((f) => f.type.startsWith('image/'));
@@ -161,7 +174,9 @@ function ImageGeneratingPlaceholder({
                         className="shrink-0 rounded p-0.5 text-stone-500 hover:bg-stone-100 dark:text-slate-400 dark:hover:bg-slate-700/80"
                         title={t('message.imagePreviewDownload')}
                         aria-label={t('message.imagePreviewDownload')}
-                        onClick={(e) => void downloadAttachmentCopy(e, file.path, file.name)}
+                        onClick={(e) =>
+                          void downloadAttachmentCopy(e, file.path, file.name, displaySrc)
+                        }
                       >
                         <FiDownload size={12} aria-hidden />
                       </button>
@@ -296,21 +311,11 @@ export const ImagePreviewModal: React.FC<{
   src: string;
   onClose: () => void;
   alt: string;
-  /** 本机磁盘路径，用于「另存为」拷贝（无则隐藏下载按钮） */
+  /** 保留供调用方语义一致；大图保存请使用长按系统菜单 */
   localPath?: string;
   defaultFileName?: string;
-}> = ({ src, onClose, alt, localPath, defaultFileName }) => {
+}> = ({ src, onClose, alt }) => {
   const { t } = useI18n();
-  const canDownload = Boolean(localPath);
-
-  const handleSaveCopy = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!localPath) return;
-    await window.electron.saveLocalFileCopy({
-      sourcePath: localPath,
-      defaultFileName: defaultFileName || 'image.png',
-    });
-  };
 
   const node = (
     <div
@@ -323,17 +328,6 @@ export const ImagePreviewModal: React.FC<{
         onClick={(e) => e.stopPropagation()}
       >
         <div className="pointer-events-auto relative z-[210] flex shrink-0 justify-end gap-3 [&_svg]:pointer-events-none">
-          {canDownload ? (
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2.5 py-1 text-sm text-white backdrop-blur-sm transition-colors hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
-              title={t('message.imagePreviewDownload')}
-              onClick={(e) => void handleSaveCopy(e)}
-            >
-              <FiDownload size={14} aria-hidden />
-              <span>{t('message.imagePreviewDownload')}</span>
-            </button>
-          ) : null}
           <button
             type="button"
             onClick={onClose}
@@ -347,8 +341,12 @@ export const ImagePreviewModal: React.FC<{
         <img
           src={src}
           alt={alt}
+          style={previewImgTouchMenuStyle}
           className="relative z-0 mx-auto block max-h-[min(calc(85vh-120px),80vh)] max-w-full object-contain rounded-lg shadow-2xl"
         />
+        <p className="mx-auto max-w-[min(90vw,24rem)] text-center text-[11px] leading-snug text-white/55 px-2">
+          {t('message.imageLongPressGalleryHint')}
+        </p>
       </div>
     </div>
   );
@@ -393,14 +391,6 @@ export const ConversationImageGalleryModal: React.FC<{
   const canPrev = idx > 0;
   const canNext = idx < slides.length - 1;
 
-  const handleSaveCopy = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    await window.electron.saveLocalFileCopy({
-      sourcePath: slide.localPath,
-      defaultFileName: slide.defaultFileName || 'image.png',
-    });
-  };
-
   const node = (
     <div
       className={MODAL_PORTAL_LAYER_CLASS}
@@ -417,15 +407,6 @@ export const ConversationImageGalleryModal: React.FC<{
         <div
           className={`pointer-events-auto relative z-[210] flex w-full shrink-0 justify-end gap-3 pb-4 [&_svg]:pointer-events-none sm:pb-5 ${MODAL_CLEAR_TITLEBAR_PT}`}
         >
-          <button
-            type="button"
-            className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2.5 py-1 text-sm text-white backdrop-blur-sm transition-colors hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
-            title={t('message.imagePreviewDownload')}
-            onClick={(e) => void handleSaveCopy(e)}
-          >
-            <FiDownload size={14} aria-hidden />
-            <span>{t('message.imagePreviewDownload')}</span>
-          </button>
           {onDeleteCurrent ? (
             <button
               type="button"
@@ -472,10 +453,14 @@ export const ConversationImageGalleryModal: React.FC<{
             <img
               src={slide.src}
               alt={slide.defaultFileName || t('message.imageAlt')}
+              style={previewImgTouchMenuStyle}
               className="max-h-[min(72vh,880px)] max-w-full object-contain rounded-lg shadow-2xl"
             />
             <p className="text-center text-sm text-white/90 tabular-nums">
               {t('message.imageGalleryPosition', { current: idx + 1, total: slides.length })}
+            </p>
+            <p className="mx-auto max-w-[min(90vw,24rem)] text-center text-[11px] leading-snug text-white/55 px-2">
+              {t('message.imageLongPressGalleryHint')}
             </p>
           </div>
 
@@ -563,17 +548,38 @@ const MessageItem: React.FC<MessageItemProps> = ({
     setPreview({ src: displaySrc, localPath, defaultFileName: fileName });
   };
 
-  const downloadAttachmentCopy = async (e: React.MouseEvent, localPath: string, fileName: string) => {
+  const downloadAttachmentCopy = async (
+    e: React.MouseEvent,
+    localPath: string,
+    fileName: string,
+    displaySrc?: string
+  ) => {
     e.preventDefault();
     e.stopPropagation();
-    await window.electron.saveLocalFileCopy({
-      sourcePath: localPath,
-      defaultFileName: fileName,
-    });
+    const src =
+      (displaySrc && displaySrc.trim()) ||
+      ((localPath || '').trim() ?
+        pathToFileURL(localPath).href.replace(/^file:/i, 'local-file:')
+      : '');
+    try {
+      await downloadDisplayImage({
+        src,
+        sourceLocalPath: (localPath || '').trim(),
+        defaultFileName: fileName || 'image.png',
+      });
+    } catch {
+      console.warn('[image-download] failed', fileName);
+      window.alert(t('message.imageDownloadFailed'));
+    }
   };
 
   const renderFileDownloadButton = (file: FileInfo) => {
     if (!file.path) return null;
+    const displaySrc =
+      file.preview && file.preview.startsWith('data:')
+        ? file.preview
+        : pathToFileURL(file.path).href.replace(/^file:/i, 'local-file:');
+
     return (
       <button
         type="button"
@@ -584,7 +590,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
         }`}
         title={t('message.imagePreviewDownload')}
         aria-label={t('message.imagePreviewDownload')}
-        onClick={(e) => void downloadAttachmentCopy(e, file.path, file.name)}
+        onClick={(e) => void downloadAttachmentCopy(e, file.path, file.name, displaySrc)}
       >
         <FiDownload size={12} aria-hidden />
       </button>
@@ -788,7 +794,14 @@ const MessageItem: React.FC<MessageItemProps> = ({
                                     className="shrink-0 rounded p-0.5 text-white/90 hover:bg-white/15"
                                     title={t('message.imagePreviewDownload')}
                                     aria-label={t('message.imagePreviewDownload')}
-                                    onClick={(e) => void downloadAttachmentCopy(e, file.path, file.name)}
+                                    onClick={(e) =>
+                                      void downloadAttachmentCopy(
+                                        e,
+                                        file.path,
+                                        file.name,
+                                        displaySrc || undefined
+                                      )
+                                    }
                                   >
                                     <FiDownload size={12} aria-hidden />
                                   </button>
@@ -1027,7 +1040,14 @@ const MessageItem: React.FC<MessageItemProps> = ({
                                     className="shrink-0 rounded p-0.5 text-stone-600 hover:bg-stone-200 dark:text-slate-300 dark:hover:bg-slate-600"
                                     title={t('message.imagePreviewDownload')}
                                     aria-label={t('message.imagePreviewDownload')}
-                                    onClick={(e) => void downloadAttachmentCopy(e, file.path, file.name)}
+                                    onClick={(e) =>
+                                      void downloadAttachmentCopy(
+                                        e,
+                                        file.path,
+                                        file.name,
+                                        displaySrc || undefined
+                                      )
+                                    }
                                   >
                                     <FiDownload size={12} aria-hidden />
                                   </button>

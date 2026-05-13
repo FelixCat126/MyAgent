@@ -163,6 +163,13 @@ export function useWebSpeechDictation({
 
   const clearBanner = useCallback(() => setBanner(null), []);
 
+  /** 移动端失败提示不宜常驻：与对话区 RAG 错误条一致，数秒后自行消失 */
+  useEffect(() => {
+    if (!banner?.trim()) return;
+    const tid = window.setTimeout(() => setBanner(null), 6500);
+    return () => window.clearTimeout(tid);
+  }, [banner]);
+
   const clearVolcIdleTimer = useCallback(() => {
     if (volcIdleTimerRef.current !== null) {
       clearTimeout(volcIdleTimerRef.current);

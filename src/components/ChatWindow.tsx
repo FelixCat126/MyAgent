@@ -805,6 +805,12 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     speechDictation.abort();
   }, [currentSessionId, speechDictation.abort]);
 
+  useEffect(() => {
+    if (!vectorRagStatus || vectorRagStatus.tone !== 'error') return;
+    const tid = window.setTimeout(() => setVectorRagStatus(null), 6500);
+    return () => window.clearTimeout(tid);
+  }, [vectorRagStatus]);
+
   const runModelReply = useCallback(
     async (sendSessionId: string, historyBeforeUser: Message[], userMessage: Message, activeModel: ModelConfig) => {
       const session = useChatStore.getState().sessions.find((s) => s.id === sendSessionId);
@@ -2028,7 +2034,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         ref={scrollContainerRef}
         className="flex-1 min-h-0 overflow-y-auto px-8 py-4 space-y-4"
         style={{
-          paddingBottom: footerH + (attachments.length > 0 ? attachmentStripH : 0),
+          paddingBottom: `calc(${footerH + (attachments.length > 0 ? attachmentStripH : 0)}px + env(safe-area-inset-bottom, 0px))`,
         }}
       >
         {messages.length === 0 && (
@@ -2112,8 +2118,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
       )}
 
       <div
-        className="fixed bottom-0 right-0 z-30 flex w-[calc(100%-256px)] min-w-0 flex-col bg-transparent"
-        style={{ left: 256 }}
+        className="fixed bottom-0 right-0 z-30 flex w-[calc(100%-256px)] min-w-0 flex-col border-t border-stone-600/38 bg-stone-200/92 backdrop-blur-xl dark:border-white/10 dark:bg-[#0B1120]/80"
+        style={{ left: 256, paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
       >
         {attachments.length > 0 && (
           <div
@@ -2156,7 +2162,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         )}
 
         <div
-          className="relative box-border flex min-h-0 w-full min-w-0 flex-col gap-2 border-t border-stone-600/38 bg-stone-200/92 px-6 py-2 backdrop-blur-xl dark:border-white/10 dark:bg-[#0B1120]/80"
+          className="relative box-border flex min-h-0 w-full min-w-0 flex-col gap-2 px-6 py-1.5 sm:py-2"
           style={{ minHeight: footerH }}
         >
           {speechInputEnabled && speechDictation.banner ? (
