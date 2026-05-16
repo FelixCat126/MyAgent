@@ -57,7 +57,13 @@ export interface ElectronAPI {
   saveLocalFileCopy: (arg: {
     sourcePath: string;
     defaultFileName: string;
-  }) => Promise<{ ok: boolean; path?: string; error?: string }>;
+  }) => Promise<{
+    ok: boolean;
+    path?: string;
+    error?: string;
+    /** 用户在「另存为」中选取消；非失败 */
+    canceled?: boolean;
+  }>;
   importTextFile: () => Promise<{ ok: boolean; text?: string; name?: string }>;
   readTextFileAbsolute: (p: string) => Promise<{
     ok: boolean;

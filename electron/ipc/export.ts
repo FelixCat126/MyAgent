@@ -59,7 +59,7 @@ ipcMain.handle(
       filters: saveFiltersForFileName(base),
     });
     if (canceled || !filePath) {
-      return { ok: false as const };
+      return { ok: false as const, canceled: true as const };
     }
     const dst = path.resolve(filePath);
     await fs.copyFile(src, dst);

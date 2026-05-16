@@ -12,7 +12,7 @@ import {
   findConversationGalleryIndex,
   type ConversationImageGalleryItem,
 } from '@/utils/conversationImageGallery';
-import { downloadDisplayImage } from '@/utils/imageDownload';
+import { DownloadLocalFileError, downloadDisplayImage } from '@/utils/imageDownload';
 
 const MAX_MARKDOWN_RENDER_CHARS = 24_000;
 const MAX_ASSISTANT_PREPROCESS_CHARS = 28_000;
@@ -567,7 +567,17 @@ const MessageItem: React.FC<MessageItemProps> = ({
         sourceLocalPath: (localPath || '').trim(),
         defaultFileName: fileName || 'image.png',
       });
-    } catch {
+    } catch (err) {
+      if (err instanceof DownloadLocalFileError) {
+        window.alert(
+          t(
+            err.code === 'path_empty'
+              ? 'message.downloadPathEmpty'
+              : 'message.downloadSourceMissing'
+          )
+        );
+        return;
+      }
       console.warn('[image-download] failed', fileName);
       window.alert(t('message.imageDownloadFailed'));
     }

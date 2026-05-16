@@ -48,6 +48,8 @@ const zh: Record<string, string> = {
   'message.imageGalleryNext': '下一张',
   'message.imageGalleryPosition': '第 {current} / {total} 张',
   'message.imageLongPressGalleryHint': '长按大图可通过系统菜单保存到相册。',
+  'message.downloadSourceMissing': '本地源文件已不存在（可能已被移动或删除），无法下载。',
+  'message.downloadPathEmpty': '没有有效的本地文件路径，无法保存。',
   'message.imageDownloadFailed': '图片保存失败，可稍后重试或长按图片保存。',
   'modelSelect.placeholder': '选择模型',
   'modelSelect.empty': '暂无模型',
@@ -349,6 +351,9 @@ const en: Record<string, string> = {
   'message.imageGalleryNext': 'Next image',
   'message.imageGalleryPosition': '{current} / {total}',
   'message.imageLongPressGalleryHint': 'Touch and hold the image to save via the system menu.',
+  'message.downloadSourceMissing':
+    'The local file is no longer available (it may have been moved or deleted), so it cannot be downloaded.',
+  'message.downloadPathEmpty': 'No valid local file path — cannot save.',
   'message.imageDownloadFailed': 'Could not save the image. Retry or touch-and-hold the image to save.',
   'modelSelect.placeholder': 'Choose model',
   'modelSelect.empty': 'No models',
