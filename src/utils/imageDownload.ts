@@ -147,6 +147,11 @@ function triggerAnchorDownload(blob: Blob, filename: string): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 2500);
 }
 
+/** 是否为带主进程「另存为」的桌面 Electron 壳；浏览器 / PWA（含远端移动壳）为 false（该环境用长按系统菜单保存说明） */
+export function hasDesktopLocalSaveCapability(): boolean {
+  return typeof window !== 'undefined' && typeof window.electron?.saveLocalFileCopy === 'function';
+}
+
 /** Electron「另存为」；其余走 fetch blob 后下载链接 */
 export async function downloadDisplayImage(opts: {
   src: string;

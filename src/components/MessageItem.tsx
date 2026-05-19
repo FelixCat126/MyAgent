@@ -12,7 +12,11 @@ import {
   findConversationGalleryIndex,
   type ConversationImageGalleryItem,
 } from '@/utils/conversationImageGallery';
-import { DownloadLocalFileError, downloadDisplayImage } from '@/utils/imageDownload';
+import {
+  DownloadLocalFileError,
+  downloadDisplayImage,
+  hasDesktopLocalSaveCapability,
+} from '@/utils/imageDownload';
 
 const MAX_MARKDOWN_RENDER_CHARS = 24_000;
 const MAX_ASSISTANT_PREPROCESS_CHARS = 28_000;
@@ -311,11 +315,34 @@ export const ImagePreviewModal: React.FC<{
   src: string;
   onClose: () => void;
   alt: string;
-  /** 保留供调用方语义一致；大图保存请使用长按系统菜单 */
+  /** 桌面壳另存拷贝用；移动端壳无 Electron 时使用长按菜单 */
   localPath?: string;
   defaultFileName?: string;
-}> = ({ src, onClose, alt }) => {
+}> = ({ src, onClose, alt, localPath, defaultFileName }) => {
   const { t } = useI18n();
+  const desktopShell = hasDesktopLocalSaveCapability();
+
+  const handleSaveCopy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await downloadDisplayImage({
+        src: src.trim(),
+        sourceLocalPath: (localPath || '').trim(),
+        defaultFileName: defaultFileName || 'image.png',
+      });
+    } catch (err) {
+      if (err instanceof DownloadLocalFileError) {
+        window.alert(
+          t(
+            err.code === 'path_empty' ? 'message.downloadPathEmpty' : 'message.downloadSourceMissing'
+          )
+        );
+        return;
+      }
+      console.warn('[image-download] preview save failed');
+      window.alert(t('message.imageDownloadFailed'));
+    }
+  };
 
   const node = (
     <div
@@ -328,6 +355,18 @@ export const ImagePreviewModal: React.FC<{
         onClick={(e) => e.stopPropagation()}
       >
         <div className="pointer-events-auto relative z-[210] flex shrink-0 justify-end gap-3 [&_svg]:pointer-events-none">
+          {desktopShell ? (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2.5 py-1 text-sm text-white backdrop-blur-sm transition-colors hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
+              title={t('message.imagePreviewDownload')}
+              aria-label={t('message.imagePreviewDownload')}
+              onClick={(e) => void handleSaveCopy(e)}
+            >
+              <FiDownload size={14} aria-hidden />
+              <span>{t('message.imagePreviewDownload')}</span>
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={onClose}
@@ -341,12 +380,14 @@ export const ImagePreviewModal: React.FC<{
         <img
           src={src}
           alt={alt}
-          style={previewImgTouchMenuStyle}
+          style={desktopShell ? undefined : previewImgTouchMenuStyle}
           className="relative z-0 mx-auto block max-h-[min(calc(85vh-120px),80vh)] max-w-full object-contain rounded-lg shadow-2xl"
         />
-        <p className="mx-auto max-w-[min(90vw,24rem)] text-center text-[11px] leading-snug text-white/55 px-2">
-          {t('message.imageLongPressGalleryHint')}
-        </p>
+        {!desktopShell ? (
+          <p className="mx-auto max-w-[min(90vw,24rem)] text-center text-[11px] leading-snug text-white/55 px-2">
+            {t('message.imageLongPressGalleryHint')}
+          </p>
+        ) : null}
       </div>
     </div>
   );
@@ -361,6 +402,7 @@ export const ConversationImageGalleryModal: React.FC<{
   onDeleteCurrent?: (slide: ConversationImageGalleryItem) => void | Promise<void>;
 }> = ({ slides, startIndex, onClose, onDeleteCurrent }) => {
   const { t } = useI18n();
+  const desktopShell = hasDesktopLocalSaveCapability();
   const [idx, setIdx] = useState(() =>
     slides.length ? Math.min(Math.max(0, startIndex), slides.length - 1) : 0
   );
@@ -391,6 +433,28 @@ export const ConversationImageGalleryModal: React.FC<{
   const canPrev = idx > 0;
   const canNext = idx < slides.length - 1;
 
+  const handleGallerySaveCopy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await downloadDisplayImage({
+        src: slide.src.trim(),
+        sourceLocalPath: slide.localPath.trim(),
+        defaultFileName: slide.defaultFileName || 'image.png',
+      });
+    } catch (err) {
+      if (err instanceof DownloadLocalFileError) {
+        window.alert(
+          t(
+            err.code === 'path_empty' ? 'message.downloadPathEmpty' : 'message.downloadSourceMissing'
+          )
+        );
+        return;
+      }
+      console.warn('[image-download] gallery save failed');
+      window.alert(t('message.imageDownloadFailed'));
+    }
+  };
+
   const node = (
     <div
       className={MODAL_PORTAL_LAYER_CLASS}
@@ -405,8 +469,20 @@ export const ConversationImageGalleryModal: React.FC<{
         onClick={(e) => e.stopPropagation()}
       >
         <div
-          className={`pointer-events-auto relative z-[210] flex w-full shrink-0 justify-end gap-3 pb-4 [&_svg]:pointer-events-none sm:pb-5 ${MODAL_CLEAR_TITLEBAR_PT}`}
+          className={`pointer-events-auto relative z-[210] flex w-full shrink-0 flex-wrap justify-end gap-3 pb-4 [&_svg]:pointer-events-none sm:pb-5 ${MODAL_CLEAR_TITLEBAR_PT}`}
         >
+          {desktopShell ? (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2.5 py-1 text-sm text-white backdrop-blur-sm transition-colors hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
+              title={t('message.imagePreviewDownload')}
+              aria-label={t('message.imagePreviewDownload')}
+              onClick={(e) => void handleGallerySaveCopy(e)}
+            >
+              <FiDownload size={14} aria-hidden />
+              <span>{t('message.imagePreviewDownload')}</span>
+            </button>
+          ) : null}
           {onDeleteCurrent ? (
             <button
               type="button"
@@ -453,15 +529,17 @@ export const ConversationImageGalleryModal: React.FC<{
             <img
               src={slide.src}
               alt={slide.defaultFileName || t('message.imageAlt')}
-              style={previewImgTouchMenuStyle}
+              style={desktopShell ? undefined : previewImgTouchMenuStyle}
               className="max-h-[min(72vh,880px)] max-w-full object-contain rounded-lg shadow-2xl"
             />
             <p className="text-center text-sm text-white/90 tabular-nums">
               {t('message.imageGalleryPosition', { current: idx + 1, total: slides.length })}
             </p>
-            <p className="mx-auto max-w-[min(90vw,24rem)] text-center text-[11px] leading-snug text-white/55 px-2">
-              {t('message.imageLongPressGalleryHint')}
-            </p>
+            {!desktopShell ? (
+              <p className="mx-auto max-w-[min(90vw,24rem)] text-center text-[11px] leading-snug text-white/55 px-2">
+                {t('message.imageLongPressGalleryHint')}
+              </p>
+            ) : null}
           </div>
 
           <button
