@@ -85,4 +85,14 @@ if (typeof window !== 'undefined') {
       dispatchEvent: () => false,
     }),
   });
+
+  /** jsdom 未实现 Blob 的 URL.createObjectURL，附件下载等 DOM 链路需占位 */
+  const UrlStatic = window.URL as unknown as Record<string, unknown>;
+  if (typeof UrlStatic.createObjectURL !== 'function') {
+    UrlStatic.createObjectURL = (): string =>
+      typeof crypto.randomUUID === 'function'
+        ? `blob:vitest-${crypto.randomUUID()}`
+        : `blob:vitest-${Math.random().toString(36).slice(2)}`;
+    UrlStatic.revokeObjectURL = (): void => {};
+  }
 }

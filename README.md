@@ -51,13 +51,59 @@ export ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
 npm install
 npm run dev          # 开发
 npm run build        # 类型检查 + 渲染与主进程构建
-npm run test         # Vitest
+npm run test         # Vitest（见下文「自动化测试」）
 
 npm run package      # 当前平台安装包
 npm run package:mac / package:win / package:linux
 ```
 
 > **macOS 代码签名**：未配置 Apple Developer 证书时，安装包可能为未签名状态；对外分发需自行完成签名与公证。
+
+---
+
+## 自动化测试
+
+使用 **Vitest**（配置见项目根目录 `vitest.config.ts`，与 Electron 插件隔离；默认环境 **jsdom**，主进程相关用例顶部声明 `// @vitest-environment node`）。运行：
+
+```bash
+npm run test
+```
+
+当前规模：**34 个测试文件 / 208 条用例**，覆盖渲染端工具与状态、Electron 主进程协议 / IPC 纯函数、文档解析与导出，以及关键 React 组件的桌面/移动壳分流。`src/test/setupTests.ts` 提供最小 Electron API stub、以及对 jsdom 缺失的 `URL.createObjectURL` 的占位（便于断言附件「fetch → 伪装下载锚点」链路）。
+
+### 业务域 ↔ 测试文件
+
+| 业务域 | 测试文件 |
+|--------|----------|
+| **附件 / 图片下载**（已知扩展名保留、Electron 取消 / 源缺失、fetch fallback） | `src/utils/imageDownload.test.ts` |
+| **会话图库与图片库**（仅 `image/`、顺序、`data:` 预览、basename） | `src/utils/conversationImageGallery.test.ts` |
+| **预览弹层桌面/远端分流**（下载按钮 vs 长按提示、英文 locale） | `src/components/MessageItem.test.tsx` |
+| **火山 OpenSpeech V1 帧**（full client / audio / 服务端 result / error 解析） | `electron/utils/volcOpenspeechProtocol.test.ts` |
+| **工作区索引切块**（段聚合、超长切片、CRLF 归一化） | `electron/utils/chunkText.test.ts` |
+| **嵌入客户端**（OpenAI / 方舟 / Ollama 路径、批分组、多模态、错误透传） | `electron/utils/embeddingClient.test.ts` |
+| **文档提取**（md / txt 直读、docx 调 mammoth、xlsx → GFM 表、xls/doc 引导文案） | `electron/utils/documentText.test.ts` |
+| **Markdown 导出**（GFM 表解析、`markdownToXlsxBuffer`、`plainMarkdownToDocxBuffer`） | `electron/utils/markdownExport.test.ts` |
+| **知识库索引复用判定**（指纹归一、根/模型/dim 校验、增量可否复用） | `electron/utils/knowledgeIndexOperations.test.ts` |
+| **远端网关**（配置合并 / 反代路径归一化 / mime / 静态资产 / 鉴权 / multipart） | `electron/ipc/remote-gateway.test.ts` |
+| **文档导出意图 / 联网触发 / GFM 检测** | `documentExportIntent.test.ts`、`webSearchTrigger.test.ts`、`markdownTableDetect.test.ts` |
+| **消息清洗 / 工具调用 JSON 提取 / 单文件代码检测** | `sanitizeMessagesForModel.test.ts`、`toolCalls.test.ts`、`standaloneCodeDetect.test.ts` |
+| **向量数学 / RAG 选取 / 嵌入解析与 baseUrl 归一** | `vectorMath.test.ts`、`ragRelevance.test.ts`、`embeddingParse.test.ts`、`embeddingNormalize.test.ts` |
+| **Zustand 状态**（chat / model / setting / webSearch / workspace） | `src/store/*.test.ts` |
+| **SSE 增量解析**（主进程） | `electron/utils/streamChatCompletionDelta.test.ts` |
+| **应用壳挂载**（最少渲染） | `src/App.test.tsx` |
+
+### 仍依赖手工 / E2E 的链路
+
+下列流程涉及真实网络、外部进程或 GPU，本仓库**不**做自动化（仅手工矩阵验证）：
+
+- 模型 SSE 实时流式与中断恢复
+- 生图全链路（CLI / SD WebUI / OpenAI Images / 多图序列）
+- 火山 ASR WebSocket 握手 / 重连 / 长连维护
+- 向量索引磁盘读写与全量回退的端到端
+- 远端网关在真实 HTTP 服务上的鉴权与 SSE 转发
+- electron-builder 安装包烟雾测试
+
+增补新特性时优先为**无副作用的纯函数**与 **IPC 入参 / 分支**补齐用例。
 
 ---
 

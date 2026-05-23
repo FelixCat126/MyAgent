@@ -196,19 +196,19 @@ function shellHtmlPathForServe(): string {
 }
 
 /** 加主屏幕用的 manifest / 图标；pathname 可为 /前缀/remote/...（反代子路径挂载）。 */
-function pickRemoteStandaloneAsset(pathNorm: string): 'manifest' | 'touchIcon' | null {
+export function pickRemoteStandaloneAsset(pathNorm: string): 'manifest' | 'touchIcon' | null {
   if (/\/remote\/manifest\.webmanifest$/i.test(pathNorm)) return 'manifest';
   if (/\/remote\/apple-touch-icon\.png$/i.test(pathNorm)) return 'touchIcon';
   return null;
 }
 
-function publicRemoteGatewayGet(method: string, pathNorm: string): boolean {
+export function publicRemoteGatewayGet(method: string, pathNorm: string): boolean {
   if (method !== 'GET') return false;
   if (pathNorm === '/' || pathNorm === '/remote') return true;
   return pickRemoteStandaloneAsset(pathNorm) !== null;
 }
 
-function mimeForPath(filePath: string): string {
+export function mimeForPath(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
   const map: Record<string, string> = {
     '.png': 'image/png',
@@ -274,7 +274,7 @@ function collectBody(raw: IncomingMessage, cap: number): Promise<Buffer> {
 }
 
 /** 轻量 multipart 解析：表单字段名为 `f`，与 remote-shell.html 一致 */
-function parseMultipartFiles(
+export function parseMultipartFiles(
   body: Buffer,
   contentType: string | undefined
 ): Promise<Array<{ buffer: Buffer; name: string; type: string; size: number }>> {
@@ -347,7 +347,7 @@ function tryParsePart(
 }
 
 /** 反代或子路径挂载后 pathname 形如 /xxx/remote/api/... 或 /pref/api/session/active */
-function normalizeRemoteRequestPathname(raw: string): string {
+export function normalizeRemoteRequestPathname(raw: string): string {
   let pathNorm = (raw || '/').replace(/\/+/g, '/');
   if (pathNorm.length > 1 && pathNorm.endsWith('/')) pathNorm = pathNorm.slice(0, -1);
   const mr = '/remote/api/';
@@ -374,7 +374,7 @@ async function invokeBridge(runner: string): Promise<unknown> {
   })()`);
 }
 
-function authorize(req: IncomingMessage, url: URL, token: string): boolean {
+export function authorize(req: IncomingMessage, url: URL, token: string): boolean {
   const auth = (req.headers.authorization || '').trim();
   if (auth === `Bearer ${token}`) return true;
   if (url.searchParams.get('t') === token) return true;
