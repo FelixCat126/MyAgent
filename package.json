@@ -1,6 +1,6 @@
 {
   "name": "myagent",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "本地AI助手 - 跨平台、多模型、多模态智能对话工具",
   "type": "module",
   "main": "dist-electron/main.js",
