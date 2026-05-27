@@ -33,9 +33,23 @@ function sendErr(wc: WebContents, message: string) {
 }
 
 function registerModelStreamIpc() {
-  ipcMain.on('model-stream-start', (event, payload: { messages: Message[]; config: ModelConfig; locale?: 'zh' | 'en' }) => {
-    const { messages, config, locale: loc } = payload;
+  ipcMain.on(
+    'model-stream-start',
+    (
+      event,
+      payload: {
+        messages: Message[];
+        config: ModelConfig;
+        locale?: 'zh' | 'en';
+        temperature?: number;
+      }
+    ) => {
+    const { messages, config, locale: loc, temperature: tRaw } = payload;
     const locale = loc === 'en' ? 'en' : 'zh';
+    const temperature =
+      typeof tRaw === 'number' && Number.isFinite(tRaw)
+        ? Math.max(0, Math.min(2, tRaw))
+        : undefined;
     const wc = event.sender;
     const sid = typeof wc.id === 'number' ? wc.id : 0;
     const prev = abortByStream.get(sid);
@@ -67,6 +81,7 @@ function registerModelStreamIpc() {
             messages: msgs,
             max_tokens: maxTokens,
             stream: true,
+            ...(temperature !== undefined ? { temperature } : {}),
           };
           const url = `${apiBase}/chat/completions`;
           return axios.post(url, body, {
@@ -138,7 +153,8 @@ function registerModelStreamIpc() {
         abortByStream.delete(sid);
       }
     })();
-  });
+    }
+  );
 
   ipcMain.on('model-stream-abort', (event) => {
     const sid = event.sender.id;

@@ -61,7 +61,12 @@ window.electron = {
     ipcRenderer.on('model-stream-end', end);
     ipcRenderer.send(
       'model-stream-start',
-      cloneForIpc({ messages, config, locale: handlers.locale || 'zh' })
+      cloneForIpc({
+        messages,
+        config,
+        locale: handlers.locale || 'zh',
+        ...(typeof handlers.temperature === 'number' ? { temperature: handlers.temperature } : {}),
+      })
     );
     return () => {
       ipcRenderer.send('model-stream-abort');
@@ -99,6 +104,13 @@ window.electron = {
   extractDocumentText: (arg) => ipcRenderer.invoke('extract-document-text', cloneForIpc(arg)),
   saveAssistantExport: (arg) => ipcRenderer.invoke('save-assistant-export', cloneForIpc(arg)),
   createDocumentArtifact: (arg) => ipcRenderer.invoke('create-document-artifact', cloneForIpc(arg)),
+  agentLocalList: (arg) => ipcRenderer.invoke('agent-local-list', cloneForIpc(arg)),
+  agentLocalFindByName: (arg) => ipcRenderer.invoke('agent-local-find-by-name', cloneForIpc(arg)),
+  agentLocalRead: (arg) => ipcRenderer.invoke('agent-local-read', cloneForIpc(arg)),
+  agentWebOpen: (arg) => ipcRenderer.invoke('agent-web-open', cloneForIpc(arg)),
+  agentWebRead: (arg) => ipcRenderer.invoke('agent-web-read', cloneForIpc(arg ?? null)),
+  agentWebEval: (arg) => ipcRenderer.invoke('agent-web-eval', cloneForIpc(arg)),
+  agentWebClose: () => ipcRenderer.invoke('agent-web-close'),
   knowledgeIndexWorkspace: (arg) => ipcRenderer.invoke('knowledge-index-workspace', cloneForIpc(arg)),
   knowledgeSearch: (arg) => ipcRenderer.invoke('knowledge-search', cloneForIpc(arg)),
   knowledgeGetIndexStatus: () => ipcRenderer.invoke('knowledge-index-status'),

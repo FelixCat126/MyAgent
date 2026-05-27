@@ -30,7 +30,7 @@ function deriveFromActivity(a: AgentActivity): DerivedFromActivity {
       return { mood: 'streaming', spinSpeed: 0, morph: 'sphere', breathing: true };
     case 'idle':
     default:
-      return { mood: 'idle', spinSpeed: 0, morph: 'sphere', breathing: false };
+      return { mood: 'idle', spinSpeed: IDLE_SPIN_SPEED, morph: 'sphere', breathing: false };
   }
 }
 
@@ -50,6 +50,11 @@ const PARTICLE_COUNT = 360;
 const FOCAL = 520;
 const BASE_RADIUS = 220;
 const MOTION_LERP = 0.085;
+/** 无业务指令时的缓慢自转（弧度/秒） */
+const IDLE_SPIN_SPEED = 0.32;
+/** 单颗粒子绘制半径系数（相对透视缩放） */
+const DOT_RADIUS_MUL = 1.05;
+const DOT_RADIUS_MIN = 0.32;
 
 interface SeedPoint {
   /** 球面上的基础方向（单位向量），用于自由漂浮的相位扰动 */
@@ -155,9 +160,11 @@ function lerp(a: number, b: number, t: number): number {
 
 interface ParticleFieldProps {
   className?: string;
+  /** 输入栏等小尺寸容器：减少粒子数，避免拥挤与耗电 */
+  compact?: boolean;
 }
 
-const ParticleField: React.FC<ParticleFieldProps> = ({ className }) => {
+const ParticleField: React.FC<ParticleFieldProps> = ({ className, compact = false }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const seedsRef = useRef<SeedPoint[]>([]);
@@ -180,9 +187,11 @@ const ParticleField: React.FC<ParticleFieldProps> = ({ className }) => {
     themeRef.current = resolvedTheme;
   }, [resolvedTheme]);
 
-  /** 初始化粒子种子（一次性，与尺寸/主题无关） */
-  if (seedsRef.current.length === 0) {
-    seedsRef.current = buildSeeds(PARTICLE_COUNT);
+  const particleCount = compact ? 120 : PARTICLE_COUNT;
+
+  /** 初始化粒子种子（compact 切换时重建） */
+  if (seedsRef.current.length !== particleCount) {
+    seedsRef.current = buildSeeds(particleCount);
   }
 
   useEffect(() => {
@@ -194,7 +203,7 @@ const ParticleField: React.FC<ParticleFieldProps> = ({ className }) => {
 
     const applySize = () => {
       const rect = container.getBoundingClientRect();
-      const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+      const dpr = Math.min(1.5, Math.max(1, window.devicePixelRatio || 1));
       const w = Math.max(2, Math.floor(rect.width));
       const h = Math.max(2, Math.floor(rect.height));
       if (sizeRef.current.w === w && sizeRef.current.h === h && sizeRef.current.dpr === dpr) {
@@ -257,16 +266,21 @@ const ParticleField: React.FC<ParticleFieldProps> = ({ className }) => {
         ? stState.morphTarget
         : derived.morph;
       const effBreathing = stState.gestureOverride ? false : derived.breathing;
+      const gestureActive = stState.gestureOverride;
+      const motionLerp = gestureActive ? 0.14 : MOTION_LERP;
+      const spinLerp = gestureActive ? 0.16 : 0.08;
+      const morphLerp = gestureActive ? 0.2 : 0.07;
+
       const mood = effMood;
       const cur = currentMotionRef.current;
-      cur.scale = lerp(cur.scale, targetMotion.scale, MOTION_LERP);
-      cur.rotateX = lerp(cur.rotateX, targetMotion.rotateX, MOTION_LERP);
-      cur.rotateY = lerp(cur.rotateY, targetMotion.rotateY, MOTION_LERP);
-      cur.rotateZ = lerp(cur.rotateZ, targetMotion.rotateZ, MOTION_LERP);
-      cur.depthZ = lerp(cur.depthZ, targetMotion.depthZ, MOTION_LERP);
+      cur.scale = lerp(cur.scale, targetMotion.scale, motionLerp);
+      cur.rotateX = lerp(cur.rotateX, targetMotion.rotateX, motionLerp);
+      cur.rotateY = lerp(cur.rotateY, targetMotion.rotateY, motionLerp);
+      cur.rotateZ = lerp(cur.rotateZ, targetMotion.rotateZ, motionLerp);
+      cur.depthZ = lerp(cur.depthZ, targetMotion.depthZ, motionLerp);
 
-      // 平滑 spin：让 spinSpeed 开/关时旋转加速/减速过渡
-      spinSpeedRef.current = lerp(spinSpeedRef.current, effSpinSpeed, 0.06);
+      // 平滑 spin：手势/业务切换时加快跟随，减少竖大拇指等反馈的迟滞感
+      spinSpeedRef.current = lerp(spinSpeedRef.current, effSpinSpeed, spinLerp);
       const dtSec = lastTickRef.current > 0 ? (now - lastTickRef.current) / 1000 : 0;
       lastTickRef.current = now;
       if (Math.abs(spinSpeedRef.current) > 0.001 || Math.abs(spinAngleRef.current) > 0.0001) {
@@ -275,7 +289,7 @@ const ParticleField: React.FC<ParticleFieldProps> = ({ className }) => {
 
       // 形态因子：sphere(0) ↔ heart(1) 平滑切换
       const morphTargetVal = effMorphTarget === 'heart' ? 1 : 0;
-      morphFactorRef.current = lerp(morphFactorRef.current, morphTargetVal, 0.07);
+      morphFactorRef.current = lerp(morphFactorRef.current, morphTargetVal, morphLerp);
       const morph = morphFactorRef.current;
 
       // 呼吸活跃度过渡 + 呼吸缩放倍率（独立于 motion.scale，不污染手势缩放）
@@ -370,7 +384,7 @@ const ParticleField: React.FC<ParticleFieldProps> = ({ className }) => {
         const px = cx + (x3 * persp * baseR) / BASE_RADIUS;
         const py = cy + (y3 * persp * baseR) / BASE_RADIUS;
 
-        const radius = Math.max(0.55, 1.7 * persp * (0.7 + cur.scale * 0.3));
+        const radius = Math.max(DOT_RADIUS_MIN, DOT_RADIUS_MUL * persp * (0.7 + cur.scale * 0.3));
         /**
          * 浅色用 'source-over' 直接覆盖，过高 alpha 会形成"硬色块"刺眼感；
          * 暗色用 'lighter' 叠加发光，alpha 高才有亮度。所以两套上限各取所需。

@@ -4,10 +4,15 @@ import { ChatSession } from '../types';
 import { filterSessionsByQuery } from '../utils/sessionFilter';
 import { FiTrash2, FiEdit2, FiSearch, FiDownload, FiImage } from 'react-icons/fi';
 import { useI18n } from '../hooks/useI18n';
+import { useResolvedTheme } from '../hooks/useResolvedTheme';
+import { useSettingStore } from '../store/settingStore';
 import { useImageLibraryOpener } from '../context/ImageLibraryContext';
+import FloatingParticleWindow from './FloatingParticleWindow';
 
 const SessionList: React.FC = () => {
   const { t, locale } = useI18n();
+  const resolvedTheme = useResolvedTheme();
+  const particleFieldEnabled = useSettingStore((s) => s.particleFieldEnabled);
   const openImageLibrary = useImageLibraryOpener();
   const { sessions, currentSessionId, switchSession, deleteSession, updateSessionTitle } = useChatStore();
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -63,6 +68,9 @@ const SessionList: React.FC = () => {
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <div className="shrink-0 px-2 pt-2 pb-1 space-y-1.5">
+        {particleFieldEnabled ? (
+          <FloatingParticleWindow visible themeMode={resolvedTheme} />
+        ) : null}
         <div className="relative">
           <FiSearch
             className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-stone-400 dark:text-slate-500"

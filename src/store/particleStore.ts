@@ -38,7 +38,7 @@ export type ParticleMorph = 'sphere' | 'heart';
 
 /**
  * Agent 业务活动阶段。ParticleField 根据该阶段派生 mood/spin/呼吸表现：
- * - idle: 默认静止
+ * - idle: 默认缓慢自转
  * - awake: 唤醒后待发送，呼吸式膨胀收缩
  * - thinking: 思考中，旋转
  * - replying: 流式回复中，呼吸式膨胀收缩

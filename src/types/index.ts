@@ -33,7 +33,7 @@ export interface ElectronAPI {
   callModel: (
     messages: Message[],
     config: ModelConfig,
-    options?: { locale?: 'zh' | 'en' }
+    options?: { locale?: 'zh' | 'en'; temperature?: number }
   ) => Promise<any>;
   /** OpenAI/兼容 与 Ollama：使用 subscribeModelStream 流式，须配合 closeModelStream 与事件监听 */
   subscribeModelStream: (
@@ -45,6 +45,7 @@ export interface ElectronAPI {
       onEnd: () => void;
       onError: (m: string) => void;
       locale?: 'zh' | 'en';
+      temperature?: number;
     }
   ) => () => void;
   closeModelStream: () => void;
@@ -113,10 +114,67 @@ export interface ElectronAPI {
   }) => Promise<{ ok: boolean; path?: string }>;
   /** 后台生成一个文档产物并返回本地附件信息，不弹保存框 */
   createDocumentArtifact: (arg: {
-    format: 'md' | 'docx';
+    format: 'md' | 'docx' | 'xlsx';
     content: string;
     defaultBaseName: string;
   }) => Promise<{ ok: boolean; file?: FileInfo; error?: string }>;
+  agentLocalList: (arg: {
+    deniedPaths?: string[];
+    subpath?: string;
+    maxDepth?: number;
+    extensions?: string[];
+  }) => Promise<{
+    ok: boolean;
+    error?: string;
+    entries?: { path: string; rel: string; kind: 'file' | 'dir'; size?: number }[];
+  }>;
+  agentLocalFindByName: (arg: {
+    deniedPaths?: string[];
+    pattern: string;
+    limit?: number;
+    extensions?: string[];
+    fileKind?: 'document' | 'image';
+  }) => Promise<{
+    ok: boolean;
+    error?: string;
+    matches?: { path: string; rel: string; name: string; displayPath?: string; size?: number }[];
+  }>;
+  agentLocalRead: (arg: {
+    deniedPaths?: string[];
+    path: string;
+    maxChars?: number;
+  }) => Promise<{
+    ok: boolean;
+    error?: string;
+    path?: string;
+    rel?: string;
+    text?: string;
+    kind?: string;
+    truncated?: boolean;
+  }>;
+  /** Agent 浏览器：打开 / 复用单实例独立窗口并导航 */
+  agentWebOpen: (arg: { url: string }) => Promise<{
+    ok: boolean;
+    url?: string;
+    title?: string;
+    error?: string;
+  }>;
+  /** 抓取当前页 url / title / 可见文本快照；selector 可选 */
+  agentWebRead: (arg?: { maxChars?: number; selector?: string }) => Promise<{
+    ok: boolean;
+    url?: string;
+    title?: string;
+    text?: string;
+    matched?: boolean;
+    error?: string;
+  }>;
+  /** 在页面 context 执行 async JS，返回值需可 JSON 序列化（否则降级为 String） */
+  agentWebEval: (arg: { js: string }) => Promise<{
+    ok: boolean;
+    result?: unknown;
+    error?: string;
+  }>;
+  agentWebClose: () => Promise<{ ok: boolean; closed?: boolean; error?: string }>;
   /** 为工作区构建向量索引（需先配置嵌入服务与模型）；省略 mode 或与 incremental 等效时：能复用指纹则仅处理变更/新文件，否则内部全文重建；mode: 'full' 强制全文 */
   knowledgeIndexWorkspace: (arg: {
     root: string;
@@ -320,6 +378,12 @@ export interface ChatSession {
   unreadAssistantReply?: boolean;
   /** 相对全局联网开关：本会话是否强制/关闭联网 */
   webSearchOverride?: 'default' | 'on' | 'off';
+  /** Agent 本机工具：用户在本会话中显式指定的额外授权路径 */
+  agentFileScope?: {
+    extraRoots?: string[];
+  };
+  /** 应用内浏览：当前活跃 BrowserView 会话（Phase B） */
+  activeBrowserSessionId?: string;
 }
 
 // 全局 Window 接口扩展

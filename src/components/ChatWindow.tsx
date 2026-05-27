@@ -40,6 +40,17 @@ import { sessionToHtml, sessionToMarkdown } from '../utils/exportChat';
 import { canUseSseStream, effectiveWebEnabled } from '../utils/chatModelPolicy';
 import { enrichMessagesForModel } from '../utils/enrichMessagesForModel';
 import { sanitizeMessagesForModel } from '../utils/sanitizeMessagesForModel';
+import { isAgentToolsBuildEnabled } from '@/agent/buildFlags';
+import { runAgentLoop } from '@/agent/agentRunner';
+import { looksLikeLocalFileAgentRequest, looksLikeLocalImageFindRequest } from '@/agent/localFileIntent';
+import { looksLikeWebBrowseRequest } from '@/agent/webBrowseIntent';
+import {
+  agentBrowserClose,
+  agentBrowserEval,
+  agentBrowserOpen,
+  agentBrowserRead,
+} from '@/agent/browser/agentBrowserController';
+import AgentBrowserPanel from './AgentBrowserPanel';
 import { t as tUi } from '../i18n/ui';
 import type { Locale } from '../i18n/types';
 import { inferImageCountFromText, planImageIntent, type ImageIntent } from '../utils/imageIntentPlanner';
@@ -77,8 +88,12 @@ type VectorRagSendHint =
 /** 工作区向量索引：按用户问题检索相关片段（不落盘到聊天记录）。不设关键词门控；是否注入由主进程嵌入 + 相关度阈值决定。 */
 async function maybeInjectVectorRag(
   sessionMessages: Message[],
-  userMessage: Message
+  userMessage: Message,
+  skip?: boolean
 ): Promise<{ messages: Message[]; ragHint: VectorRagSendHint }> {
+  if (skip) {
+    return { messages: [...sessionMessages, userMessage], ragHint: { kind: 'skipped' } };
+  }
   const root = useWorkspaceStore.getState().rootPath.trim();
   const {
     vectorRagEnabled,
@@ -142,8 +157,10 @@ async function maybeInjectVectorRag(
 /** 工作区根目录下 MYAGENT_KNOWLEDGE.md / knowledge.md / README.md 片段 */
 async function maybeInjectWorkspaceMessages(
   sessionMessages: Message[],
-  userMessage: Message
+  userMessage: Message,
+  skip?: boolean
 ): Promise<Message[]> {
+  if (skip) return [...sessionMessages, userMessage];
   const root = useWorkspaceStore.getState().rootPath.trim();
   if (!root) return [...sessionMessages, userMessage];
   const maxChars = useWorkspaceStore.getState().maxChars;
@@ -262,13 +279,15 @@ function prependImageGenCapabilitySystem(
 async function buildOutgoingChain(
   historyWithoutUser: Message[],
   userMessage: Message,
-  web: { enabled: boolean; provider: WebSearchProvider; apiKey: string }
+  web: { enabled: boolean; provider: WebSearchProvider; apiKey: string },
+  opts?: { skipContextInject?: boolean }
 ): Promise<{ chain: Message[]; ragHint: VectorRagSendHint }> {
-  const vec = await maybeInjectVectorRag(historyWithoutUser, userMessage);
+  const skip = opts?.skipContextInject === true;
+  const vec = await maybeInjectVectorRag(historyWithoutUser, userMessage, skip);
   const withVec = vec.messages;
   const hist0 = withVec.slice(0, -1);
   const last0 = withVec[withVec.length - 1];
-  const withWs = await maybeInjectWorkspaceMessages(hist0, last0);
+  const withWs = await maybeInjectWorkspaceMessages(hist0, last0, skip);
   const hist = withWs.slice(0, -1);
   const last = withWs[withWs.length - 1];
   const chain = await buildMessagesWithOptionalWebSearch(hist, last, web);
@@ -901,6 +920,22 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   }, [isStreaming, voiceAwake, sessions, currentSessionId, streamingTargetAssistantId]);
 
   useEffect(() => {
+    const bridge = {
+      open: (url: string) => agentBrowserOpen(url),
+      read: (arg?: { maxChars?: number; selector?: string } | null) =>
+        agentBrowserRead(arg ?? undefined),
+      eval: (arg?: { js?: string } | null) => agentBrowserEval({ js: arg?.js ?? '' }),
+      close: () => agentBrowserClose(),
+    };
+    (window as Window & { __MYAGENT_AGENT_BROWSER__?: typeof bridge }).__MYAGENT_AGENT_BROWSER__ =
+      bridge;
+    return () => {
+      delete (window as Window & { __MYAGENT_AGENT_BROWSER__?: typeof bridge })
+        .__MYAGENT_AGENT_BROWSER__;
+    };
+  }, []);
+
+  useEffect(() => {
     return () => {
       useParticleStore.getState().setAgentActivity('idle');
     };
@@ -976,13 +1011,23 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
 
       let chain: Message[];
       let ragHint: VectorRagSendHint;
+      const exportHint = inferDocumentExportHint(userMessage.content);
+      const isLocalImageFind = looksLikeLocalImageFindRequest(userMessage.content);
+      const skipContextInject = looksLikeLocalFileAgentRequest(userMessage.content);
       try {
-        const built = await buildOutgoingChain(historyBeforeUser, userMessage, {
-          enabled: webOn,
-          provider: webState.provider,
-          apiKey: webState.apiKey,
-        });
-        chain = prependImageGenCapabilitySystem(built.chain, uiLocale, activeModel);
+        const built = await buildOutgoingChain(
+          historyBeforeUser,
+          userMessage,
+          {
+            enabled: webOn,
+            provider: webState.provider,
+            apiKey: webState.apiKey,
+          },
+          { skipContextInject }
+        );
+        chain = isLocalImageFind
+          ? built.chain
+          : prependImageGenCapabilitySystem(built.chain, uiLocale, activeModel);
         ragHint = built.ragHint;
       } catch (e) {
         console.error(e);
@@ -997,7 +1042,6 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         return;
       }
 
-      const exportHint = inferDocumentExportHint(userMessage.content);
       let chainForModel: Message[];
       try {
         chainForModel = await enrichMessagesForModel(chain, uiLocale);
@@ -1069,6 +1113,155 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         }
         return merged.length ? merged : undefined;
       };
+
+      if (
+        isAgentToolsBuildEnabled() &&
+        !exportHint?.document &&
+        (useSettingStore.getState().agentLocalToolsEnabled ||
+          (useSettingStore.getState().agentBrowserEnabled &&
+            looksLikeWebBrowseRequest(userMessage.content)))
+      ) {
+        const assistantId = `${Date.now() + 1}-a`;
+        streamingAssistantIdRef.current = assistantId;
+        setStreamingTargetAssistantId(assistantId);
+        setIsStreaming(true);
+        addMessage(sendSessionId, {
+          id: assistantId,
+          role: 'assistant',
+          content: '',
+          timestamp: Date.now(),
+          model: activeModel.name,
+        });
+
+        let pendingReasoningDelta = '';
+        let reasoningFlushRaf = 0;
+        const drainAgentReasoning = (): void => {
+          if (reasoningFlushRaf !== 0) {
+            window.cancelAnimationFrame(reasoningFlushRaf);
+            reasoningFlushRaf = 0;
+          }
+          const merged = pendingReasoningDelta;
+          pendingReasoningDelta = '';
+          if (!merged) return;
+          appendReasoningToMessage(sendSessionId, assistantId, merged);
+        };
+        const queueAgentReasoning = (th: string): void => {
+          if (!th) return;
+          pendingReasoningDelta += th;
+          if (reasoningFlushRaf !== 0) return;
+          reasoningFlushRaf = window.requestAnimationFrame(() => {
+            reasoningFlushRaf = 0;
+            drainAgentReasoning();
+          });
+        };
+
+        try {
+          const agentOut = await runAgentLoop({
+            chatSessionId: sendSessionId,
+            chainMessages: chainForModel,
+            model: activeModel,
+            userText: userMessage.content,
+            locale: uiLocale,
+            onThinkingDelta: queueAgentReasoning,
+            onReplyContent: (text) => {
+              updateMessage(sendSessionId, assistantId, { content: text });
+            },
+          });
+          drainAgentReasoning();
+          if (agentOut.handled && agentOut.displayText !== undefined) {
+            if (agentOut.reasoning) {
+              const sess = useChatStore.getState().sessions.find((s) => s.id === sendSessionId);
+              const msg = sess?.messages.find((m) => m.id === assistantId);
+              const priorReason = (msg?.reasoning ?? '').trim();
+              if (!priorReason && agentOut.reasoning.trim()) {
+                appendReasoningToMessage(sendSessionId, assistantId, agentOut.reasoning);
+              }
+            }
+            if (consumeVoiceWakeReply()) {
+              speechReaderRef.current?.cancel();
+              const reader = new StreamingSpeechReader(uiLocale, {
+                onSpeakingChange: setVoiceReplySpeaking,
+              });
+              speechReaderRef.current = reader;
+              void (async () => {
+                await reader.start();
+                const speakBody = stripGenerateImageArtifactsForDisplay(agentOut.displayText!).trim();
+                if (speakBody) {
+                  reader.push(speakBody);
+                  reader.finish();
+                }
+              })();
+            }
+            const imageHooks: ImageGenProgressHooks = {
+              onBegin: ({ total }) => {
+                imageGenCancelledRef.current = false;
+                syncImgGenUi({ current: 1, total, messageId: assistantId });
+              },
+              onEachStart: ({ current, total }) => syncImgGenUi({ current, total, messageId: assistantId }),
+              onEachDone: ({ done, total }) =>
+                syncImgGenUi(
+                  done >= total
+                    ? { current: total, total, messageId: assistantId }
+                    : { current: done + 1, total, messageId: assistantId }
+                ),
+              onImage: ({ image }) => appendGeneratedImageToAssistant(assistantId, image),
+              onDone: () => syncImgGenUi(null),
+            };
+            const plannedIntent = planImageIntent({
+              userText: userMessage.content,
+              historyBeforeUser,
+              assistantText: agentOut.displayText,
+              toolCallCount: extractGenerateImageCalls(agentOut.displayText).length,
+            });
+            if (isLocalImageFind) {
+              updateMessage(sendSessionId, assistantId, {
+                content: agentOut.displayText ?? '',
+                files: mergeAssistantFiles(assistantId, agentOut.exportFiles),
+                imageGenProgress: undefined,
+              });
+            } else {
+            const { content: c, files } = await postProcessAssistantContent(
+              agentOut.displayText,
+              activeModel,
+              inlineImageIndexRef.current,
+              setInlineImageIndex,
+              {
+                imageGenHooks: imageHooks,
+                referenceImages: imageReferencePathsFromFiles(userMessage.files),
+                userPromptContext: userMessage.content,
+                plannedIntent,
+                shouldCancel: () => imageGenCancelledRef.current,
+              }
+            );
+            updateMessage(sendSessionId, assistantId, {
+              content: c,
+              files: mergeAssistantFiles(assistantId, [
+                ...(files ?? []),
+                ...(agentOut.exportFiles ?? []),
+              ]),
+              imageGenProgress: undefined,
+            });
+            }
+            setIsStreaming(false);
+            streamingAssistantIdRef.current = null;
+            setStreamingTargetAssistantId(null);
+            clearLoadingForSession(sendSessionId);
+            return;
+          }
+        } catch (agentErr) {
+          console.error('[Agent]', agentErr);
+          drainAgentReasoning();
+          updateMessage(sendSessionId, assistantId, {
+            content: t('chat.requestFailed') + (agentErr instanceof Error ? agentErr.message : String(agentErr)),
+          });
+          clearLoadingForSession(sendSessionId);
+        } finally {
+          setIsStreaming(false);
+          streamingAssistantIdRef.current = null;
+          setStreamingTargetAssistantId(null);
+        }
+      }
+
       if (exportHint?.document && canUseSseStream(activeModel)) {
         streamHadErrorRef.current = false;
         streamCancelledByUserRef.current = false;
@@ -2217,10 +2410,11 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         </div>
       ) : null}
 
+      <div className="flex min-h-0 flex-1 flex-col">
       <div
         ref={scrollContainerRef}
         data-gesture-scroll-target="chat"
-        className="flex-1 min-h-0 overflow-y-auto px-8 py-4 space-y-4"
+        className="min-h-0 flex-1 overflow-y-auto px-8 py-4 space-y-4"
         style={{
           paddingBottom: `calc(${footerH + (attachments.length > 0 ? attachmentStripH : 0)}px + env(safe-area-inset-bottom, 0px))`,
         }}
@@ -2297,6 +2491,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         )}
 
         <div ref={messagesEndRef} />
+      </div>
+      <AgentBrowserPanel />
       </div>
 
       {isDragging && (

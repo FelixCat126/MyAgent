@@ -66,9 +66,13 @@ ipcMain.handle(
     _event,
     messages: Message[],
     config: ModelConfig,
-    options?: { locale?: 'zh' | 'en' }
+    options?: { locale?: 'zh' | 'en'; temperature?: number }
   ) => {
   const locale = options?.locale === 'en' ? 'en' : 'zh';
+  const temperature =
+    typeof options?.temperature === 'number' && Number.isFinite(options.temperature)
+      ? Math.max(0, Math.min(2, options.temperature))
+      : undefined;
   try {
     const { provider, apiUrl, apiKey, modelName, maxTokens } = config;
 
@@ -96,6 +100,7 @@ ipcMain.handle(
             model: modelName,
             messages: formattedMessages,
             max_tokens: maxTokens,
+            ...(temperature !== undefined ? { temperature } : {}),
           },
           {
             headers,

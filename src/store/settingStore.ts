@@ -31,6 +31,12 @@ interface SettingStore {
   particleFieldEnabled: boolean;
   /** 视线跟随：开启后显示目光光标、支持 9 点校准；眨眼一次在光标处点击，连续眨眼两次切换设置抽屉 */
   gazeFollowEnabled: boolean;
+  /** 水下 Agent：本机文档检索/读取/导出（全机范围，系统核心目录需授权） */
+  agentLocalToolsEnabled: boolean;
+  /** 水下 Agent：对话区内嵌浏览（Phase B，默认关） */
+  agentBrowserEnabled: boolean;
+  /** Agent 禁止访问的路径（非授权列表，每行一条；系统核心目录已内置禁止） */
+  agentDeniedPaths: string[];
   setTheme: (theme: AppTheme) => void;
   setFontSize: (size: number) => void;
   setAutoSave: (autoSave: boolean) => void;
@@ -46,6 +52,9 @@ interface SettingStore {
   setGestureControlEnabled: (v: boolean) => void;
   setParticleFieldEnabled: (v: boolean) => void;
   setGazeFollowEnabled: (v: boolean) => void;
+  setAgentLocalToolsEnabled: (v: boolean) => void;
+  setAgentBrowserEnabled: (v: boolean) => void;
+  setAgentDeniedPaths: (paths: string[]) => void;
 }
 
 export const useSettingStore = create<SettingStore>()(
@@ -66,6 +75,9 @@ export const useSettingStore = create<SettingStore>()(
       gestureControlEnabled: false,
       particleFieldEnabled: true,
       gazeFollowEnabled: false,
+      agentLocalToolsEnabled: false,
+      agentBrowserEnabled: true,
+      agentDeniedPaths: [],
       setTheme: (theme: AppTheme) => {
         set({ theme });
         applyBodyClassForStoredTheme(theme);
@@ -92,10 +104,16 @@ export const useSettingStore = create<SettingStore>()(
       setGestureControlEnabled: (v: boolean) => set({ gestureControlEnabled: v }),
       setParticleFieldEnabled: (v: boolean) => set({ particleFieldEnabled: v }),
       setGazeFollowEnabled: (v: boolean) => set({ gazeFollowEnabled: v }),
+      setAgentLocalToolsEnabled: (v: boolean) => set({ agentLocalToolsEnabled: v }),
+      setAgentBrowserEnabled: (v: boolean) => set({ agentBrowserEnabled: v }),
+      setAgentDeniedPaths: (paths: string[]) =>
+        set({
+          agentDeniedPaths: [...new Set(paths.map((p) => p.trim()).filter(Boolean))],
+        }),
     }),
     {
       name: 'setting-storage',
-      version: 12,
+      version: 15,
       storage: zustandPersistJson,
       migrate: (persisted, version) => {
         const raw = persisted as Record<string, unknown>;
@@ -154,6 +172,20 @@ export const useSettingStore = create<SettingStore>()(
             typeof (baseMerged as { gazeFollowEnabled?: boolean }).gazeFollowEnabled === 'boolean'
               ? (baseMerged as { gazeFollowEnabled: boolean }).gazeFollowEnabled
               : false,
+          agentLocalToolsEnabled:
+            typeof (baseMerged as { agentLocalToolsEnabled?: boolean }).agentLocalToolsEnabled ===
+            'boolean'
+              ? (baseMerged as { agentLocalToolsEnabled: boolean }).agentLocalToolsEnabled
+              : false,
+          agentBrowserEnabled:
+            typeof (baseMerged as { agentBrowserEnabled?: boolean }).agentBrowserEnabled === 'boolean'
+              ? (baseMerged as { agentBrowserEnabled: boolean }).agentBrowserEnabled
+              : false,
+          agentDeniedPaths: Array.isArray((baseMerged as { agentDeniedPaths?: unknown }).agentDeniedPaths)
+            ? ((baseMerged as { agentDeniedPaths: string[] }).agentDeniedPaths ?? [])
+                .map((p) => String(p).trim())
+                .filter(Boolean)
+            : [],
         };
         return volcMerged as object;
       },

@@ -28,6 +28,7 @@ import { IosSwitch } from './IosSwitch';
 import { useI18n } from '../hooks/useI18n';
 import { useSystemTtsAvailable } from '@/hooks/useSystemTtsAvailable';
 import { useMediaInputAvailability } from '@/hooks/useMediaInputAvailability';
+import { isAgentToolsBuildEnabled } from '@/agent/buildFlags';
 
 type EditingFormData = {
   name: string;
@@ -146,6 +147,12 @@ const SettingsPanel: React.FC = () => {
     setGestureControlEnabled,
     particleFieldEnabled,
     setParticleFieldEnabled,
+    agentLocalToolsEnabled,
+    setAgentLocalToolsEnabled,
+    agentBrowserEnabled,
+    setAgentBrowserEnabled,
+    agentDeniedPaths,
+    setAgentDeniedPaths,
   } = useSettingStore();
   const { rootPath, maxChars, setRootPath, setMaxChars } = useWorkspaceStore();
   const {
@@ -1196,6 +1203,60 @@ const SettingsPanel: React.FC = () => {
                   />
                 </div>
               </div>
+              {isAgentToolsBuildEnabled() && (
+                <div className="border-t border-stone-300/35 pt-3 dark:border-white/8">
+                  <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-stone-700 dark:text-slate-300">
+                    <FiCpu size={14} className="text-stone-500" aria-hidden />
+                    {t('settings.agentTools')}
+                  </div>
+                  <p className="mb-2 text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
+                    {t('settings.agentToolsDesc')}
+                  </p>
+                  <div className="flex items-center justify-between gap-3 py-1">
+                    <span className="text-xs text-stone-700 dark:text-slate-300">
+                      {t('settings.agentLocalTools')}
+                    </span>
+                    <IosSwitch
+                      checked={agentLocalToolsEnabled}
+                      aria-label={t('settings.agentLocalTools')}
+                      onChange={setAgentLocalToolsEnabled}
+                    />
+                  </div>
+                  <label className="mb-0.5 mt-2 block text-[10px] font-medium text-stone-600 dark:text-gray-400">
+                    {t('settings.agentDeniedPaths')}
+                  </label>
+                  <p className="mb-1 text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
+                    {t('settings.agentDeniedPathsDesc')}
+                  </p>
+                  <textarea
+                    value={agentDeniedPaths.join('\n')}
+                    onChange={(e) =>
+                      setAgentDeniedPaths(
+                        e.target.value
+                          .split('\n')
+                          .map((line) => line.trim())
+                          .filter(Boolean)
+                      )
+                    }
+                    placeholder={t('settings.agentDeniedPathsPlaceholder')}
+                    rows={3}
+                    className="w-full resize-y rounded-md border border-stone-400/30 bg-stone-100/90 px-2 py-1.5 font-mono text-xs text-stone-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+                  />
+                  <div className="flex items-center justify-between gap-3 py-1">
+                    <span className="text-xs text-stone-700 dark:text-slate-300">
+                      {t('settings.agentBrowser')}
+                    </span>
+                    <IosSwitch
+                      checked={agentBrowserEnabled}
+                      aria-label={t('settings.agentBrowser')}
+                      onChange={setAgentBrowserEnabled}
+                    />
+                  </div>
+                  <p className="mt-1 text-[10px] text-stone-400 dark:text-slate-600">
+                    {t('settings.agentBrowserDesc')}
+                  </p>
+                </div>
+              )}
               <div className="border-t border-stone-300/35 pt-3 dark:border-white/8">
                 <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-stone-700 dark:text-slate-300">
                   <FiFolder size={14} className="text-stone-500" aria-hidden />

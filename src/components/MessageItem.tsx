@@ -519,7 +519,7 @@ const GalleryCarouselStage: React.FC<{
               }}
             >
               {img}
-            </button>
+        </button>
           );
         })}
       </div>

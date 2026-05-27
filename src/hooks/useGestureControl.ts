@@ -217,6 +217,8 @@ export function useGestureControl(enabled: boolean): UseGestureControlResult {
     let scrollVelY = 0;
     let cheerActive = false;
     let cheerPrevMood: ParticleMood = 'idle';
+    let cheerStartedAt = 0;
+    const CHEER_MIN_HOLD_MS = 260;
     let lastPointerPos: { x: number; y: number } | null = null;
     let lastPointerAt = 0;
 
@@ -290,15 +292,21 @@ export function useGestureControl(enabled: boolean): UseGestureControlResult {
 
     const tryCheer = (gestureName: string) => {
       const isThumbUp = gestureName === 'Thumb_Up';
+      const now = performance.now();
       if (isThumbUp && !cheerActive) {
         cheerActive = true;
+        cheerStartedAt = now;
         const st = palmStore.getState();
         cheerPrevMood = st.mood;
         st.setMood('cheer');
         st.setMorphTarget('heart');
         st.setSpinSpeed(0);
         st.setGestureOverride(true);
+        st.triggerPulse(1.14);
+      } else if (isThumbUp && cheerActive) {
+        cheerStartedAt = now;
       } else if (!isThumbUp && cheerActive) {
+        if (now - cheerStartedAt < CHEER_MIN_HOLD_MS) return;
         stopCheer();
       }
     };

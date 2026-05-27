@@ -22,6 +22,10 @@ interface ChatStore {
   appendToMessage: (sessionId: string, messageId: string, chunk: string) => void;
   appendReasoningToMessage: (sessionId: string, messageId: string, chunk: string) => void;
   setSessionWebOverride: (sessionId: string, mode: 'default' | 'on' | 'off') => void;
+  patchSessionAgentFileScope: (
+    sessionId: string,
+    patch: { extraRoots?: string[] }
+  ) => void;
   updateSessionTitle: (sessionId: string, title: string) => void;
   setLoadingSession: (sessionId: string | null) => void;
   clearLoadingForSession: (sessionId: string) => void;
@@ -178,6 +182,21 @@ export const useChatStore = create<ChatStore>()(
           sessions: state.sessions.map((s: ChatSession) =>
             s.id === sessionId ? { ...s, webSearchOverride: mode } : s
           ),
+        }));
+      },
+
+      patchSessionAgentFileScope: (sessionId, patch) => {
+        set((state: ChatStore) => ({
+          sessions: state.sessions.map((session: ChatSession) => {
+            if (session.id !== sessionId) return session;
+            const prev = session.agentFileScope?.extraRoots ?? [];
+            const nextExtra = patch.extraRoots ?? prev;
+            return {
+              ...session,
+              updatedAt: Date.now(),
+              agentFileScope: { extraRoots: [...new Set(nextExtra.map((x) => x.trim()).filter(Boolean))] },
+            };
+          }),
         }));
       },
 

@@ -234,6 +234,16 @@ const zh: Record<string, string> = {
   'settings.webEnable': '启用联网搜索',
   'settings.provider': '提供商',
   'settings.apiKey': 'API Key',
+  'settings.agentTools': 'Agent 本机能力',
+  'settings.agentToolsDesc':
+    '开启后，助手可在本机范围内检索、读取与导出文档；系统核心目录默认禁止，可在下方追加非授权路径。',
+  'settings.agentLocalTools': '本机文档 Agent',
+  'settings.agentDeniedPaths': 'Agent 非授权路径',
+  'settings.agentDeniedPathsDesc':
+    '每行一条绝对路径，Agent 不会访问这些目录及其子目录。系统核心目录（如 /System、/etc）已内置禁止，无需重复填写。',
+  'settings.agentDeniedPathsPlaceholder': '~/Private\n~/Library/Keychains',
+  'settings.agentBrowser': '对话内嵌浏览',
+  'settings.agentBrowserDesc': '在对话区下方打开网页（如百度搜索），不弹独立窗口；Agent 可 web_read / web_eval 继续操作。',
   'settings.workspace': '本地工作区根路径',
   'settings.workspaceDesc':
     '请填「专门放笔记与资料」的文件夹，不要填开发仓库或 .app 所在目录。若其中有 MYAGENT_KNOWLEDGE.md、knowledge.md 或 README.md，发送时会节选注入。开发态与 DMG 安装版共用同一份本地配置（含本路径与向量索引元数据，索引文件在应用数据目录）。',
@@ -588,6 +598,16 @@ const en: Record<string, string> = {
   'settings.webEnable': 'Enable web search',
   'settings.provider': 'Provider',
   'settings.apiKey': 'API key',
+  'settings.agentTools': 'Agent local tools',
+  'settings.agentToolsDesc':
+    'When enabled, the assistant can search, read, and export files across this computer; OS core paths are blocked by default, and you can add extra denied paths below.',
+  'settings.agentLocalTools': 'Local document agent',
+  'settings.agentDeniedPaths': 'Agent denied paths',
+  'settings.agentDeniedPathsDesc':
+    'One absolute path per line. The agent will not access these directories or their children. OS core paths are already blocked.',
+  'settings.agentDeniedPathsPlaceholder': '~/Private\n~/Library/Keychains',
+  'settings.agentBrowser': 'In-chat browser',
+  'settings.agentBrowserDesc': 'Open pages below the chat (e.g. Baidu search), not a separate window; Agent can web_read / web_eval on the same page.',
   'settings.workspace': 'Workspace root',
   'settings.workspaceDesc':
     'Use a folder dedicated to your notes (not your dev tree or the .app bundle). If it contains MYAGENT_KNOWLEDGE.md, knowledge.md, or README.md, a short excerpt is injected. Dev and DMG builds share the same local settings (including this path and index metadata; index files live under app data).',

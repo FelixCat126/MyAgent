@@ -1,4 +1,5 @@
 import type { Message } from '../types';
+import { looksLikeLocalImageFindRequest } from '../agent/localFileIntent';
 
 export interface ImageIntent {
   shouldGenerate: boolean;
@@ -24,7 +25,8 @@ const ZH_DIGITS: Record<string, number> = {
 const IMAGE_NOUN_RE =
   /图|图片|照片|海报|插画|头像|商品图|主图|形象|壁纸|展示图|模特图|成品图|image|picture|poster|avatar|photo/i;
 
-const CREATE_RE = /画|绘制|生成|生|出|做|制作|设计|generate|create|make/i;
+const CREATE_RE =
+  /画|绘制|生成|生图|制作|设计|generate|create|make|出图|来一?(?:张|幅|组)|做一?(?:张|幅|组)|(?:给我|帮我)?(?:做|来)(?:一)?(?:张|幅|组)/i;
 const REVISION_RE = /(?:重新|再|继续|还是|按照|按|沿用|基于|之前|刚才|上次|同样|换|改|调整|不要|不是|而是|更|偏)/;
 const EXPLICIT_INHERIT_RE =
   /(?:沿用|保持|延续|参考|基于|按照|按|同样|同风格|一致|上一张|上一组|上次|之前|刚才|刚刚|原图|那张|那组|same\s+style|keep\s+style|based\s+on|previous|last)/i;
@@ -63,6 +65,7 @@ function textPrefersNonImageOutput(text: string): boolean {
 function looksLikeImageRequest(text: string): boolean {
   const t = String(text || '').trim();
   if (!t) return false;
+  if (looksLikeLocalImageFindRequest(t)) return false;
   if (textPrefersNonImageOutput(t)) return false;
   if (CREATE_RE.test(t) && IMAGE_NOUN_RE.test(t)) return true;
   if (IMAGE_NOUN_RE.test(t) && inferImageCountFromText(t) && (PER_ITEM_RE.test(t) || GROUP_SCOPE_RE.test(t) || VISUAL_OUTPUT_RE.test(t))) return true;
@@ -98,6 +101,9 @@ export function planImageIntent(input: {
 }): ImageIntent {
   const userText = String(input.userText || '').trim();
   const assistantText = String(input.assistantText || '').trim();
+  if (looksLikeLocalImageFindRequest(userText)) {
+    return { shouldGenerate: false, prompt: userText, count: undefined, inheritStyle: false };
+  }
   const combined = [userText, assistantText].filter(Boolean).join('\n');
   const count = inferImageCountFromText(combined);
   const explicitImage = looksLikeImageRequest(userText);

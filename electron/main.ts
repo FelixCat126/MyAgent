@@ -18,6 +18,8 @@ import './ipc/persist';
 import './ipc/media-library';
 import './ipc/speech-transcribe';
 import './ipc/volc-stream-asr';
+import './ipc/agent-local';
+import './ipc/agent-web';
 /** 应用启动器：模块内通过副作用注册 `launch-app` / `get-installed-apps` 两个 IPC 通道，
  *  渲染端（ChatWindow → window.electron.launchApp）依赖之；必须在 createWindow 之前完成注册 */
 import './utils/app-launcher';
@@ -79,6 +81,7 @@ function createWindow() {
       contextIsolation: false,
       nodeIntegration: true,
       webSecurity: false,
+      webviewTag: true,
       /** 先于页面脚本执行：修补 ipcRenderer + 注入 window.electron（见 preload.cjs） */
       preload: path.join(__dirname, 'preload.cjs'),
     },

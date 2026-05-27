@@ -91,12 +91,13 @@ ipcMain.handle(
   async (
     _e,
     arg: {
-      format: 'md' | 'docx';
+      format: 'md' | 'docx' | 'xlsx';
       content: string;
       defaultBaseName: string;
     }
   ) => {
-    const format = arg.format === 'md' ? 'md' : 'docx';
+    const format =
+      arg.format === 'xlsx' ? 'xlsx' : arg.format === 'md' ? 'md' : 'docx';
     const base = safeBaseName(arg.defaultBaseName);
     const dir = path.join(app.getPath('documents'), 'MyAgent', 'GeneratedDocuments');
     await fs.mkdir(dir, { recursive: true });
@@ -105,20 +106,26 @@ ipcMain.handle(
     const content = String(arg.content ?? '').trim();
     if (format === 'md') {
       await fs.writeFile(filePath, content, 'utf8');
+    } else if (format === 'xlsx') {
+      const buf = await markdownToXlsxBuffer(content);
+      await fs.writeFile(filePath, buf);
     } else {
       const buf = await plainMarkdownToDocxBuffer(content);
       await fs.writeFile(filePath, buf);
     }
     const st = await fs.stat(filePath);
+    const mime =
+      format === 'md'
+        ? 'text/markdown'
+        : format === 'xlsx'
+          ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
     return {
       ok: true as const,
       file: {
         name: path.basename(filePath),
         path: filePath,
-        type:
-          format === 'md'
-            ? 'text/markdown'
-            : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        type: mime,
         size: st.size,
       },
     };

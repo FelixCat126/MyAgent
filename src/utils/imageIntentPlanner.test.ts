@@ -11,6 +11,14 @@ const msg = (content: string): Message => ({
 });
 
 describe('imageIntentPlanner', () => {
+  it('本机找已有图片不触发生图', () => {
+    const intent = planImageIntent({
+      userText: '在我本机找一下有没有手表的照片，有的话贴出来给我（最多3张）',
+      historyBeforeUser: [],
+    });
+    expect(intent.shouldGenerate).toBe(false);
+  });
+
   it('识别口语中文数量', () => {
     expect(inferImageCountFromText('重新生4张内衣模特展示图')).toBe(4);
     expect(inferImageCountFromText('生成九张不同风格不同款式')).toBe(9);

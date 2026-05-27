@@ -7,7 +7,6 @@ import SessionList from './components/SessionList';
 import SettingsPanel from './components/SettingsPanel';
 import OnboardingSteps from './components/OnboardingSteps';
 import ImageLibraryDrawer from './components/ImageLibraryDrawer';
-import FloatingParticleWindow from './components/FloatingParticleWindow';
 import GazeIndicator from './components/GazeIndicator';
 import { FiSettings, FiPlus, FiMoon, FiSun, FiMessageSquare, FiX, FiMonitor } from 'react-icons/fi';
 import { useResolvedTheme } from './hooks/useResolvedTheme';
@@ -36,7 +35,6 @@ const App: React.FC = () => {
   const { t } = useI18n();
   const resolved = useResolvedTheme();
   const gestureControlEnabled = useSettingStore((s) => s.gestureControlEnabled);
-  const particleFieldEnabled = useSettingStore((s) => s.particleFieldEnabled);
   const windowFocused = useMainWindowFocused();
   /** 手势/视觉开启即占用摄像头；面部追踪复用同一路 video 流做眨眼检测 */
   const gesture = useGestureControl(gestureControlEnabled);
@@ -368,7 +366,6 @@ const App: React.FC = () => {
       </div>
 
       <OnboardingSteps />
-      <FloatingParticleWindow visible={particleFieldEnabled} themeMode={resolved} />
       <GazeIndicator
         visible={gestureControlEnabled && gesture.cameraActive}
         windowFocused={windowFocused}
