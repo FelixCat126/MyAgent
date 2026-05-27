@@ -9,9 +9,18 @@ files:
   - dist-electron/**/*
   - resources/**/*
 
+extraResources:
+  # 手势识别模型不能塞进 asar（FilesetResolver 需要可访问的 file:// 路径），
+  # 解到 Contents/Resources/models/，主进程通过 process.resourcesPath 找到它
+  - from: resources/models
+    to: models
+    filter:
+      - '**/*'
+
 mac:
   extendInfo:
     NSMicrophoneUsageDescription: MyAgent 需要使用麦克风，将语音转为输入框文字。
+    NSCameraUsageDescription: MyAgent 需要使用摄像头，识别你的手势以驱动对话区粒子动画；所有识别在本机进行，不会上传任何画面。
   target:
     - dmg
     - zip

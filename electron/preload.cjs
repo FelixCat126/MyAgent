@@ -125,4 +125,15 @@ window.electron = {
   remoteGatewayGetConfig: () => ipcRenderer.invoke('remote-gateway-get-config'),
   remoteGatewaySetConfig: (patch) =>
     ipcRenderer.invoke('remote-gateway-set-config', cloneForIpc(patch)),
+  getGestureModelData: () => ipcRenderer.invoke('get-gesture-model-data'),
+  getFaceModelData: () => ipcRenderer.invoke('get-face-model-data'),
+  simulateGazeMove: (x, y) => ipcRenderer.invoke('simulate-gaze-move', x, y),
+  simulateGazeClick: (x, y) => ipcRenderer.invoke('simulate-gaze-click', x, y),
+  simulateGazeWheel: (x, y, deltaY) => ipcRenderer.invoke('simulate-gaze-wheel', x, y, deltaY),
+  capturePageToClipboard: () => ipcRenderer.invoke('capture-page-to-clipboard'),
+  onWindowFocusChanged: (func) => {
+    const handler = (_event, focused) => func(Boolean(focused));
+    ipcRenderer.on('window-focus-changed', handler);
+    return () => ipcRenderer.removeListener('window-focus-changed', handler);
+  },
 };

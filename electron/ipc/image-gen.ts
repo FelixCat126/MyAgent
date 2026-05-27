@@ -1186,9 +1186,9 @@ async function generateImageCliOneShot(
 
         stats
           .then(({ width, height }) =>
-            resolve({
-              url: `file://${outputPath}`,
-              path: outputPath,
+          resolve({
+            url: `file://${outputPath}`,
+            path: outputPath,
               width:
                 Number.isInteger(width) && width > 0 ? width : Number(params.width) || 512,
               height:
@@ -1196,16 +1196,16 @@ async function generateImageCliOneShot(
             })
           )
           .catch(() =>
-            resolve({
-              url: `file://${outputPath}`,
-              path: outputPath,
+          resolve({
+            url: `file://${outputPath}`,
+            path: outputPath,
               width: Number(params.width) || 512,
               height: Number(params.height) || 512,
             })
           );
       })();
-    });
-  });
+          });
+        });
 }
 
 async function generateImageCli(
@@ -1390,7 +1390,7 @@ async function generateImageHttp(
 
   /** Node 兜底请求也需鉴权头等（远端 OpenAI Images 同理） */
   const mergedFetchHeaders: Record<string, string> = {
-    'Content-Type': 'application/json',
+        'Content-Type': 'application/json',
     Accept: 'application/json, application/x-ndjson, text/event-stream, image/png, image/*, */*',
     ...customHdr,
   };

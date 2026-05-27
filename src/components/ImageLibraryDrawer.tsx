@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { pathToFileURL } from 'url';
 import { FiImage, FiTrash2, FiX } from 'react-icons/fi';
 import { ChatSession } from '../types';
@@ -8,6 +8,7 @@ import {
   type ConversationImageGalleryItem,
   conversationGallerySlidesFromPaths,
 } from '@/utils/conversationImageGallery';
+import { setGestureUiPhase } from '@/utils/gestureUiContext';
 
 const TRANSITION_MS = 320;
 
@@ -61,7 +62,39 @@ const ImageLibraryDrawer: React.FC<Props> = ({ open, sessions, onClose }) => {
   const [previewSlides, setPreviewSlides] = useState<ConversationImageGalleryItem[] | null>(null);
   const [previewStart, setPreviewStart] = useState(0);
   const [previewNonce, setPreviewNonce] = useState(0);
+  const [libraryFocusIndex, setLibraryFocusIndex] = useState(0);
   const [deleteErr, setDeleteErr] = useState<string | null>(null);
+  const libraryScrollRef = useRef<HTMLDivElement>(null);
+
+  const openPreviewAt = useCallback((index: number) => {
+    if (!paths.length || index < 0 || index >= paths.length) return;
+    setLibraryFocusIndex(index);
+    setPreviewSlides(conversationGallerySlidesFromPaths(paths));
+    setPreviewStart(index);
+    setPreviewNonce((n) => n + 1);
+  }, [paths]);
+
+  useEffect(() => {
+    if (!entered) {
+      setGestureUiPhase('idle');
+      return;
+    }
+    setGestureUiPhase(previewSlides !== null ? 'gallery-preview' : 'library-drawer');
+  }, [entered, previewSlides]);
+
+  useEffect(() => {
+    if (!entered) return;
+    const onAction = (e: Event) => {
+      const kind = (e as CustomEvent<{ kind: string }>).detail?.kind;
+      if (kind === 'enter-gallery-preview' && previewSlides === null && paths.length > 0) {
+        openPreviewAt(libraryFocusIndex);
+      } else if (kind === 'exit-gallery-preview' && previewSlides !== null) {
+        setPreviewSlides(null);
+      }
+    };
+    window.addEventListener('myagent-gesture-action', onAction as EventListener);
+    return () => window.removeEventListener('myagent-gesture-action', onAction as EventListener);
+  }, [entered, previewSlides, paths.length, libraryFocusIndex, openPreviewAt]);
 
   useEffect(() => {
     if (!entered || previewSlides !== null) return;
@@ -90,17 +123,32 @@ const ImageLibraryDrawer: React.FC<Props> = ({ open, sessions, onClose }) => {
   }, [extraPaths]);
 
   useEffect(() => {
+    if (!entered) return;
+    setLibraryFocusIndex(0);
+    const scrollToTop = () => {
+      const el = libraryScrollRef.current;
+      if (el) el.scrollTop = 0;
+    };
+    scrollToTop();
+    const rid = window.requestAnimationFrame(scrollToTop);
+    return () => cancelAnimationFrame(rid);
+  }, [entered]);
+
+  useEffect(() => {
     if (mounted && entered) void reload();
   }, [mounted, entered, reload]);
 
-  const thumbs = paths;
+  useEffect(() => {
+    if (!entered || loading) return;
+    const el = libraryScrollRef.current;
+    if (el) el.scrollTop = 0;
+  }, [entered, loading]);
 
-  const openPreviewAt = useCallback((index: number) => {
-    if (!paths.length || index < 0 || index >= paths.length) return;
-    setPreviewSlides(conversationGallerySlidesFromPaths(paths));
-    setPreviewStart(index);
-    setPreviewNonce((n) => n + 1);
-  }, [paths]);
+  useEffect(() => {
+    setLibraryFocusIndex((i) => Math.min(i, Math.max(0, paths.length - 1)));
+  }, [paths.length]);
+
+  const thumbs = paths;
 
   const deleteImagePath = useCallback(async (absolutePath: string) => {
     if (!absolutePath) return;
@@ -176,7 +224,11 @@ const ImageLibraryDrawer: React.FC<Props> = ({ open, sessions, onClose }) => {
             </button>
           </div>
 
-          <div className="flex-1 overflow-y-auto overscroll-contain px-3 py-3">
+          <div
+            ref={libraryScrollRef}
+            className="flex-1 overflow-y-auto overscroll-contain px-3 py-3"
+            data-gesture-scroll-target="library"
+          >
             {loading && thumbs.length === 0 ? (
               <p className="px-1 py-6 text-center text-sm text-stone-500 dark:text-slate-400">
                 {t('imageLibrary.loading')}

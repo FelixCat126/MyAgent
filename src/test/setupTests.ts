@@ -63,6 +63,12 @@ const electronStub: ElectronAPI = {
     port: typeof patch?.port === 'number' ? patch.port : 9742,
     token: 'stub-token',
   }),
+  getGestureModelData: async () => ({ ok: false, error: 'stub' }),
+  getFaceModelData: async () => ({ ok: false, error: 'stub' }),
+  simulateGazeMove: async () => ({ ok: false, error: 'stub' }),
+  simulateGazeClick: async () => ({ ok: false, error: 'stub' }),
+  simulateGazeWheel: async () => ({ ok: false, error: 'stub' }),
+  capturePageToClipboard: async () => ({ ok: false, error: 'stub' }),
 };
 
 if (typeof window !== 'undefined') {
@@ -94,5 +100,13 @@ if (typeof window !== 'undefined') {
         ? `blob:vitest-${crypto.randomUUID()}`
         : `blob:vitest-${Math.random().toString(36).slice(2)}`;
     UrlStatic.revokeObjectURL = (): void => {};
+  }
+
+  /** jsdom 未实现 HTMLCanvasElement.getContext；ParticleField 在 mount 时会调用，
+   *  返回 null 即可让组件提前退出，不影响其它断言，避免 stderr 噪声。 */
+  type CanvasProto = HTMLCanvasElement & { getContext?: unknown };
+  const canvasProto = (window.HTMLCanvasElement?.prototype ?? null) as CanvasProto | null;
+  if (canvasProto && typeof canvasProto.getContext !== 'function') {
+    canvasProto.getContext = (): null => null;
   }
 }

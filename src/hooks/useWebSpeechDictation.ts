@@ -25,7 +25,7 @@ function hasApiRecordingStack(): boolean {
 }
 
 /** 火山大模型双向流式 ASR，需主进程挂载 volc-asr-* */
-function hasVolcAsrStack(): boolean {
+export function hasVolcAsrStack(): boolean {
   if (typeof window === 'undefined') return false;
   if (!navigator.mediaDevices?.getUserMedia) return false;
   const e = window.electron;
@@ -45,16 +45,18 @@ export type VolcAsrDictationConfig = {
   resourceId: string;
 };
 
-function volcCredsConfigured(c: VolcAsrDictationConfig): boolean {
+export function volcCredsConfigured(c: VolcAsrDictationConfig): boolean {
   return Boolean(c.appKey.trim() && c.accessKey.trim() && c.resourceId.trim());
 }
 
-const VOLC_CHUNK_SAMPLES = 3200;
+export const VOLC_CHUNK_SAMPLES = 3200;
+/** 待发送 PCM 队列上限，防止 IPC 阻塞时数组无限增长 */
+export const VOLC_MAX_PENDING_SAMPLES = VOLC_CHUNK_SAMPLES * 24;
 /** 自上次识别结果发生变化起，静默该时长则自动结束火山会话（仍可随时点按钮结束） */
 const VOLC_SILENCE_MS = 3000;
 
 /** 避免 ScriptProcessor（已废弃）：在 Electron/macOS 上有诱发渲染进程崩溃的风险，改用 AudioWorklet */
-const VOLC_PCM_TAP_PROCESSOR = 'volc-pcm-tap-v1';
+export const VOLC_PCM_TAP_PROCESSOR = 'volc-pcm-tap-v1';
 
 const VOLC_PCM_WORKLET_CODE = `
 class VolcPcmTapProcessor extends AudioWorkletProcessor {
@@ -73,7 +75,7 @@ class VolcPcmTapProcessor extends AudioWorkletProcessor {
 registerProcessor("${VOLC_PCM_TAP_PROCESSOR}", VolcPcmTapProcessor);
 `;
 
-async function addVolcPcmTapWorklet(audioCtx: AudioContext): Promise<void> {
+export async function addVolcPcmTapWorklet(audioCtx: AudioContext): Promise<void> {
   const blob = new Blob([VOLC_PCM_WORKLET_CODE], { type: 'application/javascript' });
   const url = URL.createObjectURL(blob);
   try {
@@ -96,6 +98,17 @@ export type SpeechDictationLabels = {
   transcribeDenied: string;
 };
 
+export type SpeechDictationStartOptions = {
+  /** 由语音唤醒触发的听写，结束时自动发送 */
+  fromWake?: boolean;
+};
+
+export type SpeechDictationEndedDetail = {
+  autoSend: boolean;
+  /** 听写结束时的完整输入框文本 */
+  transcript: string;
+};
+
 type Options = {
   inputValueRef: React.MutableRefObject<string>;
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
@@ -108,6 +121,8 @@ type Options = {
   getVolcAsrConfig?: () => VolcAsrDictationConfig | null;
   /** 若有 OpenAI 兼容 Key，则优先走录音 + /audio/transcriptions，避免内置语音走 Google */
   getApiTranscribeConfig?: () => SpeechApiTranscribeConfig | null;
+  /** 听写自然结束（非 abort）时回调；fromWake 时为 autoSend */
+  onDictationEnded?: (detail: SpeechDictationEndedDetail) => void;
 };
 
 /** 录音 + OpenAI 兼容转写优先级高于 Web Speech */
@@ -121,10 +136,16 @@ export function useWebSpeechDictation({
   labels,
   getVolcAsrConfig,
   getApiTranscribeConfig,
+  onDictationEnded,
 }: Options) {
   const [listening, setListening] = useState(false);
   const [starting, setStarting] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
+
+  const autoSendOnEndRef = useRef(false);
+  const endNotifiedRef = useRef(false);
+  const onDictationEndedRef = useRef(onDictationEnded);
+  onDictationEndedRef.current = onDictationEnded;
 
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const committedRef = useRef('');
@@ -141,6 +162,9 @@ export function useWebSpeechDictation({
   /** volc：待发送 PCM；主进程单次至少 64 样本 */
   const volcPendingPcmRef = useRef<number[]>([]);
   const volcIpcCleanupRef = useRef<Array<() => void>>([]);
+  /** 唤醒确认 TTS 播放期间并行预拉麦克风（WebSocket 须在 TTS 后再建，否则长时间无音频会失效） */
+  const wakePreparedStreamRef = useRef<MediaStream | null>(null);
+  const wakeMicPrepareRef = useRef<Promise<void> | null>(null);
   /** 识别结果上一次 payload（trimmed），用于检测「有新的识别下发」并重置静默计时 */
   const lastVolcPayloadRef = useRef<string>('__VOLC_IDLE_SENTINEL__');
   const volcIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -192,6 +216,59 @@ export function useWebSpeechDictation({
     mediaRecorderRef.current = null;
     recordChunksRef.current = [];
   }, []);
+
+  const discardWakePreparedMic = useCallback(() => {
+    wakePreparedStreamRef.current?.getTracks().forEach((t) => {
+      try {
+        t.stop();
+      } catch {
+        /* ignore */
+      }
+    });
+    wakePreparedStreamRef.current = null;
+    wakeMicPrepareRef.current = null;
+  }, []);
+
+  const retryableVolcStartError = (msg: string | undefined) => {
+    const m = String(msg ?? '').toLowerCase();
+    return (
+      m.includes('timeout') ||
+      m.includes('session aborted') ||
+      m.includes('session superseded') ||
+      m.includes('websocket closed')
+    );
+  };
+
+  const startVolcAsrSession = useCallback(async (vcfg: VolcAsrDictationConfig) => {
+    const volcCreds = {
+      appKey: vcfg.appKey.trim(),
+      accessKey: vcfg.accessKey.trim(),
+      resourceId: vcfg.resourceId.trim(),
+    };
+    let startRes = await window.electron.volcAsrStart(volcCreds);
+    if (!startRes.ok && retryableVolcStartError(startRes.error)) {
+      await new Promise((r) => window.setTimeout(r, 280));
+      startRes = await window.electron.volcAsrStart(volcCreds);
+    }
+    return startRes;
+  }, []);
+
+  /** TTS 确认语播放期间并行 getUserMedia，唤醒后听写可复用该流 */
+  const prepareWakeMic = useCallback((): Promise<void> => {
+    if (wakeMicPrepareRef.current) return wakeMicPrepareRef.current;
+    const p = (async () => {
+      const existing = wakePreparedStreamRef.current;
+      if (existing?.active) return;
+      discardWakePreparedMic();
+      try {
+        wakePreparedStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch {
+        wakePreparedStreamRef.current = null;
+      }
+    })();
+    wakeMicPrepareRef.current = p;
+    return p;
+  }, [discardWakePreparedMic]);
 
   const cleanupVolcIpc = useCallback(() => {
     volcIpcCleanupRef.current.forEach((fn) => {
@@ -265,6 +342,9 @@ export function useWebSpeechDictation({
   const pushVolcPcmInts = useCallback(async (pcm: Int16Array) => {
     const pend = volcPendingPcmRef.current;
     for (let i = 0; i < pcm.length; i++) pend.push(pcm[i] ?? 0);
+    if (pend.length > VOLC_MAX_PENDING_SAMPLES) {
+      pend.splice(0, pend.length - VOLC_MAX_PENDING_SAMPLES);
+    }
     while (pend.length >= VOLC_CHUNK_SAMPLES) {
       const chunk = pend.splice(0, VOLC_CHUNK_SAMPLES);
       try {
@@ -289,6 +369,18 @@ export function useWebSpeechDictation({
     },
     [setInput, textareaRef]
   );
+
+  const finishDictationSession = useCallback(() => {
+    if (endNotifiedRef.current) return;
+    endNotifiedRef.current = true;
+    const autoSend = autoSendOnEndRef.current;
+    autoSendOnEndRef.current = false;
+    const transcript = `${prefixRef.current}${committedRef.current}${suffixRef.current}`.trim();
+    setListening(false);
+    window.setTimeout(() => {
+      onDictationEndedRef.current?.({ autoSend, transcript });
+    }, 0);
+  }, []);
 
   const gracefulEndVolcSession = useCallback(async () => {
     clearVolcIdleTimer();
@@ -315,9 +407,9 @@ export function useWebSpeechDictation({
     cleanupVolcIpc();
     releaseVolcAudio();
     if (dictationKindRef.current === 'volc') dictationKindRef.current = 'none';
-    setListening(false);
     stopRequestedRef.current = false;
-  }, [cleanupVolcIpc, clearVolcIdleTimer, flushVolcRemainder, releaseVolcAudio]);
+    finishDictationSession();
+  }, [cleanupVolcIpc, clearVolcIdleTimer, finishDictationSession, flushVolcRemainder, releaseVolcAudio]);
 
   gracefulEndVolcSessionRef.current = gracefulEndVolcSession;
 
@@ -332,6 +424,9 @@ export function useWebSpeechDictation({
 
   const abortRecognition = useCallback(() => {
     setStarting(false);
+    autoSendOnEndRef.current = false;
+    endNotifiedRef.current = false;
+    discardWakePreparedMic();
     if (dictationKindRef.current === 'none') {
       releaseMediaOnly();
     }
@@ -371,7 +466,7 @@ export function useWebSpeechDictation({
     recognitionRef.current = null;
     setListening(false);
     stopRequestedRef.current = false;
-  }, [releaseMediaOnly, teardownVolcFully]);
+  }, [discardWakePreparedMic, releaseMediaOnly, teardownVolcFully]);
 
   const captureAnchor = useCallback(() => {
     const ta = textareaRef.current;
@@ -433,7 +528,7 @@ export function useWebSpeechDictation({
     rec.onend = () => {
       recognitionRef.current = null;
       if (dictationKindRef.current === 'web') dictationKindRef.current = 'none';
-      setListening(false);
+      finishDictationSession();
     };
 
     recognitionRef.current = rec;
@@ -455,6 +550,7 @@ export function useWebSpeechDictation({
     labels.networkOrService,
     labels.noSpeech,
     labels.startFailed,
+    finishDictationSession,
     setInput,
     textareaRef,
     uiLocale,
@@ -537,6 +633,7 @@ export function useWebSpeechDictation({
           });
           if (r.ok && r.text.trim()) {
             const middle = r.text.trim();
+            committedRef.current = middle;
             const next = `${prefixRef.current}${middle}${suffixRef.current}`;
             setInput(next);
             const caret = prefixRef.current.length + middle.length;
@@ -555,8 +652,8 @@ export function useWebSpeechDictation({
         } finally {
           releaseMediaOnly();
           dictationKindRef.current = 'none';
-          setListening(false);
           stopRequestedRef.current = false;
+          if (!skip) finishDictationSession();
         }
       })();
     };
@@ -579,6 +676,7 @@ export function useWebSpeechDictation({
     labels.startFailed,
     labels.transcribeDenied,
     labels.transcribeFailed,
+    finishDictationSession,
     releaseMediaOnly,
     setInput,
     textareaRef,
@@ -619,24 +717,32 @@ export function useWebSpeechDictation({
 
     setStarting(true);
     let stream: MediaStream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch {
-      setBanner(labels.transcribeDenied);
-      setStarting(false);
-      return;
+    const prepared = wakePreparedStreamRef.current;
+    if (prepared?.active) {
+      stream = prepared;
+      wakePreparedStreamRef.current = null;
+      wakeMicPrepareRef.current = null;
+    } else {
+      discardWakePreparedMic();
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch {
+        setBanner(labels.transcribeDenied);
+        setStarting(false);
+        return;
+      }
     }
     mediaStreamRef.current = stream;
 
-    const startRes = await window.electron.volcAsrStart({
-      appKey: vcfg.appKey.trim(),
-      accessKey: vcfg.accessKey.trim(),
-      resourceId: vcfg.resourceId.trim(),
-    });
+    const startRes = await startVolcAsrSession(vcfg);
 
     if (!startRes.ok) {
       releaseVolcAudio();
-      setBanner(labels.genericError + (startRes.error ? `: ${startRes.error}` : ''));
+      const benign =
+        startRes.error === 'session aborted' || startRes.error === 'session superseded';
+      if (!benign) {
+        setBanner(labels.genericError + (startRes.error ? `: ${startRes.error}` : ''));
+      }
       setStarting(false);
       return;
     }
@@ -665,8 +771,8 @@ export function useWebSpeechDictation({
       cleanupVolcIpc();
       releaseVolcAudio();
       dictationKindRef.current = 'none';
-      setListening(false);
       stopRequestedRef.current = false;
+      finishDictationSession();
     });
     volcIpcCleanupRef.current.push(offTxt, offErr, offEnd);
 
@@ -758,19 +864,25 @@ export function useWebSpeechDictation({
     labels.startFailed,
     labels.transcribeDenied,
     pushVolcPcmInts,
+    finishDictationSession,
     releaseVolcAudio,
     teardownVolcFully,
     textareaRef,
+    discardWakePreparedMic,
+    startVolcAsrSession,
   ]);
 
-  const start = useCallback(() => {
-    clearBanner();
-    if (disabled) return;
-    if (isImeComposing?.()) return;
-    if (!supported) {
-      setBanner(labels.notSupported);
-      return;
-    }
+  const start = useCallback(
+    (opts?: SpeechDictationStartOptions) => {
+      clearBanner();
+      if (disabled) return;
+      if (isImeComposing?.()) return;
+      autoSendOnEndRef.current = Boolean(opts?.fromWake);
+      endNotifiedRef.current = false;
+      if (!supported) {
+        setBanner(labels.notSupported);
+        return;
+      }
     const volcGuess = getVolcCfgRef.current?.() ?? null;
     if (volcGuess && volcCredsConfigured(volcGuess) && hasVolcAsrStack()) {
       void startVolcRecording();
@@ -787,7 +899,8 @@ export function useWebSpeechDictation({
       return;
     }
     setBanner(labels.notSupported);
-  }, [
+  },
+  [
     clearBanner,
     disabled,
     isImeComposing,
@@ -844,7 +957,17 @@ export function useWebSpeechDictation({
       return;
     }
     if (starting) abortRecognition();
-  }, [abortRecognition, disabled, listening, starting, stopListeningSoft]);
+  }, [abortRecognition, discardWakePreparedMic, disabled, listening, starting, stopListeningSoft]);
 
-  return { supported, listening, starting, banner, toggle, abort: abortRecognition, clearBanner };
+  return {
+    supported,
+    listening,
+    starting,
+    banner,
+    toggle,
+    start,
+    prepareWakeMic,
+    abort: abortRecognition,
+    clearBanner,
+  };
 }

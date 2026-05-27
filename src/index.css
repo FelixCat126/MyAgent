@@ -9,13 +9,13 @@
     box-sizing: border-box;
   }
 
-  /* 浅色壳层：暖灰、压低亮度，避免大面积纯白晃眼 */
+  /* 浅色壳层：暖灰、整体再降一档明度，避免大面积反光晃眼 */
   .light {
-    --shell-bg: #e0ddd7;
-    --shell-chat: #d6d3cc;
-    --shell-chrome: rgba(222, 218, 212, 0.94);
-    --shell-elevated: rgba(234, 231, 225, 0.96);
-    --shell-settings: rgba(230, 226, 220, 0.98);
+    --shell-bg: #cdc9c2;
+    --shell-chat: #c4c0b8;
+    --shell-chrome: rgba(202, 197, 189, 0.94);
+    --shell-elevated: rgba(214, 210, 202, 0.96);
+    --shell-settings: rgba(208, 203, 194, 0.98);
   }
   
   body {

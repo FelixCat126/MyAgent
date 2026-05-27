@@ -7,11 +7,19 @@ import SessionList from './components/SessionList';
 import SettingsPanel from './components/SettingsPanel';
 import OnboardingSteps from './components/OnboardingSteps';
 import ImageLibraryDrawer from './components/ImageLibraryDrawer';
+import FloatingParticleWindow from './components/FloatingParticleWindow';
+import GazeIndicator from './components/GazeIndicator';
 import { FiSettings, FiPlus, FiMoon, FiSun, FiMessageSquare, FiX, FiMonitor } from 'react-icons/fi';
 import { useResolvedTheme } from './hooks/useResolvedTheme';
 import { useI18n } from './hooks/useI18n';
+import { useGestureControl } from './hooks/useGestureControl';
+import { useFaceTracking } from './hooks/useFaceTracking';
+import { useMainWindowFocused } from './hooks/useMainWindowFocused';
+import { useParticleStore } from './store/particleStore';
 import type { AppTheme } from './store/settingStore';
 import { flushZustandFilePersist } from './utils/zustandFileStorage';
+import { installGestureScrollMomentum } from './utils/gestureScrollMomentum';
+import { getGestureUiPhase, setGestureUiPhase } from './utils/gestureUiContext';
 import { ImageLibraryContext } from './context/ImageLibraryContext';
 
 const TITLEBAR_H = 44;
@@ -27,7 +35,45 @@ const App: React.FC = () => {
   const setLocale = useSettingStore((s) => s.setLocale);
   const { t } = useI18n();
   const resolved = useResolvedTheme();
+  const gestureControlEnabled = useSettingStore((s) => s.gestureControlEnabled);
+  const particleFieldEnabled = useSettingStore((s) => s.particleFieldEnabled);
+  const windowFocused = useMainWindowFocused();
+  /** 手势/视觉开启即占用摄像头；面部追踪复用同一路 video 流做眨眼检测 */
+  const gesture = useGestureControl(gestureControlEnabled);
+  useFaceTracking(gestureControlEnabled, gesture.videoElement, true);
   const [showSettings, setShowSettings] = useState(false);
+
+  useEffect(() => {
+    if (showSettings) {
+      setGestureUiPhase('settings-drawer');
+      return;
+    }
+    if (getGestureUiPhase() === 'settings-drawer') {
+      setGestureUiPhase('idle');
+    }
+  }, [showSettings]);
+
+  const { label: gestureStatusLabel, tone: gestureStatusTone } = (() => {
+    switch (gesture.status.kind) {
+      case 'loading-model':
+        return { label: t('gesture.status.loadingModel'), tone: 'pending' as const };
+      case 'requesting-camera':
+        return { label: t('gesture.status.requestingCamera'), tone: 'pending' as const };
+      case 'ready':
+        return { label: t('gesture.status.ready'), tone: 'ready' as const };
+      case 'model-missing':
+        return { label: t('gesture.status.modelMissing'), tone: 'error' as const };
+      case 'permission-denied':
+        return { label: t('gesture.status.permissionDenied'), tone: 'error' as const };
+      case 'error':
+        return {
+          label: `${t('gesture.status.error')}: ${gesture.status.message?.slice(0, 60) ?? ''}`,
+          tone: 'error' as const,
+        };
+      default:
+        return { label: t('gesture.status.loadingModel'), tone: 'warn' as const };
+    }
+  })();
   const [imageLibraryOpen, setImageLibraryOpen] = useState(false);
   const openImageLibrary = useCallback(() => setImageLibraryOpen(true), []);
 
@@ -38,6 +84,64 @@ const App: React.FC = () => {
   useEffect(() => {
     initializeDefaultModels();
   }, [initializeDefaultModels]);
+
+  /**
+   * 手势业务：握拳→张掌打开图库，张掌→握拳关闭图库。
+   */
+  useEffect(() => {
+    if (!gestureControlEnabled) return;
+    const onAction = (e: Event) => {
+      const detail = (e as CustomEvent<{ kind: string }>).detail;
+      if (!detail) return;
+      switch (detail.kind) {
+        case 'open-image-library':
+          setImageLibraryOpen(true);
+          break;
+        case 'close-image-library':
+          setImageLibraryOpen(false);
+          break;
+        default:
+          break;
+      }
+    };
+    window.addEventListener('myagent-gesture-action', onAction as EventListener);
+    return () => window.removeEventListener('myagent-gesture-action', onAction as EventListener);
+  }, [gestureControlEnabled]);
+
+  /**
+   * 双眨眼 → 切换设置抽屉。
+   */
+  useEffect(() => {
+    if (!gestureControlEnabled) return;
+    const onDoubleBlink = () => setShowSettings((v) => !v);
+    window.addEventListener('myagent-double-blink', onDoubleBlink as EventListener);
+    return () =>
+      window.removeEventListener('myagent-double-blink', onDoubleBlink as EventListener);
+  }, [gestureControlEnabled]);
+
+  /**
+   * 单眨眼 → 在食指光标位置模拟点击。
+   */
+  useEffect(() => {
+    if (!gestureControlEnabled) return;
+    const onGazeClick = (e: Event) => {
+      if (!windowFocused) return;
+      const detail = (e as CustomEvent<{ x: number; y: number } | null>).detail;
+      const pos = detail ?? useParticleStore.getState().gazeScreenPos;
+      if (!pos || !window.electron?.simulateGazeClick) return;
+      void window.electron.simulateGazeClick(pos.x, pos.y);
+    };
+    window.addEventListener('myagent-gaze-click', onGazeClick as EventListener);
+    return () => window.removeEventListener('myagent-gaze-click', onGazeClick as EventListener);
+  }, [gestureControlEnabled, windowFocused]);
+
+  /**
+   * 张掌上下划 → 跟手 + 惯性滚动（聊天 / 图库 / 设置抽屉）。
+   */
+  useEffect(() => {
+    if (!gestureControlEnabled) return;
+    return installGestureScrollMomentum();
+  }, [gestureControlEnabled]);
 
   useEffect(() => {
     const win = window as Window & {
@@ -90,15 +194,54 @@ const App: React.FC = () => {
         } as any}
       />
 
-      {/* 行1右：顶部横线，完全相同颜色贯穿 */}
+      {/* 行1右：顶部横线，完全相同颜色贯穿；手势/视觉识别开启后在右侧嵌入识别状态 */}
       <div
-        className="border-b border-stone-600/38 dark:border-white/10"
+        className="relative flex items-center justify-end border-b border-stone-600/38 px-4 dark:border-white/10"
         style={{
           background: resolved === 'dark' ? '#1e1e24' : 'var(--shell-chrome)',
           backdropFilter: 'blur(20px)',
           WebkitAppRegion: 'drag',
         } as any}
-      />
+      >
+        {gestureControlEnabled ? (
+          <div
+            className={
+              'flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium ' +
+              (resolved === 'dark'
+                ? 'bg-white/10 text-slate-200'
+                : 'bg-stone-500/15 text-stone-700')
+            }
+            style={{ WebkitAppRegion: 'no-drag' } as any}
+            title={gestureStatusLabel}
+          >
+            <span className="relative inline-flex h-2 w-2 items-center justify-center">
+              <span
+                className={
+                  'absolute inset-0 rounded-full ' +
+                  (gestureStatusTone === 'ready'
+                    ? 'bg-emerald-400/55 animate-ping'
+                    : gestureStatusTone === 'pending'
+                      ? 'bg-amber-400/55 animate-ping'
+                      : 'bg-transparent')
+                }
+              />
+              <span
+                className={
+                  'relative h-1.5 w-1.5 rounded-full ' +
+                  (gestureStatusTone === 'ready'
+                    ? 'bg-emerald-500'
+                    : gestureStatusTone === 'pending'
+                      ? 'bg-amber-500'
+                      : gestureStatusTone === 'warn'
+                        ? 'bg-zinc-400'
+                        : 'bg-rose-500')
+                }
+              />
+            </span>
+            <span className="truncate">{gestureStatusLabel}</span>
+          </div>
+        ) : null}
+      </div>
 
       {/* 行2左：会话列表 */}
       <div
@@ -193,6 +336,8 @@ const App: React.FC = () => {
         className={`fixed right-0 z-50 flex w-96 max-w-[100vw] min-h-0 flex-col border-l border-stone-600/38 bg-[var(--shell-settings)] shadow-[-8px_0_32px_-12px_rgba(0,0,0,0.18)] transition-transform duration-300 ease-in-out will-change-transform dark:border-white/10 dark:bg-[rgba(28,28,34,0.97)] ${
           showSettings ? 'translate-x-0' : 'pointer-events-none translate-x-full'
         }`}
+        data-gesture-drawer="settings"
+        data-gesture-drawer-open={showSettings ? 'true' : 'false'}
         style={{
           top: TITLEBAR_H,
           bottom: FOOTER_H,
@@ -217,12 +362,18 @@ const App: React.FC = () => {
             <FiX size={18} />
           </button>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain">
+        <div className="flex min-h-0 flex-1 flex-col">
           <SettingsPanel />
         </div>
       </div>
 
       <OnboardingSteps />
+      <FloatingParticleWindow visible={particleFieldEnabled} themeMode={resolved} />
+      <GazeIndicator
+        visible={gestureControlEnabled && gesture.cameraActive}
+        windowFocused={windowFocused}
+        themeMode={resolved}
+      />
     </div>
     </ImageLibraryContext.Provider>
   );

@@ -185,6 +185,8 @@ export interface ElectronAPI {
     appKey: string;
     accessKey: string;
     resourceId: string;
+    wakeMode?: boolean;
+    hotwords?: string[];
   }) => Promise<{ ok: true } | { ok: false; error?: string }>;
   volcAsrPushChunk: (pcmInt16AsNumbers: number[]) => Promise<{ ok: boolean }>;
   volcAsrFinish: () => Promise<{ ok: boolean }>;
@@ -193,6 +195,29 @@ export interface ElectronAPI {
   remoteGatewaySetConfig: (
     patch: Partial<{ enabled: boolean; port: number; token: string; regenerateToken: boolean }>
   ) => Promise<{ enabled: boolean; port: number; token: string }>;
+  /** 一次性返回手势识别模型字节流；MediaPipe 直接用 modelAssetBuffer 加载，避免 fetch 自定义协议 */
+  getGestureModelData: () => Promise<
+    { ok: true; data: Uint8Array; path: string } | { ok: false; error?: string }
+  >;
+  /** 一次性返回面部 / 眼动模型字节流；MediaPipe FaceLandmarker 用 modelAssetBuffer 加载 */
+  getFaceModelData: () => Promise<
+    { ok: true; data: Uint8Array; path: string } | { ok: false; error?: string }
+  >;
+  /** 在视口坐标 (x,y) 处模拟指针移动，触发 :hover / mouseenter 等 */
+  simulateGazeMove: (x: number, y: number) => Promise<{ ok: true } | { ok: false; error?: string }>;
+  /** 在视口坐标 (x,y) 处模拟左键点击，供视线单眨触发 */
+  simulateGazeClick: (x: number, y: number) => Promise<{ ok: true } | { ok: false; error?: string }>;
+  simulateGazeWheel: (
+    x: number,
+    y: number,
+    deltaY: number,
+  ) => Promise<{ ok: true } | { ok: false; error?: string }>;
+  /** 抓取主窗口视区 → PNG → 写入系统剪贴板，由双手前推手势触发 */
+  capturePageToClipboard: () => Promise<
+    { ok: true; width: number; height: number } | { ok: false; error?: string }
+  >;
+  /** 主窗口获得/失去焦点（Electron 主进程推送，弥补首次 show 时 hasFocus 不准） */
+  onWindowFocusChanged?: (handler: (focused: boolean) => void) => () => void;
 }
 
 // 模型配置类型

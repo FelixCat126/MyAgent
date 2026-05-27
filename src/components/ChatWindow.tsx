@@ -10,6 +10,7 @@ import { useChatStore } from '../store/chatStore';
 import { useModelStore } from '../store/modelStore';
 import { useWebSearchStore } from '../store/webSearchStore';
 import { useSettingStore } from '../store/settingStore';
+import { useParticleStore } from '../store/particleStore';
 import { useI18n } from '../hooks/useI18n';
 import { useWorkspaceStore } from '../store/workspaceStore';
 import { useKnowledgeStore } from '../store/knowledgeStore';
@@ -30,6 +31,11 @@ import {
   stripGenerateImageArtifactsForDisplay,
 } from '../utils/toolCalls';
 import { useWebSpeechDictation, type SpeechApiTranscribeConfig } from '@/hooks/useWebSpeechDictation';
+import { useVoiceWake } from '@/hooks/useVoiceWake';
+import { useMainWindowFocused } from '@/hooks/useMainWindowFocused';
+import { useSystemTtsAvailable } from '@/hooks/useSystemTtsAvailable';
+import { speakText } from '@/utils/speakText';
+import { StreamingSpeechReader } from '@/utils/streamingSpeech';
 import { sessionToHtml, sessionToMarkdown } from '../utils/exportChat';
 import { canUseSseStream, effectiveWebEnabled } from '../utils/chatModelPolicy';
 import { enrichMessagesForModel } from '../utils/enrichMessagesForModel';
@@ -695,7 +701,11 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
 
   const webSearchEnabled = useWebSearchStore((s) => s.enabled);
   const speechInputEnabled = useSettingStore((s) => s.speechInputEnabled);
+  const voiceWakeEnabled = useSettingStore((s) => s.voiceWakeEnabled);
+  const voiceWakePhrase = useSettingStore((s) => s.voiceWakePhrase);
   const { t, locale: uiLocale } = useI18n();
+  const systemTtsAvailable = useSystemTtsAvailable(uiLocale);
+  const ttsPlaybackReady = systemTtsAvailable === true;
 
   const isCurrentSessionLoading =
     loadingSessionId !== null && loadingSessionId === currentSessionId;
@@ -744,6 +754,38 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   /** 语音识别：与 input 同步，避免 onresult 闭包陈旧 */
   const inputSyncRef = useRef('');
   inputSyncRef.current = input;
+  const handleSendRef = useRef<() => void>(() => {});
+  const sendFromVoiceWakeRef = useRef(false);
+  const speechReaderRef = useRef<StreamingSpeechReader | null>(null);
+  const [voiceReplySpeaking, setVoiceReplySpeaking] = useState(false);
+  /** 本轮回复是否来自语音唤醒闭环（唤醒听写自动发送） */
+  const voiceWakeLoopRef = useRef(false);
+  /** 唤醒态：唤醒词命中到发送/超时之间；驱动粒子呼吸 */
+  const [voiceAwake, setVoiceAwake] = useState(false);
+
+  const cancelVoiceReply = useCallback(() => {
+    speechReaderRef.current?.cancel();
+    speechReaderRef.current = null;
+    setVoiceReplySpeaking(false);
+  }, []);
+
+  const consumeVoiceWakeReply = useCallback((): boolean => {
+    if (!ttsPlaybackReady) return false;
+    if (!useSettingStore.getState().voiceReplyEnabled) return false;
+    if (!voiceWakeLoopRef.current) return false;
+    voiceWakeLoopRef.current = false;
+    return true;
+  }, [ttsPlaybackReady]);
+
+  const onDictationEnded = useCallback(({ autoSend, transcript }: { autoSend: boolean; transcript: string }) => {
+    if (!autoSend || !transcript) return;
+    voiceWakeLoopRef.current = true;
+    sendFromVoiceWakeRef.current = true;
+    setInput(transcript);
+    window.setTimeout(() => {
+      handleSendRef.current();
+    }, 50);
+  }, []);
 
   const speechLabels = useMemo(
     () => ({
@@ -786,11 +828,106 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
       };
     },
     getApiTranscribeConfig,
+    onDictationEnded,
   });
+
+  const windowFocused = useMainWindowFocused();
+
+  const voiceWake = useVoiceWake({
+    enabled: speechInputEnabled && voiceWakeEnabled,
+    phrase: voiceWakePhrase,
+    uiLocale,
+    paused:
+      isCurrentSessionLoading ||
+      speechDictation.listening ||
+      speechDictation.starting ||
+      voiceReplySpeaking ||
+      !windowFocused,
+    getVolcAsrConfig: () => {
+      const s = useSettingStore.getState();
+      if (!s.speechInputEnabled) return null;
+      return {
+        appKey: s.volcAsrAppKey,
+        accessKey: s.volcAsrAccessKey,
+        resourceId: s.volcAsrResourceId,
+      };
+    },
+    onWake: () => {
+      setVoiceAwake(true);
+      /** TTS 期间仅预拉麦克风；火山 WebSocket 在 TTS 结束后立即建连并推流 */
+      const micPrep = speechDictation.prepareWakeMic();
+      void (async () => {
+        await Promise.all([
+          micPrep,
+          ttsPlaybackReady
+            ? speakText(t('chat.voiceWakeAck'), uiLocale, { tailSilenceMs: 0 })
+            : Promise.resolve(),
+        ]);
+        speechDictation.start({ fromWake: true });
+      })();
+    },
+  });
+
+  /** 流式开始即清掉唤醒态；同时唤醒态自动 30 秒超时 */
+  useEffect(() => {
+    if (isStreaming && voiceAwake) setVoiceAwake(false);
+  }, [isStreaming, voiceAwake]);
+  useEffect(() => {
+    if (!voiceAwake) return;
+    const t2 = window.setTimeout(() => setVoiceAwake(false), 30000);
+    return () => window.clearTimeout(t2);
+  }, [voiceAwake]);
+
+  /**
+   * 业务态 → ParticleStore.agentActivity 派生：
+   * - isStreaming + 当前流消息内容为空 → thinking（思考中，旋转）
+   * - isStreaming + 已有内容 → replying（回复中，呼吸）
+   * - 非流式 + voiceAwake → awake（唤醒等待，呼吸）
+   * - 其余 → idle
+   * 手势期间由 store.gestureOverride 接管，ParticleField 会自动让 activity 派生静默。
+   */
+  useEffect(() => {
+    const setAct = useParticleStore.getState().setAgentActivity;
+    if (isStreaming) {
+      const sess = sessions.find((s) => s.id === currentSessionId);
+      const msg = sess?.messages.find((m) => m.id === streamingTargetAssistantId);
+      const contentLen = (msg?.content ?? '').trim().length;
+      setAct(contentLen > 0 ? 'replying' : 'thinking');
+    } else if (voiceAwake) {
+      setAct('awake');
+    } else {
+      setAct('idle');
+    }
+  }, [isStreaming, voiceAwake, sessions, currentSessionId, streamingTargetAssistantId]);
+
+  useEffect(() => {
+    return () => {
+      useParticleStore.getState().setAgentActivity('idle');
+    };
+  }, []);
 
   useEffect(() => {
     if (!speechInputEnabled) speechDictation.abort();
   }, [speechInputEnabled, speechDictation.abort]);
+
+  useEffect(() => {
+    return () => {
+      streamUnsubRef.current?.();
+      streamUnsubRef.current = null;
+      cancelVoiceReply();
+      try {
+        window.electron?.closeModelStream?.();
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [cancelVoiceReply]);
+
+  useEffect(() => {
+    if (systemTtsAvailable !== false) return;
+    const s = useSettingStore.getState();
+    if (s.voiceReplyEnabled) s.setVoiceReplyEnabled(false);
+  }, [systemTtsAvailable]);
 
   const currentSession = sessions.find((s: ChatSession) => s.id === currentSessionId);
   const messages = currentSession?.messages || [];
@@ -803,7 +940,9 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     setConversationGalleryNonce(0);
     setVectorRagStatus(null);
     speechDictation.abort();
-  }, [currentSessionId, speechDictation.abort]);
+    cancelVoiceReply();
+    voiceWakeLoopRef.current = false;
+  }, [currentSessionId, speechDictation.abort, cancelVoiceReply]);
 
   useEffect(() => {
     if (!vectorRagStatus || vectorRagStatus.tone !== 'error') return;
@@ -851,8 +990,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           id: `${Date.now()}-err`,
           role: 'assistant',
           content: t('chat.buildFailed') + (e instanceof Error ? e.message : String(e)),
-          timestamp: Date.now(),
-          model: activeModel.name,
+      timestamp: Date.now(),
+      model: activeModel.name,
         });
         clearLoadingForSession(sendSessionId);
         return;
@@ -1045,12 +1184,23 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         setIsStreaming(true);
         addMessage(sendSessionId, {
           id: assistantId,
-          role: 'assistant',
+        role: 'assistant',
           content: '',
           ...(exportHint ? { exportHint } : {}),
-          timestamp: Date.now(),
-          model: activeModel.name,
+        timestamp: Date.now(),
+        model: activeModel.name,
         });
+
+        if (consumeVoiceWakeReply()) {
+          speechReaderRef.current?.cancel();
+          const reader = new StreamingSpeechReader(uiLocale, {
+            onSpeakingChange: setVoiceReplySpeaking,
+          });
+          speechReaderRef.current = reader;
+          void reader.start();
+        }
+
+        const voiceReplyThisTurn = Boolean(speechReaderRef.current);
 
         const imgBase = inlineImageIndexRef.current;
         /** 合并 content delta（不在流式中解析 myagent_tool / extractGenerateImageCalls，避免出现该片段时对整缓冲区反复括号扫描导致卡死；生图在 onEnd 统一 postProcess） */
@@ -1100,6 +1250,9 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         const unsub = window.electron.subscribeModelStream(plainMessages, plainModel, {
           onDelta: (d) => {
             queueContentDeltaChunk(d);
+            if (voiceReplyThisTurn) {
+              speechReaderRef.current?.push(d);
+            }
           },
           onThinkingDelta: (th) => {
             if (th) queueReasoningDeltaChunk(th);
@@ -1107,6 +1260,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           onError: (m) => {
             flushPendingContentDeltaImmediately();
             drainReasoningBufferUnsafe();
+            speechReaderRef.current?.cancel();
+            setVoiceReplySpeaking(false);
             streamHadErrorRef.current = true;
             const sess = useChatStore.getState().sessions.find((s) => s.id === sendSessionId);
             const prior = sess?.messages.find((x) => x.id === assistantId)?.content?.trimEnd() ?? '';
@@ -1126,6 +1281,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
 
               try {
                 if (streamHadErrorRef.current) {
+                  speechReaderRef.current?.cancel();
+                  setVoiceReplySpeaking(false);
                   setIsStreaming(false);
                   clearLoadingForSession(sendSessionId);
                   streamingAssistantIdRef.current = null;
@@ -1147,6 +1304,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                 });
 
                 if (aborted && !raw.trim() && !plannedIntent.shouldGenerate) {
+                  speechReaderRef.current?.cancel();
+                  setVoiceReplySpeaking(false);
                   removeMessage(sendSessionId, assistantId);
                   setIsStreaming(false);
                   clearLoadingForSession(sendSessionId);
@@ -1159,6 +1318,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                 setIsStreaming(false);
                 streamingAssistantIdRef.current = null;
                 setStreamingTargetAssistantId(null);
+                speechReaderRef.current?.finish();
 
                 let nextContent = raw;
                 let nextFiles = msg?.files as Message['files'] | undefined;
@@ -1275,6 +1435,21 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           timestamp: Date.now(),
           model: activeModel.name,
         });
+        if (consumeVoiceWakeReply()) {
+          speechReaderRef.current?.cancel();
+          const reader = new StreamingSpeechReader(uiLocale, {
+            onSpeakingChange: setVoiceReplySpeaking,
+          });
+          speechReaderRef.current = reader;
+          void (async () => {
+            await reader.start();
+            const speakBody = stripGenerateImageArtifactsForDisplay(content0).trim();
+            if (speakBody) {
+              reader.push(speakBody);
+              reader.finish();
+            }
+          })();
+        }
         const imageHooks: ImageGenProgressHooks = {
           onBegin: ({ total }) => {
             imageGenCancelledRef.current = false;
@@ -1316,7 +1491,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           files: mergeAssistantFiles(assistantId, files),
           imageGenProgress: undefined,
         });
-      } catch (error) {
+    } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         if (documentArtifactAssistantId) {
           updateMessage(sendSessionId, documentArtifactAssistantId, {
@@ -1331,9 +1506,9 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           timestamp: Date.now(),
           model: activeModel.name,
         });
-      } finally {
-        clearLoadingForSession(sendSessionId);
-      }
+    } finally {
+      clearLoadingForSession(sendSessionId);
+    }
     },
     [
       addMessage,
@@ -1344,6 +1519,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
       updateMessage,
       t,
       uiLocale,
+      consumeVoiceWakeReply,
     ]
   );
 
@@ -1783,6 +1959,12 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     if ((!input.trim() && attachments.length === 0) || !currentSessionId) return;
     if (useChatStore.getState().loadingSessionId === currentSessionId) return;
 
+    cancelVoiceReply();
+    if (!sendFromVoiceWakeRef.current) {
+      voiceWakeLoopRef.current = false;
+    }
+    sendFromVoiceWakeRef.current = false;
+
     const activeModel = getActiveModel();
     if (!activeModel) {
       alert(t('chat.configureModel'));
@@ -1877,9 +2059,9 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
       ...sourceMessage,
       role: 'user',
       content: textContent,
-      timestamp: Date.now(),
-      model: activeModel.name,
-    };
+        timestamp: Date.now(),
+        model: activeModel.name,
+      };
 
     const staleMessageIds = messages.slice(sourceIndex + 1).map((m) => m.id);
     updateMessage(currentSessionId, sourceMessage.id, {
@@ -1905,6 +2087,11 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     }
 
     await runModelReply(sendSessionId, priorMessages, userMessage, activeModel);
+  };
+
+  /** 每次渲染同步最新 handleSend 到 ref */
+  handleSendRef.current = () => {
+    void handleSend();
   };
 
   const handleInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -2032,6 +2219,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
 
       <div
         ref={scrollContainerRef}
+        data-gesture-scroll-target="chat"
         className="flex-1 min-h-0 overflow-y-auto px-8 py-4 space-y-4"
         style={{
           paddingBottom: `calc(${footerH + (attachments.length > 0 ? attachmentStripH : 0)}px + env(safe-area-inset-bottom, 0px))`,
@@ -2053,9 +2241,9 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
             !reasoningTrim.length;
           if (hideEmptyStreamBubble) return <React.Fragment key={message.id} />;
           return (
-            <MessageItem
-              key={message.id}
-              message={message}
+          <MessageItem
+            key={message.id}
+            message={message}
               onEdit={message.role === 'user' ? handleEditMessage : undefined}
               editing={editingMessageId === message.id}
               onSubmitEdit={handleSubmitEditedMessage}
@@ -2170,28 +2358,27 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
               <span className="min-w-0 leading-snug">{speechDictation.banner}</span>
               <button
                 type="button"
-                className="shrink-0 rounded px-1.5 py-0.5 text-amber-800 hover:bg-amber-200/70 dark:text-amber-100 dark:hover:bg-amber-900/55"
-                aria-label={t('app.close')}
+                className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium opacity-80 hover:opacity-100"
                 onClick={() => speechDictation.clearBanner()}
               >
-                ×
+                {t('app.close')}
               </button>
             </div>
           ) : null}
-          {(() => {
-            const totalLength = messages.reduce((acc, m) => acc + m.content.length, 0) + input.length;
-            const limit = 20000;
-            const fillPerc = Math.min((totalLength / limit) * 100, 100);
-            const isNearLimit = fillPerc > 80;
-            return totalLength > 0 ? (
-              <div
+        {(() => {
+          const totalLength = messages.reduce((acc, m) => acc + m.content.length, 0) + input.length;
+          const limit = 20000;
+          const fillPerc = Math.min((totalLength / limit) * 100, 100);
+          const isNearLimit = fillPerc > 80;
+          return totalLength > 0 ? (
+            <div
                 className={`absolute top-0 left-0 h-[2px] transition-all duration-300 ${
                   isNearLimit ? 'bg-orange-500' : 'bg-gradient-to-r from-primary-400 to-teal-500'
                 }`}
-                style={{ width: `${fillPerc}%` }}
-              />
-            ) : null;
-          })()}
+              style={{ width: `${fillPerc}%` }}
+            />
+          ) : null;
+        })()}
 
           <input
             type="file"
@@ -2203,19 +2390,19 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           />
 
           <div className="flex min-h-[2.5rem] w-full min-w-0 flex-1 items-center gap-2">
-            <div className="flex min-h-10 min-w-0 flex-1 items-center gap-1 rounded-2xl border border-stone-400/28 bg-stone-100/95 py-0 pl-1.5 pr-1 shadow-sm transition-all focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-500/50 dark:border-slate-700 dark:bg-slate-800/80">
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
+          <div className="flex min-h-10 min-w-0 flex-1 items-center gap-1 rounded-2xl border border-stone-400/28 bg-stone-100/95 py-0 pl-1.5 pr-1 shadow-sm transition-all focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-500/50 dark:border-slate-700 dark:bg-slate-800/80">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
                 className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-all ${
                   attachments.length > 0
                     ? 'bg-primary-100/80 text-primary-600 dark:bg-primary-900/30'
                     : 'text-stone-500 hover:bg-stone-300/45 dark:text-slate-500 dark:hover:bg-slate-700'
                 }`}
                 title={t('chat.uploadFile')}
-              >
-                <FiPaperclip size={14} />
-              </button>
+            >
+              <FiPaperclip size={14} />
+            </button>
               {speechInputEnabled ? (
                 <button
                   type="button"
@@ -2226,12 +2413,19 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                       ? t('chat.voiceStopTitle')
                       : speechDictation.starting
                         ? t('chat.voiceStarting')
-                        : t('chat.voiceInput')
+                        : voiceWake.listening
+                          ? t('chat.voiceWakeListening', { phrase: voiceWakePhrase.trim() || voiceWakePhrase })
+                          : t('chat.voiceInput')
                   }
                   disabled={
                     isCurrentSessionLoading || !speechDictation.supported || speechDictation.starting
                   }
-                  onClick={() => speechDictation.toggle()}
+                  onClick={() => {
+                    if (!speechDictation.listening) {
+                      voiceWakeLoopRef.current = false;
+                    }
+                    speechDictation.toggle();
+                  }}
                   title={
                     speechDictation.listening
                       ? t('chat.voiceListening')
@@ -2239,7 +2433,11 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                         ? t('chat.voiceStarting')
                         : !speechDictation.supported
                           ? t('chat.speechNotSupported')
-                          : t('chat.voiceInput')
+                          : voiceWake.listening
+                          ? t('chat.voiceWakeListeningHint', { phrase: voiceWakePhrase.trim() || voiceWakePhrase })
+                          : voiceWake.starting
+                            ? t('chat.voiceWakeStarting')
+                            : t('chat.voiceInput')
                   }
                   className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-all [&_svg]:pointer-events-none ${
                     speechDictation.listening
@@ -2248,40 +2446,44 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                         ? 'cursor-wait text-primary-600 dark:text-primary-400'
                         : isCurrentSessionLoading || !speechDictation.supported
                           ? 'cursor-not-allowed text-stone-400 dark:text-slate-600'
-                          : 'text-stone-600 hover:bg-stone-300/55 dark:text-slate-400 dark:hover:bg-slate-700'
+                          : voiceWake.listening
+                            ? 'text-primary-600 ring-1 ring-primary-400/60 dark:text-primary-400 dark:ring-primary-500/50'
+                            : voiceWake.starting
+                              ? 'cursor-wait text-primary-600 dark:text-primary-400'
+                              : 'text-stone-600 hover:bg-stone-300/55 dark:text-slate-400 dark:hover:bg-slate-700'
                   }`}
                 >
-                  {speechDictation.starting ? (
+                  {speechDictation.starting || voiceWake.starting ? (
                     <FiLoader size={15} className="animate-spin" aria-hidden />
                   ) : (
                     <FiMic size={15} aria-hidden />
                   )}
                 </button>
               ) : null}
-              <textarea
+            <textarea
                 ref={inputAreaRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
                 onCompositionStart={() => {
                   imeComposingRef.current = true;
                 }}
                 onCompositionEnd={() => {
                   imeComposingRef.current = false;
                 }}
-                onKeyDown={handleInputKeyDown}
+              onKeyDown={handleInputKeyDown}
                 placeholder={t('chat.inputPlaceholder')}
                 className="box-border min-h-10 w-full min-w-0 flex-1 resize-none bg-transparent py-2.5 pl-1 pr-0.5 leading-5 text-stone-800 placeholder-stone-500/70 focus:outline-none dark:text-slate-100 text-[clamp(0.8125rem,0.55vw+0.68rem,0.9375rem)]"
-                rows={1}
+              rows={1}
                 style={{ maxHeight: 'min(28vh, 9rem)' }}
-                disabled={isCurrentSessionLoading}
-              />
-              <div className="ml-0.5 flex shrink-0 items-center self-stretch border-l border-stone-400/25 pl-1 dark:border-slate-600">
-                <ModelSelector compact />
-              </div>
+              disabled={isCurrentSessionLoading}
+            />
+            <div className="ml-0.5 flex shrink-0 items-center self-stretch border-l border-stone-400/25 pl-1 dark:border-slate-600">
+              <ModelSelector compact />
             </div>
+          </div>
             {isCurrentSessionLoading && (isStreaming || imageGenProgress) ? (
-              <button
-                type="button"
+          <button
+            type="button"
                 onClick={handleStop}
                 className="inline-flex h-10 shrink-0 items-center justify-center gap-1 rounded-xl border border-stone-400/50 bg-stone-100 px-4 text-sm font-medium text-stone-800 hover:bg-stone-200 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
                 title={t('chat.stopTitle')}
@@ -2293,17 +2495,17 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
             <button
               type="button"
               onClick={() => void handleSend()}
-              disabled={!input.trim() && attachments.length === 0}
-              className={`inline-flex h-10 shrink-0 items-center justify-center rounded-xl px-5 text-sm font-medium transition-all ${
-                input.trim() || attachments.length > 0
-                  ? 'bg-primary-600 text-white shadow-md shadow-primary-500/20 hover:bg-primary-700'
-                  : 'cursor-not-allowed bg-stone-300 text-stone-500 dark:bg-slate-700 dark:text-slate-500'
-              }`}
+            disabled={!input.trim() && attachments.length === 0}
+            className={`inline-flex h-10 shrink-0 items-center justify-center rounded-xl px-5 text-sm font-medium transition-all ${
+              input.trim() || attachments.length > 0
+                ? 'bg-primary-600 text-white shadow-md shadow-primary-500/20 hover:bg-primary-700'
+                : 'cursor-not-allowed bg-stone-300 text-stone-500 dark:bg-slate-700 dark:text-slate-500'
+            }`}
               title={t('chat.sendTitle')}
-            >
+          >
               {t('chat.send')}
-            </button>
-          </div>
+          </button>
+        </div>
         </div>
       </div>
       {conversationGalleryIdx !== null && conversationGallery.length > 0 ? (

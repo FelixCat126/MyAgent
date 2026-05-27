@@ -21,10 +21,13 @@ import {
   FiShield,
   FiLayers,
   FiMic,
+  FiCamera,
   FiSmartphone,
 } from 'react-icons/fi';
 import { IosSwitch } from './IosSwitch';
 import { useI18n } from '../hooks/useI18n';
+import { useSystemTtsAvailable } from '@/hooks/useSystemTtsAvailable';
+import { useMediaInputAvailability } from '@/hooks/useMediaInputAvailability';
 
 type EditingFormData = {
   name: string;
@@ -111,6 +114,8 @@ function validateImageGeneratorForm(form: EditingFormData, envMap: Record<string
 
 const SettingsPanel: React.FC = () => {
   const { t, locale } = useI18n();
+  const systemTtsAvailable = useSystemTtsAvailable(locale);
+  const ttsPlaybackReady = systemTtsAvailable === true;
   const { models, addModel, removeModel, updateModel } = useModelStore();
   const {
     enabled: webSearchEnabled,
@@ -125,12 +130,22 @@ const SettingsPanel: React.FC = () => {
     setStreamResponses,
     speechInputEnabled,
     setSpeechInputEnabled,
+    voiceWakeEnabled,
+    setVoiceWakeEnabled,
+    voiceWakePhrase,
+    setVoiceWakePhrase,
+    voiceReplyEnabled,
+    setVoiceReplyEnabled,
     volcAsrAppKey,
     setVolcAsrAppKey,
     volcAsrAccessKey,
     setVolcAsrAccessKey,
     volcAsrResourceId,
     setVolcAsrResourceId,
+    gestureControlEnabled,
+    setGestureControlEnabled,
+    particleFieldEnabled,
+    setParticleFieldEnabled,
   } = useSettingStore();
   const { rootPath, maxChars, setRootPath, setMaxChars } = useWorkspaceStore();
   const {
@@ -187,6 +202,41 @@ const SettingsPanel: React.FC = () => {
   useEffect(() => {
     void refreshIndexStatus();
   }, [refreshIndexStatus]);
+
+  useEffect(() => {
+    if (systemTtsAvailable === false && voiceReplyEnabled) {
+      setVoiceReplyEnabled(false);
+    }
+  }, [systemTtsAvailable, voiceReplyEnabled, setVoiceReplyEnabled]);
+
+  /**
+   * 硬件可用性检测：物理缺失则强制关闭对应开关，避免在无硬件环境下被意外激活。
+   * - 摄像头缺失 → 手势/视觉识别关闭并禁用
+   * - 麦克风缺失 → 语音输入 / 唤醒 / 播报三者全部关闭并禁用
+   */
+  const mediaAvail = useMediaInputAvailability();
+  const cameraMissing = mediaAvail.camera === 'missing';
+  const microphoneMissing = mediaAvail.microphone === 'missing';
+
+  useEffect(() => {
+    if (cameraMissing && gestureControlEnabled) setGestureControlEnabled(false);
+  }, [cameraMissing, gestureControlEnabled, setGestureControlEnabled]);
+
+  useEffect(() => {
+    if (!microphoneMissing) return;
+    if (speechInputEnabled) setSpeechInputEnabled(false);
+    if (voiceWakeEnabled) setVoiceWakeEnabled(false);
+    if (voiceReplyEnabled) setVoiceReplyEnabled(false);
+  }, [
+    microphoneMissing,
+    speechInputEnabled,
+    setSpeechInputEnabled,
+    voiceWakeEnabled,
+    setVoiceWakeEnabled,
+    voiceReplyEnabled,
+    setVoiceReplyEnabled,
+  ]);
+
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState<EditingFormData>(defaultFormData);
@@ -298,7 +348,7 @@ const SettingsPanel: React.FC = () => {
 
   return (
     <div className="flex h-full flex-col bg-stone-100/95 backdrop-blur-xl dark:bg-[#0B1120]/80">
-      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-2.5 scrollbar-hide">
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-2.5 scrollbar-hide" data-gesture-scroll-target="settings">
         {/* 模型配置：独立卡片 */}
         <section className={`${cardShell} shrink-0`} aria-labelledby="settings-models-heading">
           <div className="flex items-center justify-between gap-2 border-b border-stone-300/38 px-3 py-2.5 dark:border-white/10">
@@ -972,17 +1022,87 @@ const SettingsPanel: React.FC = () => {
                   {t('settings.speech.sectionTitle')}
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-xs text-stone-700 dark:text-slate-300">
+                  <span
+                    className={`text-xs ${microphoneMissing ? 'text-stone-400 dark:text-slate-500' : 'text-stone-700 dark:text-slate-300'}`}
+                  >
                     {t('settings.speech.enableMicUi')}
                   </span>
                   <IosSwitch
-                    checked={speechInputEnabled}
+                    checked={!microphoneMissing && speechInputEnabled}
+                    disabled={microphoneMissing}
                     aria-label={t('settings.speech.enableMicUi')}
                     onChange={setSpeechInputEnabled}
                   />
                 </div>
-                {speechInputEnabled && (
+                {microphoneMissing ? (
+                  <p className="mt-1.5 text-[10px] leading-relaxed text-amber-800/90 dark:text-amber-200/90">
+                    {t('settings.speech.noMicrophone')}
+                  </p>
+                ) : null}
+                {speechInputEnabled ? (
                   <div className="mt-2 space-y-2">
+                    {systemTtsAvailable === false ? (
+                      <p className="text-[10px] leading-snug text-amber-800/90 dark:text-amber-200/90">
+                        {t('settings.speech.noSystemTts')}
+                      </p>
+                    ) : null}
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-xs text-stone-700 dark:text-slate-300">
+                        {t('settings.speech.enableWake')}
+                      </span>
+                      <IosSwitch
+                        checked={voiceWakeEnabled}
+                        aria-label={t('settings.speech.enableWake')}
+                        onChange={setVoiceWakeEnabled}
+                      />
+                    </div>
+                    {voiceWakeEnabled ? (
+                      <div>
+                        <label className="mb-0.5 block text-[10px] font-medium text-stone-600 dark:text-gray-400">
+                          {t('settings.speech.wakePhrase')}
+                        </label>
+                        <input
+                          type="text"
+                          autoComplete="off"
+                          value={voiceWakePhrase}
+                          onChange={(e) => setVoiceWakePhrase(e.target.value)}
+                          onBlur={(e) => setVoiceWakePhrase(e.target.value.trim())}
+                          placeholder={t('settings.speech.wakePhrasePlaceholder')}
+                          className="w-full rounded-md border border-stone-400/25 bg-stone-100/90 px-2 py-1.5 text-xs text-stone-900 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-slate-700 dark:text-white"
+                        />
+                        <p className="mt-1 text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
+                          {t('settings.speech.wakeDesc', {
+                            phrase: voiceWakePhrase.trim() || t('settings.speech.wakePhrasePlaceholder'),
+                          })}
+                        </p>
+                      </div>
+                    ) : null}
+                    {voiceWakeEnabled ? (
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <span
+                            className={`text-xs ${ttsPlaybackReady ? 'text-stone-700 dark:text-slate-300' : 'text-stone-400 dark:text-slate-500'}`}
+                          >
+                            {t('settings.speech.voiceReply')}
+                          </span>
+                          <p
+                            className={`mt-0.5 text-[10px] leading-relaxed ${ttsPlaybackReady ? 'text-stone-500 dark:text-slate-500' : 'text-stone-400 dark:text-slate-600'}`}
+                          >
+                            {t('settings.speech.voiceReplyDesc')}
+                          </p>
+                        </div>
+                        <IosSwitch
+                          checked={ttsPlaybackReady && voiceReplyEnabled}
+                          aria-label={t('settings.speech.voiceReply')}
+                          disabled={!ttsPlaybackReady}
+                          onChange={setVoiceReplyEnabled}
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+                {speechInputEnabled && (
+                  <div className="mt-2 space-y-2" data-section="volc-asr-keys">
                     <p className="text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
                       {t('settings.streamingAsr.volcOnly')}{' '}
                       <a
@@ -1038,6 +1158,43 @@ const SettingsPanel: React.FC = () => {
                     </div>
                   </div>
                 )}
+              </div>
+              <div className="border-t border-stone-300/35 pt-3 dark:border-white/8">
+                <div className="mb-2.5 flex items-center gap-1.5 text-xs font-medium text-stone-700 dark:text-slate-300">
+                  <FiCamera size={14} className="text-stone-500" aria-hidden />
+                  {t('settings.gesture.sectionTitle')}
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span
+                    className={`text-xs ${cameraMissing ? 'text-stone-400 dark:text-slate-500' : 'text-stone-700 dark:text-slate-300'}`}
+                  >
+                    {t('settings.gesture.enable')}
+                  </span>
+                  <IosSwitch
+                    checked={!cameraMissing && gestureControlEnabled}
+                    disabled={cameraMissing}
+                    aria-label={t('settings.gesture.enable')}
+                    onChange={setGestureControlEnabled}
+                  />
+                </div>
+                <p className="mt-1.5 text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
+                  {t('settings.gesture.desc')}
+                </p>
+                {cameraMissing ? (
+                  <p className="mt-1 text-[10px] leading-relaxed text-amber-800/90 dark:text-amber-200/90">
+                    {t('settings.gesture.noCamera')}
+                  </p>
+                ) : null}
+                <div className="mt-3 flex items-center justify-between gap-3">
+                  <span className="text-xs text-stone-700 dark:text-slate-300">
+                    {t('settings.gesture.particleField')}
+                  </span>
+                  <IosSwitch
+                    checked={particleFieldEnabled}
+                    aria-label={t('settings.gesture.particleField')}
+                    onChange={setParticleFieldEnabled}
+                  />
+                </div>
               </div>
               <div className="border-t border-stone-300/35 pt-3 dark:border-white/8">
                 <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-stone-700 dark:text-slate-300">

@@ -13,12 +13,17 @@ export type VolcWarmStartPayload = {
   appKey: string;
   accessKey: string;
   resourceId: string;
+  /** 唤醒监听：注入热词并声明 zh-CN，提升短唤醒词识别率 */
+  wakeMode?: boolean;
+  hotwords?: string[];
 };
 
 let activeVolcSender: Electron.WebContents | null = null;
 
 class VolcStreamAsrSession {
   private ws: WebSocket | null = null;
+  private aborted = false;
+  private connectReject: ((err: Error) => void) | null = null;
   /** V1：首个 full client 等价占序号 1；首帧 audio-only 必须从 2 开始，否则会 sequence mismatch */
   private seq = 2;
 
@@ -41,10 +46,17 @@ class VolcStreamAsrSession {
     await new Promise<void>((resolve, reject) => {
       const w = this.ws!;
       let settled = false;
-      const tid = setTimeout(() => {
+      const finish = (err?: Error) => {
         if (settled) return;
         settled = true;
-        reject(new Error('websocket open timeout'));
+        clearTimeout(tid);
+        this.connectReject = null;
+        if (err) reject(err);
+        else resolve();
+      };
+      this.connectReject = (err) => finish(err);
+      const tid = setTimeout(() => {
+        finish(new Error('websocket open timeout'));
       }, 15_000);
 
       /** HTTP 握手未返回 101 时先于 error 触发，便于读出 400 响应体排查鉴权问题 */
@@ -52,6 +64,7 @@ class VolcStreamAsrSession {
         if (settled) return;
         settled = true;
         clearTimeout(tid);
+        this.connectReject = null;
         const code = res.statusCode ?? 0;
         const chunks: Buffer[] = [];
         res.on('data', (c: Buffer | string) =>
@@ -60,25 +73,51 @@ class VolcStreamAsrSession {
         res.on('end', () => {
           const txt = Buffer.concat(chunks).toString('utf8').trim().slice(0, 800);
           const tail = txt || `${res.statusMessage ?? ''}`.trim() || '（响应体为空）';
-          reject(new Error(`语音识别 WebSocket 握手失败 HTTP ${code}：${tail}`));
+          finish(new Error(`语音识别 WebSocket 握手失败 HTTP ${code}：${tail}`));
         });
         res.resume();
       });
 
-      w.once('open', () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(tid);
-        resolve();
-      });
+      w.once('open', () => finish());
 
       w.once('error', (err) => {
+        if (this.aborted) {
+          finish(new Error('session aborted'));
+          return;
+        }
+        finish(err instanceof Error ? err : new Error(String(err)));
+      });
+
+      w.once('close', () => {
         if (settled) return;
-        settled = true;
-        clearTimeout(tid);
-        reject(err instanceof Error ? err : new Error(String(err)));
+        finish(new Error(this.aborted ? 'session aborted' : 'websocket closed'));
       });
     });
+
+    if (this.aborted) {
+      try {
+        this.ws?.terminate();
+      } catch {
+        /* ignore */
+      }
+      this.ws = null;
+      throw new Error('session aborted');
+    }
+
+    const hotwords = (this.creds.hotwords ?? []).map((w) => String(w).trim()).filter(Boolean);
+    const request: Record<string, unknown> = {
+      model_name: 'bigmodel',
+      result_type: 'full',
+      enable_itn: true,
+      enable_punc: true,
+    };
+    if (hotwords.length > 0) {
+      request.corpus = {
+        context: JSON.stringify({
+          hotwords: hotwords.map((word) => ({ word, weight: 10 })),
+        }),
+      };
+    }
 
     const fullClientPayload = {
       user: {
@@ -92,13 +131,9 @@ class VolcStreamAsrSession {
         rate: 16_000,
         bits: 16,
         channel: 1,
+        ...(this.creds.wakeMode ? { language: 'zh-CN' } : {}),
       },
-      request: {
-        model_name: 'bigmodel',
-        result_type: 'full',
-        enable_itn: true,
-        enable_punc: true,
-      },
+      request,
     };
 
     const w = this.ws!;
@@ -130,6 +165,7 @@ class VolcStreamAsrSession {
     });
 
     w.on('error', (err) => {
+      if (this.aborted) return;
       this.emitError(err.message || 'websocket-error');
     });
   }
@@ -161,6 +197,9 @@ class VolcStreamAsrSession {
   }
 
   abort(): void {
+    this.aborted = true;
+    this.connectReject?.(new Error('session aborted'));
+    this.connectReject = null;
     try {
       this.ws?.terminate();
     } catch {
@@ -171,6 +210,7 @@ class VolcStreamAsrSession {
   }
 
   private emitText(text: string): void {
+    if (this.aborted) return;
     try {
       this.sender?.send('volc-asr-text', text);
     } catch {
@@ -179,6 +219,7 @@ class VolcStreamAsrSession {
   }
 
   private emitError(message: string): void {
+    if (this.aborted) return;
     try {
       this.sender?.send('volc-asr-error', message);
     } catch {
@@ -187,6 +228,7 @@ class VolcStreamAsrSession {
   }
 
   private emitEnded(): void {
+    if (this.aborted) return;
     try {
       this.sender?.send('volc-asr-ended', null);
     } catch {
@@ -196,9 +238,12 @@ class VolcStreamAsrSession {
 }
 
 let activeSession: VolcStreamAsrSession | null = null;
+let activeSessionGen = 0;
 
 ipcMain.handle('volc-asr-start', async (event, payload: VolcWarmStartPayload) => {
   activeSession?.abort();
+  activeSession = null;
+  const gen = ++activeSessionGen;
   const wc = BrowserWindow.fromWebContents(event.sender)?.webContents ?? event.sender;
   activeVolcSender = wc;
   const session = new VolcStreamAsrSession(
@@ -206,16 +251,25 @@ ipcMain.handle('volc-asr-start', async (event, payload: VolcWarmStartPayload) =>
       appKey: String(payload?.appKey ?? ''),
       accessKey: String(payload?.accessKey ?? ''),
       resourceId: String(payload?.resourceId ?? ''),
+      wakeMode: payload?.wakeMode,
+      hotwords: payload?.hotwords,
     },
     wc
   );
   activeSession = session;
   try {
     await session.connectAndHandshake();
+    if (activeSessionGen !== gen || activeSession !== session) {
+      session.abort();
+      return { ok: false as const, error: 'session superseded' };
+    }
     return { ok: true as const };
   } catch (e: unknown) {
-    activeSession = null;
+    if (activeSession === session) activeSession = null;
     const msg = e instanceof Error ? e.message : String(e);
+    if (msg === 'session aborted' || msg === 'session superseded') {
+      return { ok: false as const, error: msg };
+    }
     return { ok: false as const, error: msg.slice(0, 400) };
   }
 });
@@ -236,6 +290,7 @@ ipcMain.handle('volc-asr-finish', () => {
 });
 
 ipcMain.handle('volc-asr-abort', () => {
+  activeSessionGen += 1;
   activeSession?.abort();
   activeSession = null;
   return { ok: true as const };

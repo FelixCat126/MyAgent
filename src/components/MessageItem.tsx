@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { pathToFileURL } from 'url';
 import { FileInfo, Message } from '../types';
@@ -17,6 +17,11 @@ import {
   downloadDisplayImage,
   hasDesktopLocalSaveCapability,
 } from '@/utils/imageDownload';
+import {
+  setGestureUiPhase,
+} from '@/utils/gestureUiContext';
+import { galleryCarouselCardMetricsSmooth } from '@/utils/galleryCarouselLayout';
+import { useGallerySwipeMomentum } from '@/hooks/useGallerySwipeMomentum';
 
 const MAX_MARKDOWN_RENDER_CHARS = 24_000;
 const MAX_ASSISTANT_PREPROCESS_CHARS = 28_000;
@@ -37,7 +42,8 @@ const ASSISTANT_IMAGE_THUMB_META_ROW =
 /** 对应 App.tsx 顶栏拖拽区 TITLEBAR_H(44)，避免按钮落在 Electron drag 带上被吞点击 */
 const MODAL_CLEAR_TITLEBAR_PT = 'pt-[52px]';
 
-const MODAL_PORTAL_LAYER_CLASS = 'fixed inset-0 z-[10010] flex items-center justify-center bg-black/70 backdrop-blur-sm transition-opacity';
+const MODAL_PORTAL_LAYER_CLASS =
+  'fixed inset-0 z-[10010] flex items-center justify-center bg-black transition-opacity';
 
 const modalPortalShellStyle: React.CSSProperties & { WebkitAppRegion?: string } = {
   WebkitAppRegion: 'no-drag',
@@ -311,6 +317,21 @@ function AssistantReasoningCollapsible(props: {
   );
 }
 
+/**
+ * 3D 卡片轮播视觉常量：
+ * - 左右各显示 3 张邻图（共 7 张同时可见），更厚的"折叠纸牌"层次；
+ * - 步长随 abs 衰减（240/130/80），避免侧图溢出舞台外；
+ * - 倾斜角度递增（45°/58°/65°），缩放递减（0.78/0.62/0.5），远 z 递增；
+ * - 透明度大幅压低（0.4/0.22/0.12），强化"主图无干扰"。
+ */
+const GALLERY_CAROUSEL_TRANSITION =
+  'transform 520ms cubic-bezier(0.32, 0.72, 0, 1), opacity 520ms ease';
+const GALLERY_MODAL_ENTER_MS = 240;
+const GALLERY_IMG_FRAME =
+  'flex max-h-[min(72vh,880px)] max-w-[min(72vw,920px)] items-center justify-center overflow-hidden rounded-lg bg-white shadow-2xl dark:bg-zinc-900';
+const GALLERY_IMG =
+  'block max-h-[min(72vh,880px)] max-w-[min(72vw,920px)] object-contain';
+
 export const ImagePreviewModal: React.FC<{
   src: string;
   onClose: () => void;
@@ -321,6 +342,20 @@ export const ImagePreviewModal: React.FC<{
 }> = ({ src, onClose, alt, localPath, defaultFileName }) => {
   const { t } = useI18n();
   const desktopShell = hasDesktopLocalSaveCapability();
+  const [shown, setShown] = useState(false);
+  const closingRef = useRef(false);
+
+  useEffect(() => {
+    const id = window.requestAnimationFrame(() => setShown(true));
+    return () => window.cancelAnimationFrame(id);
+  }, []);
+
+  const requestClose = useCallback(() => {
+    if (closingRef.current) return;
+    closingRef.current = true;
+    setShown(false);
+    window.setTimeout(onClose, GALLERY_MODAL_ENTER_MS);
+  }, [onClose]);
 
   const handleSaveCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -347,12 +382,20 @@ export const ImagePreviewModal: React.FC<{
   const node = (
     <div
       className={MODAL_PORTAL_LAYER_CLASS}
-      style={modalPortalShellStyle}
-      onClick={onClose}
+      style={{
+        ...modalPortalShellStyle,
+        opacity: shown ? 1 : 0,
+        transitionDuration: `${GALLERY_MODAL_ENTER_MS}ms`,
+      }}
+      onClick={requestClose}
     >
       <div
         className="relative isolate flex max-h-[85vh] w-full max-w-[90vw] flex-col gap-4"
         onClick={(e) => e.stopPropagation()}
+        style={{
+          transform: shown ? 'scale(1) translateY(0)' : 'scale(0.94) translateY(14px)',
+          transition: `transform ${GALLERY_MODAL_ENTER_MS}ms cubic-bezier(0.32, 0.72, 0, 1)`,
+        }}
       >
         <div className="pointer-events-auto relative z-[210] flex shrink-0 justify-end gap-3 [&_svg]:pointer-events-none">
           {desktopShell ? (
@@ -367,9 +410,9 @@ export const ImagePreviewModal: React.FC<{
               <span>{t('message.imagePreviewDownload')}</span>
             </button>
           ) : null}
-          <button
+        <button
             type="button"
-            onClick={onClose}
+            onClick={requestClose}
             className="inline-flex items-center justify-center rounded-md bg-white/10 px-2 py-1 text-white backdrop-blur-sm transition-colors hover:bg-white/20 hover:text-primary-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
             title={t('message.closePreview')}
             aria-label={t('message.closePreview')}
@@ -377,12 +420,14 @@ export const ImagePreviewModal: React.FC<{
             <FiX size={18} aria-hidden />
           </button>
         </div>
-        <img
-          src={src}
-          alt={alt}
-          style={desktopShell ? undefined : previewImgTouchMenuStyle}
-          className="relative z-0 mx-auto block max-h-[min(calc(85vh-120px),80vh)] max-w-full object-contain rounded-lg shadow-2xl"
-        />
+        <div className={`mx-auto ${GALLERY_IMG_FRAME}`}>
+          <img
+            src={src}
+            alt={alt}
+            style={desktopShell ? undefined : previewImgTouchMenuStyle}
+            className={GALLERY_IMG}
+          />
+        </div>
         {!desktopShell ? (
           <p className="mx-auto max-w-[min(90vw,24rem)] text-center text-[11px] leading-snug text-white/55 px-2">
             {t('message.imageLongPressGalleryHint')}
@@ -395,6 +440,93 @@ export const ImagePreviewModal: React.FC<{
   return typeof document !== 'undefined' ? createPortal(node, document.body) : null;
 };
 
+const GalleryCarouselStage: React.FC<{
+  slides: ConversationImageGalleryItem[];
+  scrollPos: number;
+  isDragging: boolean;
+  onSelect: (index: number) => void;
+  altFallback: string;
+  touchMenuStyle?: React.CSSProperties;
+  stageRef?: React.Ref<HTMLDivElement>;
+}> = ({ slides, scrollPos, isDragging, onSelect, altFallback, touchMenuStyle, stageRef }) => {
+  const cardTransitionStyle: React.CSSProperties = {
+    transition: isDragging ? 'none' : GALLERY_CAROUSEL_TRANSITION,
+    transformStyle: 'preserve-3d',
+  };
+
+  const minI = Math.max(0, Math.floor(scrollPos) - 3);
+  const maxI = Math.min(slides.length - 1, Math.ceil(scrollPos) + 3);
+
+  return (
+    <div
+      ref={stageRef}
+      className="relative mx-auto h-[min(72vh,880px)] w-full min-w-0 max-w-[min(78vw,1080px)]"
+      style={{ perspective: '1500px', perspectiveOrigin: '50% 45%' }}
+    >
+      <div className="relative h-full w-full" style={{ transformStyle: 'preserve-3d' }}>
+        {Array.from({ length: maxI - minI + 1 }, (_, k) => minI + k).map((slideIndex) => {
+          const slide = slides[slideIndex]!;
+          const offset = slideIndex - scrollPos;
+          const metrics = galleryCarouselCardMetricsSmooth(offset);
+          const isCenter = Math.abs(offset) < 0.45;
+          const img = (
+            <div className={GALLERY_IMG_FRAME}>
+              <img
+                src={slide.src}
+                alt={isCenter ? slide.defaultFileName || altFallback : ''}
+                aria-hidden={!isCenter}
+                draggable={false}
+                style={touchMenuStyle}
+                className={GALLERY_IMG}
+              />
+            </div>
+          );
+
+          if (isCenter) {
+            return (
+              <div
+                key={`${slide.messageId}-${slide.fileIndex}-${slideIndex}`}
+                className="absolute left-1/2 top-1/2 origin-center"
+                style={{
+                  ...cardTransitionStyle,
+                  transform: metrics.transform,
+                  opacity: metrics.opacity,
+                  zIndex: metrics.zIndex,
+                  pointerEvents: metrics.pointerEvents,
+                }}
+              >
+                {img}
+              </div>
+            );
+          }
+
+          return (
+            <button
+              key={`${slide.messageId}-${slide.fileIndex}-${slideIndex}`}
+              type="button"
+              aria-label={slide.defaultFileName || altFallback}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelect(slideIndex);
+              }}
+              className="absolute left-1/2 top-1/2 origin-center cursor-pointer rounded-lg border-0 bg-transparent p-0 outline-none transition-[filter] hover:brightness-105 focus-visible:ring-2 focus-visible:ring-white/50"
+              style={{
+                ...cardTransitionStyle,
+                transform: metrics.transform,
+                opacity: metrics.opacity,
+                zIndex: metrics.zIndex,
+                pointerEvents: metrics.pointerEvents,
+              }}
+            >
+              {img}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
 export const ConversationImageGalleryModal: React.FC<{
   slides: ConversationImageGalleryItem[];
   startIndex: number;
@@ -403,35 +535,75 @@ export const ConversationImageGalleryModal: React.FC<{
 }> = ({ slides, startIndex, onClose, onDeleteCurrent }) => {
   const { t } = useI18n();
   const desktopShell = hasDesktopLocalSaveCapability();
-  const [idx, setIdx] = useState(() =>
-    slides.length ? Math.min(Math.max(0, startIndex), slides.length - 1) : 0
+  const stageRef = useRef<HTMLDivElement>(null);
+  const { scrollPos, settledIndex, setIndex, isDragging } = useGallerySwipeMomentum(
+    slides.length,
+    startIndex,
+  );
+  const [shown, setShown] = useState(false);
+  const closingRef = useRef(false);
+  const displayIndex = Math.min(
+    slides.length - 1,
+    Math.max(0, Math.round(scrollPos)),
   );
 
   useEffect(() => {
-    setIdx((i) => Math.min(i, Math.max(0, slides.length - 1)));
-  }, [slides.length]);
+    const id = window.requestAnimationFrame(() => setShown(true));
+    return () => window.cancelAnimationFrame(id);
+  }, []);
+
+  const requestClose = useCallback(() => {
+    if (closingRef.current) return;
+    closingRef.current = true;
+    setShown(false);
+    window.setTimeout(onClose, GALLERY_MODAL_ENTER_MS);
+  }, [onClose]);
+
+  useEffect(() => {
+    setGestureUiPhase('gallery-preview');
+    return () => {
+      setGestureUiPhase('idle');
+    };
+  }, []);
+
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      if (delta === 0) return;
+      if (delta > 0) {
+        setIndex(Math.min(slides.length - 1, settledIndex + 1));
+      } else {
+        setIndex(Math.max(0, settledIndex - 1));
+      }
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [slides.length, settledIndex, setIndex]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') requestClose();
       if (e.key === 'ArrowLeft') {
         e.preventDefault();
-        setIdx((i) => Math.max(0, i - 1));
+        setIndex(Math.max(0, settledIndex - 1));
       }
       if (e.key === 'ArrowRight') {
         e.preventDefault();
-        setIdx((i) => Math.min(slides.length - 1, i + 1));
+        setIndex(Math.min(slides.length - 1, settledIndex + 1));
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [slides.length, onClose]);
+  }, [slides.length, requestClose, settledIndex, setIndex]);
 
   if (!slides.length) return null;
 
-  const slide = slides[idx]!;
-  const canPrev = idx > 0;
-  const canNext = idx < slides.length - 1;
+  const slide = slides[displayIndex]!;
+  const canPrev = scrollPos > 0.02;
+  const canNext = scrollPos < slides.length - 1.02;
 
   const handleGallerySaveCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -458,8 +630,12 @@ export const ConversationImageGalleryModal: React.FC<{
   const node = (
     <div
       className={MODAL_PORTAL_LAYER_CLASS}
-      style={modalPortalShellStyle}
-      onClick={onClose}
+      style={{
+        ...modalPortalShellStyle,
+        opacity: shown ? 1 : 0,
+        transitionDuration: `${GALLERY_MODAL_ENTER_MS}ms`,
+      }}
+      onClick={requestClose}
       role="dialog"
       aria-modal="true"
       aria-label={t('message.imageAlt')}
@@ -467,6 +643,10 @@ export const ConversationImageGalleryModal: React.FC<{
       <div
         className="relative isolate flex h-full max-h-screen min-h-0 w-full max-w-[100vw] flex-col px-12 sm:px-16"
         onClick={(e) => e.stopPropagation()}
+        style={{
+          transform: shown ? 'scale(1) translateY(0)' : 'scale(0.94) translateY(14px)',
+          transition: `transform ${GALLERY_MODAL_ENTER_MS}ms cubic-bezier(0.32, 0.72, 0, 1)`,
+        }}
       >
         <div
           className={`pointer-events-auto relative z-[210] flex w-full shrink-0 flex-wrap justify-end gap-3 pb-4 [&_svg]:pointer-events-none sm:pb-5 ${MODAL_CLEAR_TITLEBAR_PT}`}
@@ -499,7 +679,7 @@ export const ConversationImageGalleryModal: React.FC<{
           ) : null}
           <button
             type="button"
-            onClick={onClose}
+            onClick={requestClose}
             className="inline-flex items-center justify-center rounded-md bg-white/10 px-2 py-1 text-white backdrop-blur-sm transition-colors hover:bg-white/20 hover:text-primary-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
             title={t('message.closePreview')}
             aria-label={t('message.closePreview')}
@@ -514,7 +694,7 @@ export const ConversationImageGalleryModal: React.FC<{
             disabled={!canPrev}
             onClick={(e) => {
               e.stopPropagation();
-              setIdx((i) => Math.max(0, i - 1));
+              setIndex(Math.max(0, settledIndex - 1));
             }}
             className={`pointer-events-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/25 bg-white/10 text-white transition-colors sm:h-12 sm:w-12 [&_svg]:pointer-events-none ${
               canPrev ? 'hover:bg-white/20' : 'cursor-not-allowed opacity-35'
@@ -526,14 +706,17 @@ export const ConversationImageGalleryModal: React.FC<{
           </button>
 
           <div className="pointer-events-auto flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-3">
-            <img
-              src={slide.src}
-              alt={slide.defaultFileName || t('message.imageAlt')}
-              style={desktopShell ? undefined : previewImgTouchMenuStyle}
-              className="max-h-[min(72vh,880px)] max-w-full object-contain rounded-lg shadow-2xl"
+            <GalleryCarouselStage
+              slides={slides}
+              scrollPos={scrollPos}
+              isDragging={isDragging}
+              onSelect={setIndex}
+              altFallback={t('message.imageAlt')}
+              touchMenuStyle={desktopShell ? undefined : previewImgTouchMenuStyle}
+              stageRef={stageRef}
             />
             <p className="text-center text-sm text-white/90 tabular-nums">
-              {t('message.imageGalleryPosition', { current: idx + 1, total: slides.length })}
+              {t('message.imageGalleryPosition', { current: displayIndex + 1, total: slides.length })}
             </p>
             {!desktopShell ? (
               <p className="mx-auto max-w-[min(90vw,24rem)] text-center text-[11px] leading-snug text-white/55 px-2">
@@ -547,7 +730,7 @@ export const ConversationImageGalleryModal: React.FC<{
             disabled={!canNext}
             onClick={(e) => {
               e.stopPropagation();
-              setIdx((i) => Math.min(slides.length - 1, i + 1));
+              setIndex(Math.min(slides.length - 1, settledIndex + 1));
             }}
             className={`pointer-events-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/25 bg-white/10 text-white transition-colors sm:h-12 sm:w-12 [&_svg]:pointer-events-none ${
               canNext ? 'hover:bg-white/20' : 'cursor-not-allowed opacity-35'
@@ -556,7 +739,7 @@ export const ConversationImageGalleryModal: React.FC<{
             aria-label={t('message.imageGalleryNext')}
           >
             <FiChevronRight size={22} aria-hidden />
-          </button>
+        </button>
         </div>
       </div>
     </div>
@@ -838,35 +1021,35 @@ const MessageItem: React.FC<MessageItemProps> = ({
                 aria-label={t('message.user')}
               >
                 <FiMessageSquare size={16} aria-hidden />
-              </div>
+          </div>
               <div className="flex min-w-0 max-w-full flex-col items-stretch">
                 <div
                   className={`px-5 py-3.5 rounded-2xl shadow-sm leading-relaxed max-w-full min-w-0
                   bg-gradient-to-br from-primary-500 to-primary-600 text-white rounded-tr-sm border border-primary-400/30`}
                 >
-                  {message.files && message.files.length > 0 && (
+              {message.files && message.files.length > 0 && (
                     <div className={`mb-2 ${MULTI_IMAGE_ATTACHMENT_GRID}`}>
-                      {message.files.map((file, index) => {
-                        const isImage = file.type.startsWith('image/');
-                        const hasPreview = file.preview && file.preview.startsWith('data:');
+                  {message.files.map((file, index) => {
+                    const isImage = file.type.startsWith('image/');
+                    const hasPreview = file.preview && file.preview.startsWith('data:');
                         const displaySrc = hasPreview
                           ? file.preview
                           : isImage
                             ? pathToFileURL(file.path).href.replace(/^file:/i, 'local-file:')
                             : '';
-                        const canShowImage = isImage && (hasPreview || file.path);
+                    const canShowImage = isImage && (hasPreview || file.path);
 
-                        return (
-                          <div
-                            key={index}
+                    return (
+                      <div
+                        key={index}
                             className="relative group/file max-w-full min-w-0 transition-all"
-                            title={file.name}
-                          >
-                            {canShowImage ? (
-                              <div className="flex flex-col gap-1">
-                                <img
-                                  src={displaySrc}
-                                  alt={file.name}
+                        title={file.name}
+                      >
+                        {canShowImage ? (
+                          <div className="flex flex-col gap-1">
+                            <img
+                              src={displaySrc}
+                              alt={file.name}
                                   onClick={() =>
                                     displaySrc &&
                                     openAttachmentPreview(file.name, displaySrc, file.path, index)
@@ -875,8 +1058,8 @@ const MessageItem: React.FC<MessageItemProps> = ({
                                 />
                                 <div className="flex w-[120px] items-center gap-1 sm:w-[150px]">
                                   <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-white/95">
-                                    {file.name}
-                                  </span>
+                              {file.name}
+                            </span>
                                   <button
                                     type="button"
                                     className="shrink-0 rounded p-0.5 text-white/90 hover:bg-white/15"
@@ -894,19 +1077,19 @@ const MessageItem: React.FC<MessageItemProps> = ({
                                     <FiDownload size={12} aria-hidden />
                                   </button>
                                 </div>
-                              </div>
-                            ) : (
-                              <div className="inline-flex max-w-full min-w-0 items-center gap-1 rounded-md border border-white/40 bg-white/20 px-2.5 py-1 text-[11px] font-medium text-white shadow-sm">
-                                <span className="shrink-0 opacity-90">📎</span>
-                                <span className="min-w-0 truncate">{file.name}</span>
-                                {renderFileDownloadButton(file)}
-                              </div>
-                            )}
                           </div>
-                        );
-                      })}
-                    </div>
-                  )}
+                        ) : (
+                              <div className="inline-flex max-w-full min-w-0 items-center gap-1 rounded-md border border-white/40 bg-white/20 px-2.5 py-1 text-[11px] font-medium text-white shadow-sm">
+                            <span className="shrink-0 opacity-90">📎</span>
+                            <span className="min-w-0 truncate">{file.name}</span>
+                                {renderFileDownloadButton(file)}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
                   {editing ? (
                     <div className="flex min-w-[min(420px,70vw)] flex-col gap-2">
                       <textarea
@@ -934,7 +1117,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
                       </div>
                     </div>
                   ) : (
-                    <div className="whitespace-pre-wrap text-sm break-words">{message.content}</div>
+              <div className="whitespace-pre-wrap text-sm break-words">{message.content}</div>
                   )}
                 </div>
                 {/** 与气泡同宽；日期最右，复制/重发在左、悬停显示 */}
@@ -1122,7 +1305,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
                                 <div className={ASSISTANT_IMAGE_THUMB_META_ROW}>
                                   <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-stone-700 dark:text-slate-300">
                                     {file.name}
-                                  </span>
+                </span>
                                   <button
                                     type="button"
                                     className="shrink-0 rounded p-0.5 text-stone-600 hover:bg-stone-200 dark:text-slate-300 dark:hover:bg-slate-600"
