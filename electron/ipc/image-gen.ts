@@ -8,6 +8,11 @@ import https from 'node:https';
 import type { IncomingHttpHeaders } from 'node:http';
 import { URL as NodeURL } from 'node:url';
 import { type ModelConfig, ImageGenerationParams } from '../../src/types';
+import {
+  isUnsetImageProvider,
+  resolveImageProviderId,
+  type InferredImageProviderId,
+} from '../../src/utils/imageProviderPresets';
 
 /** CLI 子进程 stdout/stderr 合并上限，避免海量日志撑爆主进程内存导致假死 */
 const MAX_CLI_COMBINED_LOG_CHARS = 200_000;
@@ -19,18 +24,45 @@ function appendCappedCliLog(acc: string, chunk: Buffer | string): string {
   return acc + (s.length <= room ? s : `${s.slice(0, room)}\n…[CLI 输出已截断]\n`);
 }
 
+/** 清洗粘贴进来的密钥（引号、零宽字符、换行空白） */
+function sanitizeSecretToken(raw: string): string {
+  return String(raw ?? '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .trim()
+    .replace(/^["']+|["']+$/g, '')
+    .replace(/\s+/g, '');
+}
+
 /**
  * 生图环境变量中 `HEADER_<名称>` 形如 `HEADER_AUTHORIZATION=Bearer xxx` → HTTP 请求头 `Authorization`.
  * （名称段按分段首字母大写并 `-` 连接，如 HEADER_X_API_KEY→X-Api-Key）
  */
 function normalizeBearerAuthorization(headerValue: string): string {
-  const t = headerValue.trim();
+  const t = sanitizeSecretToken(headerValue);
   if (!t) return t;
   return /^bearer\s+/i.test(t) ? t : `Bearer ${t}`;
 }
 
 function hasExplicitAuthorizationHeader(headers: Record<string, string>): boolean {
   return Object.keys(headers).some((k) => k.toLowerCase() === 'authorization');
+}
+
+function getAuthorizationHeaderValue(headers: Record<string, string>): string | undefined {
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() === 'authorization') {
+      const t = String(v ?? '').trim();
+      return t || undefined;
+    }
+  }
+  return undefined;
+}
+
+function secretKeyHint(authorizationOrRaw: string | undefined): string {
+  if (!authorizationOrRaw) return '';
+  const k = sanitizeSecretToken(authorizationOrRaw.replace(/^bearer\s+/i, ''));
+  if (!k) return '';
+  if (k.length <= 4) return '****';
+  return `…${k.slice(-4)}`;
 }
 
 /**
@@ -43,8 +75,20 @@ function bearerFromEnvCandidates(
 ): string | undefined {
   if (!env) return undefined;
   for (const k of candidates) {
-    const raw = typeof env[k] === 'string' ? env[k].trim() : '';
+    const raw = typeof env[k] === 'string' ? sanitizeSecretToken(env[k]) : '';
     if (raw) return normalizeBearerAuthorization(raw);
+  }
+  return undefined;
+}
+
+function firstMatchingEnvKey(
+  env: Record<string, string> | undefined,
+  candidates: string[]
+): string | undefined {
+  if (!env) return undefined;
+  for (const k of candidates) {
+    const raw = typeof env[k] === 'string' ? sanitizeSecretToken(env[k]) : '';
+    if (raw) return k;
   }
   return undefined;
 }
@@ -57,21 +101,39 @@ const BAILIAN_API_KEY_CANDIDATES = ['DASHSCOPE_API_KEY', 'BAILIAN_API_KEY', 'ALI
 const OPENAI_API_KEY_CANDIDATES = ['OPENAI_API_KEY', 'REMOTE_API_KEY'];
 /** 智谱 BigModel */
 const ZHIPU_API_KEY_CANDIDATES = ['ZHIPU_API_KEY', 'BIGMODEL_API_KEY', 'GLM_API_KEY'];
+/** MiniMax */
+const MINIMAX_API_KEY_CANDIDATES = ['MINIMAX_API_KEY', 'MINIMAX_TOKEN'];
 
 /**
- * 解析生图鉴权 Bearer（向后兼容）：
- * 1) 结构化 config.apiKey（新）优先；
- * 2) 否则按 provider 选对应厂商候选 env key；
- * 3) provider 未知时退化到旧的「火山 key 全集」推断，保证老配置不破。
+ * 解析有效生图厂商：显式非 custom 优先，否则按 Endpoint/httpFormat 推断。
+ */
+function effectiveImageProvider(
+  config: NonNullable<ModelConfig['imageGeneratorConfig']>,
+  endpoint?: string
+): InferredImageProviderId | undefined {
+  const ep = (endpoint ?? config.endpoint ?? '').trim();
+  const formatHint =
+    config.httpFormat && config.httpFormat !== 'auto' ? config.httpFormat : undefined;
+  return resolveImageProviderId(config.provider, ep, formatHint);
+}
+
+/**
+ * 解析生图鉴权 Bearer：
+ * 1) 结构化 config.apiKey 优先；
+ * 2) 否则按「显式或 Endpoint 推断」的厂商选 env key；
+ * 3) 仍未知时尝试常见云厂商 env 全集。
+ *
+ * 结果优先于 HEADER_AUTHORIZATION（见 mergedCustomHeadersForImageHttp）。
  */
 function resolveProviderBearer(
   config: NonNullable<ModelConfig['imageGeneratorConfig']>,
   env: Record<string, string> | undefined
 ): string | undefined {
-  const structured = typeof config.apiKey === 'string' ? config.apiKey.trim() : '';
+  const structured = typeof config.apiKey === 'string' ? sanitizeSecretToken(config.apiKey) : '';
   if (structured) return normalizeBearerAuthorization(structured);
 
-  switch (config.provider) {
+  const provider = effectiveImageProvider(config);
+  switch (provider) {
     case 'bailian-wanx':
       return bearerFromEnvCandidates(env, BAILIAN_API_KEY_CANDIDATES);
     case 'volc-seedream':
@@ -83,14 +145,74 @@ function resolveProviderBearer(
       );
     case 'zhipu-cogview':
       return bearerFromEnvCandidates(env, ZHIPU_API_KEY_CANDIDATES);
+    case 'minimax':
+      return bearerFromEnvCandidates(env, MINIMAX_API_KEY_CANDIDATES);
     case 'ollama':
     case 'sdwebui':
-    case 'custom':
       return undefined;
     default:
-      /** 老配置（无 provider）：保留原有火山全集推断行为 */
-      return bearerFromEnvCandidates(env, VOLC_API_KEY_CANDIDATES);
+      return (
+        bearerFromEnvCandidates(env, OPENAI_API_KEY_CANDIDATES) ??
+        bearerFromEnvCandidates(env, BAILIAN_API_KEY_CANDIDATES) ??
+        bearerFromEnvCandidates(env, MINIMAX_API_KEY_CANDIDATES) ??
+        bearerFromEnvCandidates(env, ZHIPU_API_KEY_CANDIDATES) ??
+        bearerFromEnvCandidates(env, VOLC_API_KEY_CANDIDATES)
+      );
   }
+}
+
+type ImageHttpAuthMeta = {
+  source: string;
+  keyHint: string;
+};
+
+function describeImageHttpAuth(
+  config: NonNullable<ModelConfig['imageGeneratorConfig']> | undefined,
+  env: Record<string, string> | undefined,
+  headers: Record<string, string>
+): ImageHttpAuthMeta {
+  const auth = getAuthorizationHeaderValue(headers);
+  const hint = secretKeyHint(auth);
+  if (config) {
+    const structured = typeof config.apiKey === 'string' ? sanitizeSecretToken(config.apiKey) : '';
+    if (structured) {
+      return { source: '生图「API 密钥」字段', keyHint: secretKeyHint(structured) || hint };
+    }
+    let envKey: string | undefined;
+    switch (effectiveImageProvider(config)) {
+      case 'bailian-wanx':
+        envKey = firstMatchingEnvKey(env, BAILIAN_API_KEY_CANDIDATES);
+        break;
+      case 'volc-seedream':
+        envKey = firstMatchingEnvKey(env, VOLC_API_KEY_CANDIDATES);
+        break;
+      case 'openai-images':
+        envKey =
+          firstMatchingEnvKey(env, OPENAI_API_KEY_CANDIDATES) ??
+          firstMatchingEnvKey(env, VOLC_API_KEY_CANDIDATES);
+        break;
+      case 'zhipu-cogview':
+        envKey = firstMatchingEnvKey(env, ZHIPU_API_KEY_CANDIDATES);
+        break;
+      case 'minimax':
+        envKey = firstMatchingEnvKey(env, MINIMAX_API_KEY_CANDIDATES);
+        break;
+      default:
+        envKey =
+          firstMatchingEnvKey(env, OPENAI_API_KEY_CANDIDATES) ??
+          firstMatchingEnvKey(env, BAILIAN_API_KEY_CANDIDATES) ??
+          firstMatchingEnvKey(env, MINIMAX_API_KEY_CANDIDATES) ??
+          firstMatchingEnvKey(env, ZHIPU_API_KEY_CANDIDATES) ??
+          firstMatchingEnvKey(env, VOLC_API_KEY_CANDIDATES);
+        break;
+    }
+    if (envKey) return { source: `环境变量 ${envKey}`, keyHint: hint };
+  }
+  if (hasExplicitAuthorizationHeader(extraHttpHeadersFromImageEnv(env))) {
+    return { source: '环境变量 HEADER_AUTHORIZATION', keyHint: hint };
+  }
+  if (auth) return { source: 'Authorization 请求头', keyHint: hint };
+  return { source: '未携带', keyHint: '' };
 }
 
 function mergedCustomHeadersForImageHttp(
@@ -98,9 +220,12 @@ function mergedCustomHeadersForImageHttp(
   config?: NonNullable<ModelConfig['imageGeneratorConfig']>
 ): Record<string, string> {
   const merged = extraHttpHeadersFromImageEnv(env);
-  if (!hasExplicitAuthorizationHeader(merged)) {
-    const b = config ? resolveProviderBearer(config, env) : bearerFromEnvCandidates(env, VOLC_API_KEY_CANDIDATES);
-    if (b) merged.Authorization = b;
+  /** 结构化 apiKey / 厂商 env key 优先于 HEADER_AUTHORIZATION，避免发错 Bearer */
+  const fromProvider = config
+    ? resolveProviderBearer(config, env)
+    : bearerFromEnvCandidates(env, VOLC_API_KEY_CANDIDATES);
+  if (fromProvider) {
+    merged.Authorization = fromProvider;
   }
   return merged;
 }
@@ -745,8 +870,10 @@ function resolveOpenAiCompatibleImageModel(
 const volcSeedreamAdapter: HttpImageProviderAdapter = {
   id: 'volc-seedream',
   match: ({ mode, endpoint, config }) =>
-    config.provider === 'volc-seedream' ||
-    (mode === 'openai_images' && isVolcArkImageGenerationsEndpoint(endpoint)),
+    effectiveImageProvider(config, endpoint) === 'volc-seedream' ||
+    (isUnsetImageProvider(config.provider) &&
+      mode === 'openai_images' &&
+      isVolcArkImageGenerationsEndpoint(endpoint)),
   async build({ endpoint, config, env, request, headers }) {
     if (!hasExplicitAuthorizationHeader(headers)) {
       throw new Error(
@@ -768,14 +895,16 @@ const volcSeedreamAdapter: HttpImageProviderAdapter = {
 
 const openAiImagesAdapter: HttpImageProviderAdapter = {
   id: 'openai-images',
-  match: ({ mode, config }) =>
-    config.provider === 'openai-images' ||
-    config.provider === 'zhipu-cogview' ||
-    (!config.provider && mode === 'openai_images'),
+  match: ({ endpoint, config }) => {
+    const id = effectiveImageProvider(config, endpoint);
+    return id === 'openai-images' || id === 'zhipu-cogview';
+  },
   build({ endpoint, config, env, request }) {
     const model = resolveOpenAiCompatibleImageModel(config, env, false);
     /** 智谱 CogView 只返回 URL（不支持 b64_json），强制用 url */
-    const isZhipu = config.provider === 'zhipu-cogview';
+    const isZhipu =
+      effectiveImageProvider(config, endpoint) === 'zhipu-cogview' ||
+      /\bbigmodel\.cn\b/i.test(endpoint);
     const rf = isZhipu
       ? 'url'
       : (env?.IMAGE_RESPONSE_FORMAT || env?.RESPONSE_FORMAT || '').trim() || 'b64_json';
@@ -795,14 +924,15 @@ const openAiImagesAdapter: HttpImageProviderAdapter = {
       response_format: rf === 'url' ? 'url' : 'b64_json',
     };
     if (request.count > 1) body.n = Math.max(1, Math.min(10, request.count));
-    return { provider: 'openai-images', mode: 'openai_images', endpoint, body };
+    return { provider: isZhipu ? 'zhipu-cogview' : 'openai-images', mode: 'openai_images', endpoint, body };
   },
 };
 
 const sdWebUiAdapter: HttpImageProviderAdapter = {
   id: 'sdwebui',
-  match: ({ mode, config }) =>
-    config.provider === 'sdwebui' || (!config.provider && mode === 'sdwebui'),
+  match: ({ mode, endpoint, config }) =>
+    effectiveImageProvider(config, endpoint) === 'sdwebui' ||
+    (isUnsetImageProvider(config.provider) && mode === 'sdwebui'),
   build({ endpoint, request }) {
     return {
       provider: 'sdwebui',
@@ -825,8 +955,9 @@ const sdWebUiAdapter: HttpImageProviderAdapter = {
 
 const ollamaAdapter: HttpImageProviderAdapter = {
   id: 'ollama',
-  match: ({ mode, config }) =>
-    config.provider === 'ollama' || (!config.provider && mode === 'ollama'),
+  match: ({ mode, endpoint, config }) =>
+    effectiveImageProvider(config, endpoint) === 'ollama' ||
+    (isUnsetImageProvider(config.provider) && mode === 'ollama'),
   build({ endpoint, config, env, request }) {
     /** config.model 优先（新），其次 env（向后兼容） */
     const model =
@@ -940,9 +1071,7 @@ function inferBailianWanxSize(params: ImageGenerationParams, env: Record<string,
 
 const bailianWanxAdapter: HttpImageProviderAdapter = {
   id: 'bailian-wanx',
-  match: ({ config, endpoint }) =>
-    config.provider === 'bailian-wanx' ||
-    (!config.provider && /\bdashscope\.aliyuncs\.com\b/i.test(endpoint)),
+  match: ({ config, endpoint }) => effectiveImageProvider(config, endpoint) === 'bailian-wanx',
   async build({ endpoint, config, env, request, headers }) {
     /** 防御：wan2.6 同步调用必须用 multimodal-generation/generation；旧版 image-synthesis 会返回异步 task_id */
     if (!/multimodal-generation\/generation/i.test(endpoint)) {
@@ -994,8 +1123,197 @@ const bailianWanxAdapter: HttpImageProviderAdapter = {
   },
 };
 
+/**
+ * MiniMax 响应：
+ * 成功：{ data: { image_urls?: string[], image_base64?: string[] }, base_resp: { status_code: 0 } }
+ * 失败：常仅返回 { base_resp: { status_code, status_msg } }（HTTP 仍可能是 200）
+ */
+function looksLikeMiniMaxResponseJson(data: unknown): boolean {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+  return Object.prototype.hasOwnProperty.call(data, 'base_resp');
+}
+
+function formatMiniMaxStatusError(
+  statusCode: number,
+  statusMsg: string,
+  meta?: { host?: string; authSource?: string; keyHint?: string }
+): string {
+  const hints: Record<number, string> = {
+    1002: '触发限流，请稍后重试',
+    1004: '账号鉴权失败，请检查 API Key 是否正确、是否填写在生图模型「API 密钥」',
+    1008: '账户余额不足，请前往 MiniMax 开放平台充值',
+    1026: '提示词含敏感内容，请修改后再试',
+    2013: '请求参数无效：请确认模型名为 image-01，Endpoint 为 …/v1/image_generation，宽高比合法',
+    2049:
+      'API Key 无效或与站点不匹配：请确认密钥填在生图「API 密钥」（不是对话模型密钥）；国内站 Key 配 api.minimaxi.com，国际站 Key 配 api.minimax.io',
+  };
+  const hint = hints[statusCode] || '请查阅 MiniMax 开放平台错误码说明';
+  const detail = statusMsg.trim() ? `，${statusMsg.trim()}` : '';
+  let msg = `MiniMax 生图失败（status_code=${statusCode}${detail}）：${hint}`;
+  if (statusCode === 2049 && meta) {
+    const bits = [
+      meta.host ? `host=${meta.host}` : '',
+      meta.authSource ? `鉴权来自 ${meta.authSource}` : '',
+      meta.keyHint ? `密钥后缀 ${meta.keyHint}` : '',
+    ].filter(Boolean);
+    if (bits.length) msg += `（${bits.join('；')}）`;
+    if (meta.host && /minimaxi\.com/i.test(meta.host)) {
+      msg += '。若 Key 来自国际站 platform.minimax.io，请把 Endpoint 改为 https://api.minimax.io/v1/image_generation';
+    } else if (meta.host && /minimax\.io/i.test(meta.host)) {
+      msg += '。若 Key 来自国内站 platform.minimaxi.com，请把 Endpoint 改为 https://api.minimaxi.com/v1/image_generation';
+    }
+  }
+  return msg;
+}
+
+function assertMiniMaxBaseRespOk(
+  data: unknown,
+  meta?: { host?: string; authSource?: string; keyHint?: string }
+): void {
+  if (!data || typeof data !== 'object') return;
+  const br = (data as Record<string, unknown>).base_resp;
+  if (!br || typeof br !== 'object') return;
+  const statusCode = Number((br as Record<string, unknown>).status_code);
+  if (!Number.isFinite(statusCode) || statusCode === 0) return;
+  const statusMsg = String((br as Record<string, unknown>).status_msg ?? '');
+  throw new Error(formatMiniMaxStatusError(statusCode, statusMsg, meta));
+}
+
+function peekMiniMaxStatusCode(data: unknown): number | null {
+  if (!data || typeof data !== 'object') return null;
+  const br = (data as Record<string, unknown>).base_resp;
+  if (!br || typeof br !== 'object') return null;
+  const statusCode = Number((br as Record<string, unknown>).status_code);
+  return Number.isFinite(statusCode) ? statusCode : null;
+}
+
+function extractImagesFromMiniMaxResponse(
+  data: unknown,
+  meta?: { host?: string; authSource?: string; keyHint?: string }
+): { urls: string[]; b64s: string[] } {
+  if (!data || typeof data !== 'object') return { urls: [], b64s: [] };
+  assertMiniMaxBaseRespOk(data, meta);
+  const j = data as Record<string, unknown>;
+  const d = (j.data && typeof j.data === 'object' ? j.data : null) as Record<string, unknown> | null;
+  const urlsRaw = d?.image_urls;
+  const b64Raw = d?.image_base64;
+  const urls = Array.isArray(urlsRaw)
+    ? urlsRaw.filter((u): u is string => typeof u === 'string' && /^https?:\/\//i.test(u))
+    : [];
+  const b64s = Array.isArray(b64Raw)
+    ? b64Raw.filter((u): u is string => typeof u === 'string' && u.trim().length > 32)
+    : [];
+  return { urls, b64s };
+}
+
+/**
+ * 纠正 MiniMax 生图 URL：强制 path=/v1/image_generation；旧 chat 域名改到国际站。
+ */
+function normalizeMiniMaxImageEndpoint(endpoint: string): string {
+  try {
+    const u = new URL(endpoint.trim());
+    if (/^api\.minimax\.chat$/i.test(u.hostname)) {
+      u.hostname = 'api.minimax.io';
+    }
+    if (/\bapi\.minimaxi?\.(io|com)\b/i.test(u.hostname)) {
+      u.pathname = '/v1/image_generation';
+      u.search = '';
+      u.hash = '';
+      return u.toString().replace(/\/$/, '');
+    }
+  } catch {
+    /* ignore */
+  }
+  return endpoint.trim();
+}
+
+/** 国内/国际站互切（2049 时自动重试） */
+function alternateMiniMaxImageEndpoint(endpoint: string): string | null {
+  try {
+    const u = new URL(normalizeMiniMaxImageEndpoint(endpoint));
+    if (/^api\.minimaxi\.com$/i.test(u.hostname)) {
+      u.hostname = 'api.minimax.io';
+      return u.toString().replace(/\/$/, '');
+    }
+    if (/^api\.minimax\.io$/i.test(u.hostname)) {
+      u.hostname = 'api.minimaxi.com';
+      return u.toString().replace(/\/$/, '');
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+/**
+ * MiniMax 用宽高比（aspect_ratio）而非像素尺寸；由 width/height 推断最接近的比例。
+ */
+function inferMiniMaxAspectRatio(params: ImageGenerationParams): string {
+  const w = typeof params.width === 'number' && params.width > 0 ? params.width : 1024;
+  const h = typeof params.height === 'number' && params.height > 0 ? params.height : 1024;
+  if (w === h) return '1:1';
+  const ratio = w / h;
+  /** 匹配最接近的 MiniMax 支持比例 */
+  const candidates: Array<{ ar: string; val: number }> = [
+    { ar: '1:1', val: 1 },
+    { ar: '16:9', val: 16 / 9 },
+    { ar: '9:16', val: 9 / 16 },
+    { ar: '4:3', val: 4 / 3 },
+    { ar: '3:4', val: 3 / 4 },
+    { ar: '3:2', val: 3 / 2 },
+    { ar: '2:3', val: 2 / 3 },
+  ];
+  let best = candidates[0]!;
+  let bestDiff = Math.abs(Math.log(ratio / best.val));
+  for (const c of candidates) {
+    const diff = Math.abs(Math.log(ratio / c.val));
+    if (diff < bestDiff) {
+      best = c;
+      bestDiff = diff;
+    }
+  }
+  return best.ar;
+}
+
+const minimaxAdapter: HttpImageProviderAdapter = {
+  id: 'minimax',
+  match: ({ config, endpoint }) => effectiveImageProvider(config, endpoint) === 'minimax',
+  async build({ endpoint, config, env, request, headers }) {
+    if (!hasExplicitAuthorizationHeader(headers)) {
+      throw new Error(
+        'MiniMax 鉴权未带上：请在生图模型「API 密钥」字段填写 MiniMax API Key（同一模型顶部的对话 API 密钥也可作为回退），或在「环境变量」中填写 `MINIMAX_API_KEY=…`。国内站 Endpoint：https://api.minimaxi.com/v1/image_generation ；国际站：https://api.minimax.io/v1/image_generation'
+      );
+    }
+    const model =
+      (typeof config.model === 'string' ? config.model.trim() : '') ||
+      env?.REMOTE_IMAGE_MODEL ||
+      env?.IMAGE_MODEL ||
+      'image-01';
+    const aspectRatio = inferMiniMaxAspectRatio(request.params);
+    const n =
+      typeof request.count === 'number' && request.count > 0
+        ? Math.max(1, Math.min(9, Math.round(request.count)))
+        : 1;
+    const body: Record<string, unknown> = {
+      model,
+      prompt: request.prompt ?? '',
+      aspect_ratio: aspectRatio,
+      response_format: 'url',
+      n,
+      prompt_optimizer: true,
+    };
+    return {
+      provider: 'minimax',
+      mode: 'auto',
+      endpoint: normalizeMiniMaxImageEndpoint(endpoint),
+      body,
+    };
+  },
+};
+
 const httpImageProviderAdapters: HttpImageProviderAdapter[] = [
   bailianWanxAdapter,
+  minimaxAdapter,
   volcSeedreamAdapter,
   openAiImagesAdapter,
   sdWebUiAdapter,
@@ -1613,9 +1931,10 @@ async function generateImageHttp(
     join(electronApp.getPath('documents'), 'MyAgent', 'GeneratedImages');
   await fs.mkdir(outputDir, { recursive: true }).catch(() => {});
 
-  const endpoint = config.endpoint.trim();
-  const mode = detectHttpFormat(endpoint, config);
+  const configuredEndpoint = config.endpoint.trim();
+  const mode = detectHttpFormat(configuredEndpoint, config);
   const customHdr = mergedCustomHeadersForImageHttp(config.env, config);
+  const authMeta = describeImageHttpAuth(config, config.env, customHdr);
 
   /** Node 兜底请求也需鉴权头等（远端 OpenAI Images 同理） */
   const mergedFetchHeaders: Record<string, string> = {
@@ -1626,16 +1945,25 @@ async function generateImageHttp(
 
   const builtReq = await buildImageHttpRequestViaAdapter({
     mode,
-    endpoint,
+    endpoint: configuredEndpoint,
     config,
     headers: mergedFetchHeaders,
     params,
   });
   const postBody = builtReq.body;
   const providerKind = builtReq.provider;
+  let requestUrl = (builtReq.endpoint || configuredEndpoint).trim();
   const ollamaModel = builtReq.ollamaModel || config.env?.OLLAMA_MODEL || config.env?.ollama_model || 'flux';
   const volcOpenAi = Boolean(builtReq.volcOpenAi);
   const readBodyAsStreamingText = Boolean(builtReq.readBodyAsStreamingText);
+
+  if (providerKind === 'minimax') {
+    console.warn('[生图 HTTP] MiniMax 请求', {
+      url: requestUrl.slice(0, 220),
+      authSource: authMeta.source,
+      keyHint: authMeta.keyHint || undefined,
+    });
+  }
 
   /**
    * 「fetch + 读完 body」共用同一 AbortSignal 与时间预算：不可在仅收到头部后清掉定时器，
@@ -1648,7 +1976,7 @@ async function generateImageHttp(
   let buf: Buffer;
 
   try {
-    response = await fetch(endpoint, {
+    response = await fetch(requestUrl, {
       method: 'POST',
       headers: mergedFetchHeaders,
       body: JSON.stringify(postBody),
@@ -1672,11 +2000,60 @@ async function generateImageHttp(
     clearTimeout(abortTimer);
   }
 
+  /** MiniMax 2049 常见于国内/国际站与 Key 不匹配：自动换站重试一次 */
+  if (providerKind === 'minimax' && buf.length && response.ok) {
+    try {
+      const peeked = JSON.parse(stripUtf8Bom(buf.toString('utf8'))) as unknown;
+      if (peekMiniMaxStatusCode(peeked) === 2049) {
+        const alt = alternateMiniMaxImageEndpoint(requestUrl);
+        if (alt && alt !== requestUrl) {
+          console.warn('[生图 HTTP] MiniMax status_code=2049，尝试另一站点', {
+            from: requestUrl.slice(0, 220),
+            to: alt.slice(0, 220),
+            authSource: authMeta.source,
+          });
+          const retryCtrl = new AbortController();
+          const retryTimer = setTimeout(() => retryCtrl.abort(), IMAGE_GEN_TIMEOUT_MS);
+          try {
+            const retryRes = await fetch(alt, {
+              method: 'POST',
+              headers: mergedFetchHeaders,
+              body: JSON.stringify(postBody),
+              signal: retryCtrl.signal,
+            });
+            const retryBuf = Buffer.from(await retryRes.arrayBuffer());
+            if (retryRes.ok && retryBuf.length) {
+              let retryOk = false;
+              try {
+                const retryJson = JSON.parse(stripUtf8Bom(retryBuf.toString('utf8'))) as unknown;
+                const retryCode = peekMiniMaxStatusCode(retryJson);
+                retryOk = retryCode === null || retryCode === 0;
+              } catch {
+                retryOk = false;
+              }
+              if (retryOk) {
+                response = retryRes;
+                buf = retryBuf;
+                requestUrl = alt;
+              }
+            }
+          } finally {
+            clearTimeout(retryTimer);
+          }
+        }
+      }
+    } catch {
+      /* 非 JSON 或解析失败则走原解析路径 */
+    }
+  }
+
   let httpStatus = response.status;
   let ct = String(response.headers.get('content-type') ?? '').toLowerCase();
   let clHdr = response.headers.get('content-length');
   const teHdr = response.headers.get('transfer-encoding');
-  let lastEmptyDiagEndpoint = endpoint;
+  let lastEmptyDiagEndpoint = requestUrl;
+  /** 后续兜底/解析统一用实际请求 URL（可能已换站） */
+  const endpoint = requestUrl;
 
   if (!response.ok) {
     /** 按厂商给出针对性排查提示，避免一律显示 Ollama 模板 */
@@ -1877,6 +2254,57 @@ async function generateImageHttp(
           return writePngBuffersToOutputFiles(buffers, outputDir, params);
         }
       }
+    }
+  }
+
+  /**
+   * MiniMax 响应：{ data: { image_urls | image_base64 }, base_resp }
+   * 失败时常仅有 base_resp（HTTP 仍可能 200），必须先读 status_code。
+   * 按 provider 或响应形态识别，避免自配 Endpoint/custom 时漏解析。
+   */
+  if (!looksLikeBinaryImage(buf) && !ct.startsWith('image/')) {
+    let mmJson: unknown = null;
+    try {
+      mmJson = JSON.parse(utf8Full) as unknown;
+    } catch {
+      /* fallthrough */
+    }
+    if (
+      mmJson &&
+      (providerKind === 'minimax' || looksLikeMiniMaxResponseJson(mmJson))
+    ) {
+      let mmHost = '';
+      try {
+        mmHost = new URL(endpoint).host;
+      } catch {
+        mmHost = endpoint.slice(0, 80);
+      }
+      const mmMeta = {
+        host: mmHost,
+        authSource: authMeta.source,
+        keyHint: authMeta.keyHint,
+      };
+      const { urls: mmUrls, b64s: mmB64s } = extractImagesFromMiniMaxResponse(mmJson, mmMeta);
+      if (mmUrls.length > 0) {
+        const buffers: Buffer[] = [];
+        for (const u of mmUrls) {
+          buffers.push(await fetchImageBinaryFromUrl(u, IMAGE_GEN_TIMEOUT_MS));
+        }
+        return writePngBuffersToOutputFiles(buffers, outputDir, params);
+      }
+      if (mmB64s.length > 0) {
+        const buffers: Buffer[] = [];
+        for (const b of mmB64s) {
+          const buf2 = base64FieldToImageBuffer(b);
+          if (buf2) buffers.push(buf2);
+        }
+        if (buffers.length > 0) {
+          return writePngBuffersToOutputFiles(buffers, outputDir, params);
+        }
+      }
+      throw new Error(
+        'MiniMax 返回成功状态，但未包含 image_urls / image_base64。请确认模型为 image-01，且 Endpoint 指向 /v1/image_generation。'
+      );
     }
   }
 

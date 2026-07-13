@@ -33,6 +33,10 @@ import {
   IMAGE_PROVIDER_PRESETS,
   getImageProviderPreset,
   getPresetDefaults,
+  imageGenNeedsApiKey,
+  inferImageProviderFromEndpoint,
+  resolveImageProviderId,
+  suggestedHttpFormatForProvider,
   type ImageProviderId,
 } from '../utils/imageProviderPresets';
 
@@ -68,7 +72,7 @@ const defaultFormData: EditingFormData = {
   isLocal: false,
   maxTokens: 4096,
   isImageGenerator: false,
-  imageGenType: 'cli',
+  imageGenType: 'http',
   imageGenCommand: '',
   imageGenEndpoint: '',
   imageGenEnv: '',
@@ -280,7 +284,7 @@ const SettingsPanel: React.FC = () => {
       isLocal: model.isLocal,
       maxTokens: model.maxTokens,
       isImageGenerator: model.isImageGenerator || false,
-      imageGenType: model.imageGeneratorConfig?.type || 'cli',
+      imageGenType: model.imageGeneratorConfig?.type || 'http',
       imageGenCommand: model.imageGeneratorConfig?.command || '',
       imageGenEndpoint: model.imageGeneratorConfig?.endpoint || '',
       imageGenEnv: model.imageGeneratorConfig?.env
@@ -309,6 +313,24 @@ const SettingsPanel: React.FC = () => {
       return;
     }
 
+    const existingImageKey =
+      editingId != null
+        ? models.find((m) => m.id === editingId)?.imageGeneratorConfig?.apiKey?.trim()
+        : undefined;
+    /** 生图密钥：优先表单字段；空则保留已存密钥；再回退同一模型顶部「API 密钥」 */
+    const resolvedImageApiKey =
+      formData.imageGenApiKey.trim() || existingImageKey || formData.apiKey.trim() || '';
+
+    /** 显式厂商（非 custom）优先；否则按 Endpoint 推断后写入，便于列表展示与老逻辑兼容 */
+    const resolvedImageProvider =
+      formData.imageGenProvider && formData.imageGenProvider !== 'custom'
+        ? formData.imageGenProvider
+        : resolveImageProviderId(
+            formData.imageGenProvider,
+            formData.imageGenEndpoint,
+            formData.imageGenHttpFormat
+          );
+
     const payload: ModelConfig = {
       id: editingId || Date.now().toString(),
       name: formData.name,
@@ -324,8 +346,8 @@ const SettingsPanel: React.FC = () => {
         ? {
             imageGeneratorConfig: {
               type: formData.imageGenType as 'cli' | 'http',
-              ...(formData.imageGenProvider ? { provider: formData.imageGenProvider } : {}),
-              ...(formData.imageGenApiKey.trim() ? { apiKey: formData.imageGenApiKey.trim() } : {}),
+              ...(resolvedImageProvider ? { provider: resolvedImageProvider } : {}),
+              ...(resolvedImageApiKey ? { apiKey: resolvedImageApiKey } : {}),
               ...(formData.imageGenModel.trim() ? { model: formData.imageGenModel.trim() } : {}),
               command: formData.imageGenCommand,
               endpoint: formData.imageGenEndpoint,
@@ -516,72 +538,134 @@ const SettingsPanel: React.FC = () => {
 
               {formData.isImageGenerator ? (
                 <>
-                  {/* ===== 第一步：厂商预设 ===== */}
+                  {/* ===== 工具类型：HTTP 优先 ===== */}
                   <div>
                     <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
-                      {t('settings.form.imageProvider')}
+                      {t('settings.form.toolType')}
                     </label>
                     <select
-                      value={formData.imageGenProvider || ''}
-                      onChange={(e) => {
-                        const id = e.target.value as ImageProviderId | '';
-                        const defaults = getPresetDefaults(id || undefined);
-                        const switching = id !== formData.imageGenProvider;
-                        setFormData({
-                          ...formData,
-                          imageGenProvider: id,
-                          /** 预设默认值映射到 formData 字段名（custom 不覆盖） */
-                          imageGenType: id === 'custom' ? formData.imageGenType : (defaults.type ?? formData.imageGenType),
-                          imageGenEndpoint: id === 'custom' ? formData.imageGenEndpoint : (defaults.endpoint ?? formData.imageGenEndpoint),
-                          imageGenHttpFormat: id === 'custom' ? formData.imageGenHttpFormat : (defaults.httpFormat ?? formData.imageGenHttpFormat),
-                          /** 切换厂商时：模型名取预设默认值，API Key 清空待填 */
-                          imageGenApiKey: id && switching ? '' : formData.imageGenApiKey,
-                          imageGenModel: switching ? (defaults.model ?? '') : formData.imageGenModel,
-                        });
-                      }}
+                      value={formData.imageGenType}
+                      onChange={(e) => setFormData({ ...formData, imageGenType: e.target.value })}
                       className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-medium focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
                     >
-                      <option value="">{t('settings.form.imageProviderPh')}</option>
-                      {IMAGE_PROVIDER_PRESETS.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {t(p.labelKey)}
-                        </option>
-                      ))}
+                      <option value="http">{t('settings.form.httpServer')}</option>
+                      <option value="cli">{t('settings.form.cliTool')}</option>
                     </select>
-                    {(() => {
-                      const preset = getImageProviderPreset(formData.imageGenProvider || undefined);
-                      return preset ? (
-                        <p className="mt-1 text-[10px] text-stone-500 dark:text-slate-500">
-                          {t(preset.descKey)}
-                        </p>
-                      ) : null;
-                    })()}
                   </div>
 
-                  {/* ===== 第二步：简单字段（API Key / 模型名） ===== */}
-                  {(() => {
-                    const preset = getImageProviderPreset(formData.imageGenProvider || undefined);
-                    const showApiField = preset ? preset.needsApiKey : false;
-                    if (!showApiField) return null;
-                    return (
-                      <div className="space-y-2">
-                        <div>
-                          <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
-                            {t('settings.form.imageApiKey')}
-                          </label>
-                          <input
-                            type="password"
-                            autoComplete="off"
-                            value={formData.imageGenApiKey}
-                            onChange={(e) => setFormData({ ...formData, imageGenApiKey: e.target.value })}
-                            placeholder={
-                              preset?.apiKeyPlaceholderKey
-                                ? t(preset.apiKeyPlaceholderKey)
-                                : 'sk-…'
-                            }
-                            className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
-                          />
+                  {formData.imageGenType === 'http' ? (
+                    <>
+                      {/* ===== Endpoint 优先：粘贴地址即可自适配 ===== */}
+                      <div>
+                        <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                          {t('settings.form.httpEndpoint')}
+                        </label>
+                        <input
+                          type="text"
+                          value={formData.imageGenEndpoint}
+                          onChange={(e) => {
+                            const endpoint = e.target.value;
+                            const inferred = inferImageProviderFromEndpoint(
+                              endpoint,
+                              formData.imageGenHttpFormat
+                            );
+                            const suggestedFmt = suggestedHttpFormatForProvider(inferred);
+                            setFormData({
+                              ...formData,
+                              imageGenEndpoint: endpoint,
+                              /** 仅在仍为 auto 时跟推断结果回填格式，不覆盖用户手动选择 */
+                              ...(formData.imageGenHttpFormat === 'auto' && suggestedFmt && suggestedFmt !== 'auto'
+                                ? { imageGenHttpFormat: suggestedFmt }
+                                : {}),
+                              /** 模型名为空时用预设默认模型 */
+                              ...(inferred && !formData.imageGenModel.trim()
+                                ? {
+                                    imageGenModel:
+                                      getImageProviderPreset(inferred)?.defaultModel ||
+                                      formData.imageGenModel,
+                                  }
+                                : {}),
+                            });
+                          }}
+                          placeholder={t('settings.form.httpEndpointPh')}
+                          className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-medium focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
+                        />
+                        {(() => {
+                          const inferred = resolveImageProviderId(
+                            formData.imageGenProvider,
+                            formData.imageGenEndpoint,
+                            formData.imageGenHttpFormat
+                          );
+                          if (!inferred || !formData.imageGenEndpoint.trim()) return null;
+                          const preset = getImageProviderPreset(inferred);
+                          return (
+                            <p className="mt-1 text-[10px] text-emerald-700/90 dark:text-emerald-400/90">
+                              {t('settings.form.imageProviderInferred', {
+                                name: preset ? t(preset.labelKey) : inferred,
+                              })}
+                            </p>
+                          );
+                        })()}
+                      </div>
+
+                      {/* ===== API Key / 模型名：云端或未识别时显示 ===== */}
+                      {imageGenNeedsApiKey(
+                        formData.imageGenProvider,
+                        formData.imageGenEndpoint,
+                        formData.imageGenHttpFormat
+                      ) ? (
+                        <div className="space-y-2">
+                          <div>
+                            <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                              {t('settings.form.imageApiKey')}
+                            </label>
+                            <input
+                              type="password"
+                              autoComplete="off"
+                              value={formData.imageGenApiKey}
+                              onChange={(e) =>
+                                setFormData({ ...formData, imageGenApiKey: e.target.value })
+                              }
+                              placeholder={(() => {
+                                const id = resolveImageProviderId(
+                                  formData.imageGenProvider,
+                                  formData.imageGenEndpoint,
+                                  formData.imageGenHttpFormat
+                                );
+                                const ph = id
+                                  ? getImageProviderPreset(id)?.apiKeyPlaceholderKey
+                                  : undefined;
+                                return ph ? t(ph) : 'sk-…';
+                              })()}
+                              className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                              {t('settings.form.imageModel')}
+                            </label>
+                            <input
+                              type="text"
+                              value={formData.imageGenModel}
+                              onChange={(e) =>
+                                setFormData({ ...formData, imageGenModel: e.target.value })
+                              }
+                              placeholder={(() => {
+                                const id = resolveImageProviderId(
+                                  formData.imageGenProvider,
+                                  formData.imageGenEndpoint,
+                                  formData.imageGenHttpFormat
+                                );
+                                return (
+                                  (id && getImageProviderPreset(id)?.defaultModel) ||
+                                  t('settings.form.imageModelPh')
+                                );
+                              })()}
+                              className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
+                            />
+                          </div>
                         </div>
+                      ) : (
                         <div>
                           <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
                             {t('settings.form.imageModel')}
@@ -589,16 +673,106 @@ const SettingsPanel: React.FC = () => {
                           <input
                             type="text"
                             value={formData.imageGenModel}
-                            onChange={(e) => setFormData({ ...formData, imageGenModel: e.target.value })}
-                            placeholder={preset?.defaultModel || t('settings.form.imageModelPh')}
+                            onChange={(e) =>
+                              setFormData({ ...formData, imageGenModel: e.target.value })
+                            }
+                            placeholder={
+                              getImageProviderPreset(
+                                resolveImageProviderId(
+                                  formData.imageGenProvider,
+                                  formData.imageGenEndpoint,
+                                  formData.imageGenHttpFormat
+                                ) || undefined
+                              )?.defaultModel || t('settings.form.imageModelPh')
+                            }
                             className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
                           />
                         </div>
-                      </div>
-                    );
-                  })()}
+                      )}
 
-                  {/* ===== 第三步：高级（CLI / endpoint / env / httpFormat） ===== */}
+                      {/* ===== 可选：快捷预设（仅回填，非必选） ===== */}
+                      <div>
+                        <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                          {t('settings.form.imageProviderOptional')}
+                        </label>
+                        <select
+                          value={formData.imageGenProvider || ''}
+                          onChange={(e) => {
+                            const id = e.target.value as ImageProviderId | '';
+                            const defaults = getPresetDefaults(id || undefined);
+                            const switching = id !== formData.imageGenProvider;
+                            setFormData({
+                              ...formData,
+                              imageGenProvider: id,
+                              imageGenType:
+                                id === 'custom'
+                                  ? formData.imageGenType
+                                  : defaults.type ?? formData.imageGenType,
+                              imageGenEndpoint:
+                                id === 'custom'
+                                  ? formData.imageGenEndpoint
+                                  : defaults.endpoint ?? formData.imageGenEndpoint,
+                              imageGenHttpFormat:
+                                id === 'custom'
+                                  ? formData.imageGenHttpFormat
+                                  : defaults.httpFormat ?? formData.imageGenHttpFormat,
+                              imageGenApiKey:
+                                id && switching ? formData.imageGenApiKey : formData.imageGenApiKey,
+                              imageGenModel: switching
+                                ? defaults.model ?? formData.imageGenModel
+                                : formData.imageGenModel,
+                            });
+                          }}
+                          className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-medium focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
+                        >
+                          <option value="">{t('settings.form.imageProviderPh')}</option>
+                          {IMAGE_PROVIDER_PRESETS.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {t(p.labelKey)}
+                            </option>
+                          ))}
+                        </select>
+                        <p className="mt-1 text-[10px] text-stone-500 dark:text-slate-500">
+                          {t('settings.form.imageProviderHint')}
+                        </p>
+                      </div>
+                    </>
+                  ) : null}
+
+                  {formData.imageGenType === 'cli' ? (
+                    <div className="space-y-2">
+                      <div>
+                        <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                          {t('settings.form.cliCommand')}
+                        </label>
+                        <input
+                          type="text"
+                          value={formData.imageGenCommand}
+                          onChange={(e) =>
+                            setFormData({ ...formData, imageGenCommand: e.target.value })
+                          }
+                          placeholder={t('settings.form.cliCommandPh')}
+                          className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-medium focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                          {t('settings.form.cliArgs')}
+                        </label>
+                        <textarea
+                          value={formData.imageGenCliArgLines}
+                          onChange={(e) =>
+                            setFormData({ ...formData, imageGenCliArgLines: e.target.value })
+                          }
+                          placeholder={t('settings.form.cliArgsPh')}
+                          rows={5}
+                          className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-[10px] font-mono leading-snug bg-stone-50/90 dark:bg-slate-800 text-stone-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary-500"
+                        />
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {/* ===== 高级：响应格式 / env（CLI 参数已在上方） ===== */}
                   <details className="group/details rounded-lg border border-stone-300/38 bg-stone-100/70 px-2 py-1.5 dark:border-white/10 dark:bg-slate-900/55">
                     <summary className="flex cursor-pointer items-center gap-1 select-none text-[10px] font-medium text-stone-600 dark:text-slate-400 list-none [&::-webkit-details-marker]:hidden">
                       <FiChevronRight
@@ -609,81 +783,31 @@ const SettingsPanel: React.FC = () => {
                       {t('settings.form.imageGenAdvanced')}
                     </summary>
                     <div className="mt-2 space-y-3 border-t border-stone-300/35 pt-2 dark:border-white/8">
-                      <div>
-                        <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
-                          {t('settings.form.toolType')}
-                        </label>
-                        <select
-                          value={formData.imageGenType}
-                          onChange={(e) => setFormData({ ...formData, imageGenType: e.target.value })}
-                          className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-medium focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
-                        >
-                          <option value="cli">{t('settings.form.cliTool')}</option>
-                          <option value="http">{t('settings.form.httpServer')}</option>
-                        </select>
-                      </div>
-
-                      {formData.imageGenType === 'cli' ? (
+                      {formData.imageGenType === 'http' ? (
                         <div>
                           <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
-                            {t('settings.form.cliCommand')}
+                            {t('settings.form.responseFormat')}
                           </label>
-                          <input
-                            type="text"
-                            value={formData.imageGenCommand}
-                            onChange={(e) => setFormData({ ...formData, imageGenCommand: e.target.value })}
-                            placeholder={t('settings.form.cliCommandPh')}
-                            className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-medium focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
-                          />
-                          <div className="mt-2">
-                            <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
-                              {t('settings.form.cliArgs')}
-                            </label>
-                            <textarea
-                              value={formData.imageGenCliArgLines}
-                              onChange={(e) => setFormData({ ...formData, imageGenCliArgLines: e.target.value })}
-                              placeholder={t('settings.form.cliArgsPh')}
-                              rows={5}
-                              className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-[10px] font-mono leading-snug bg-stone-50/90 dark:bg-slate-800 text-stone-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary-500"
-                            />
-                          </div>
+                          <select
+                            value={formData.imageGenHttpFormat}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                imageGenHttpFormat: e.target
+                                  .value as EditingFormData['imageGenHttpFormat'],
+                              })
+                            }
+                            className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
+                          >
+                            <option value="auto">{t('settings.form.format.auto')}</option>
+                            <option value="sdwebui">{t('settings.form.format.sdwebui')}</option>
+                            <option value="ollama">{t('settings.form.format.ollama')}</option>
+                            <option value="openai_images">
+                              {t('settings.form.format.openai_images')}
+                            </option>
+                            <option value="raw">{t('settings.form.format.raw')}</option>
+                          </select>
                         </div>
-                      ) : formData.imageGenType === 'http' ? (
-                        <>
-                          <div>
-                            <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
-                              {t('settings.form.httpEndpoint')}
-                            </label>
-                            <input
-                              type="text"
-                              value={formData.imageGenEndpoint}
-                              onChange={(e) => setFormData({ ...formData, imageGenEndpoint: e.target.value })}
-                              placeholder={t('settings.form.httpEndpointPh')}
-                              className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-medium focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
-                              {t('settings.form.responseFormat')}
-                            </label>
-                            <select
-                              value={formData.imageGenHttpFormat}
-                              onChange={(e) =>
-                                setFormData({
-                                  ...formData,
-                                  imageGenHttpFormat: e.target.value as EditingFormData['imageGenHttpFormat'],
-                                })
-                              }
-                              className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
-                            >
-                              <option value="auto">{t('settings.form.format.auto')}</option>
-                              <option value="sdwebui">{t('settings.form.format.sdwebui')}</option>
-                              <option value="ollama">{t('settings.form.format.ollama')}</option>
-                              <option value="openai_images">{t('settings.form.format.openai_images')}</option>
-                              <option value="raw">{t('settings.form.format.raw')}</option>
-                            </select>
-                          </div>
-                        </>
                       ) : null}
                       <div>
                         <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">

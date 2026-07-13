@@ -1,12 +1,8 @@
 /**
- * 生图厂商预设表。
+ * 生图厂商预设 + Endpoint 自适配。
  *
- * 设计目标：让用户「选厂商 → 填 API Key → 完成」，无需了解各厂商的 endpoint 路径、
- * 请求格式或模型命名。每条预设固化厂商默认值；UI 选中预设后自动回填，
- * 用户仅需补一个密钥（云端）或确认本地地址（本地）。
- *
- * 预设与适配器（electron/ipc/image-gen.ts）一一对应：适配器按 `provider`
- * 精确匹配，未填 provider 时回退到 endpoint/httpFormat 推断（向后兼容老配置）。
+ * 目标对齐语言模型：优先填「接口地址 + API Key（+ 模型名）」即可工作；
+ * 预设仅作快捷回填。主进程按 endpoint/路径推断适配器，除非用户显式指定非 custom 厂商。
  */
 
 export type ImageProviderId =
@@ -14,9 +10,15 @@ export type ImageProviderId =
   | 'volc-seedream'
   | 'openai-images'
   | 'zhipu-cogview'
+  | 'minimax'
   | 'sdwebui'
   | 'ollama'
   | 'custom';
+
+/** 可被 Endpoint 推断出的厂商（不含 custom） */
+export type InferredImageProviderId = Exclude<ImageProviderId, 'custom'>;
+
+export type ImageHttpFormat = 'auto' | 'sdwebui' | 'ollama' | 'openai_images' | 'raw';
 
 export interface ImageProviderPreset {
   id: ImageProviderId;
@@ -34,7 +36,7 @@ export interface ImageProviderPreset {
   /** 默认模型名；选中预设时回填，用户可改 */
   defaultModel?: string;
   /** 对应的 httpFormat（主进程解析响应用） */
-  defaultHttpFormat?: 'auto' | 'sdwebui' | 'ollama' | 'openai_images' | 'raw';
+  defaultHttpFormat?: ImageHttpFormat;
 }
 
 /**
@@ -86,6 +88,17 @@ export const IMAGE_PROVIDER_PRESETS: ImageProviderPreset[] = [
     defaultHttpFormat: 'openai_images',
   },
   {
+    id: 'minimax',
+    labelKey: 'settings.form.preset.minimax',
+    descKey: 'settings.form.preset.minimax.desc',
+    type: 'http',
+    needsApiKey: true,
+    apiKeyPlaceholderKey: 'settings.form.imageApiKeyPh.minimax',
+    defaultEndpoint: 'https://api.minimaxi.com/v1/image_generation',
+    defaultModel: 'image-01',
+    defaultHttpFormat: 'auto',
+  },
+  {
     id: 'sdwebui',
     labelKey: 'settings.form.preset.sdwebui',
     descKey: 'settings.form.preset.sdwebui.desc',
@@ -109,7 +122,7 @@ export const IMAGE_PROVIDER_PRESETS: ImageProviderPreset[] = [
     labelKey: 'settings.form.preset.custom',
     descKey: 'settings.form.preset.custom.desc',
     type: 'http',
-    needsApiKey: false,
+    needsApiKey: true,
     defaultHttpFormat: 'auto',
   },
 ];
@@ -130,7 +143,7 @@ export function getImageProviderPreset(id: string | undefined): ImageProviderPre
 export function getPresetDefaults(id: string | undefined): Partial<{
   endpoint: string;
   model: string;
-  httpFormat: NonNullable<ImageProviderPreset['defaultHttpFormat']>;
+  httpFormat: ImageHttpFormat;
   type: 'http' | 'cli';
 }> {
   const p = getImageProviderPreset(id);
@@ -141,4 +154,91 @@ export function getPresetDefaults(id: string | undefined): Partial<{
     ...(p.defaultModel ? { model: p.defaultModel } : {}),
     ...(p.defaultHttpFormat ? { httpFormat: p.defaultHttpFormat } : {}),
   };
+}
+
+/** 显式 provider 是否视为「未指定」（交由 Endpoint 推断） */
+export function isUnsetImageProvider(provider: string | undefined | null): boolean {
+  return !provider || provider === 'custom';
+}
+
+/**
+ * 根据 Endpoint（及可选 httpFormat）推断生图厂商。
+ * 与 electron/ipc/image-gen.ts 适配器匹配规则保持一致；新增厂商时优先改此处。
+ */
+export function inferImageProviderFromEndpoint(
+  endpoint: string,
+  httpFormat?: string
+): InferredImageProviderId | undefined {
+  const u = String(endpoint ?? '').trim();
+  if (!u) {
+    if (httpFormat === 'openai_images') return 'openai-images';
+    if (httpFormat === 'sdwebui') return 'sdwebui';
+    if (httpFormat === 'ollama') return 'ollama';
+    return undefined;
+  }
+  const lower = u.toLowerCase();
+
+  if (/\bdashscope\.aliyuncs\.com\b/i.test(u) || /multimodal-generation\/generation/i.test(u)) {
+    return 'bailian-wanx';
+  }
+  if (
+    /\bapi\.minimaxi?\.(io|com|chat)\b/i.test(u) ||
+    (/minimax/i.test(u) && /image_generation/i.test(u))
+  ) {
+    return 'minimax';
+  }
+  if (/volces\.com/i.test(u) && /images\/generations/i.test(u)) {
+    return 'volc-seedream';
+  }
+  if (/bigmodel\.cn/i.test(u) && (/images\/generations/i.test(u) || /cogview/i.test(u))) {
+    return 'zhipu-cogview';
+  }
+  if (/\/images\/generations/i.test(u)) {
+    return 'openai-images';
+  }
+  if (lower.includes('sdapi/v1/txt2img') || /\/txt2img(?:\?|$)/i.test(u)) {
+    return 'sdwebui';
+  }
+  if (lower.includes('/api/generate')) {
+    return 'ollama';
+  }
+
+  if (httpFormat === 'openai_images') return 'openai-images';
+  if (httpFormat === 'sdwebui') return 'sdwebui';
+  if (httpFormat === 'ollama') return 'ollama';
+  return undefined;
+}
+
+/**
+ * 合并「显式厂商」与 Endpoint 推断。
+ * custom / 空 → 仅用推断；显式非 custom → 以显式为准。
+ */
+export function resolveImageProviderId(
+  explicitProvider: string | undefined | null,
+  endpoint: string,
+  httpFormat?: string
+): InferredImageProviderId | undefined {
+  if (!isUnsetImageProvider(explicitProvider)) {
+    return explicitProvider as InferredImageProviderId;
+  }
+  return inferImageProviderFromEndpoint(endpoint, httpFormat);
+}
+
+/** 推断结果对应的建议 httpFormat（UI 回填用） */
+export function suggestedHttpFormatForProvider(
+  id: InferredImageProviderId | undefined
+): ImageHttpFormat | undefined {
+  if (!id) return undefined;
+  return getImageProviderPreset(id)?.defaultHttpFormat;
+}
+
+/** 当前配置是否需要展示/填写 API Key */
+export function imageGenNeedsApiKey(
+  explicitProvider: string | undefined | null,
+  endpoint: string,
+  httpFormat?: string
+): boolean {
+  const id = resolveImageProviderId(explicitProvider, endpoint, httpFormat);
+  if (!id) return true;
+  return getImageProviderPreset(id)?.needsApiKey ?? true;
 }

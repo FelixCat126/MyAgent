@@ -624,6 +624,15 @@ async function postProcessAssistantContent(
       try {
         const m = imgGenModel!;
         const cfg = m.imageGeneratorConfig!;
+        const imageGeneratorConfig = {
+          ...cfg,
+          /** 生图密钥为空时回退同一模型顶部 API Key（用户常只填一处） */
+          ...(cfg.apiKey?.trim()
+            ? {}
+            : m.apiKey?.trim()
+              ? { apiKey: m.apiKey.trim() }
+              : {}),
+        };
         let widthOut = width;
         let heightOut = height;
         if (shouldClampDimensionsForHeavyLocalGen(cfg)) {
@@ -647,7 +656,7 @@ async function postProcessAssistantContent(
             count: requestedCount,
             referenceImages: opts?.referenceImages,
             modelId: m.id,
-            imageGeneratorConfig: cfg,
+            imageGeneratorConfig,
             isolatedPrompt,
           },
           {
