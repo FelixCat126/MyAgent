@@ -12,6 +12,8 @@ interface ChatStore {
   loadingSessionId: string | null;
   /** 正在执行/等待回复的会话 id 集合（支持多会话并发转圈） */
   loadingSessionIds: string[];
+  /** 正在自动压缩上下文的会话（对话区展示「压缩中」） */
+  compressingSessionId: string | null;
 
   // Actions
   createSession: () => string;
@@ -34,6 +36,16 @@ interface ChatStore {
   clearLoadingForSession: (sessionId: string) => void;
   /** 判断指定会话是否正在加载 */
   isLoadingSession: (sessionId: string) => boolean;
+  setCompressingContext: (sessionId: string | null) => void;
+  /**
+   * 删除 keepFromIndex 之前的消息，并在保留段前插入摘要消息。
+   * keepFromIndex 为压缩前的下标（相对于替换前的 messages）。
+   */
+  replaceMessagesPrefix: (
+    sessionId: string,
+    keepFromIndex: number,
+    summaryMessage: Message
+  ) => void;
 }
 
 export const useChatStore = create<ChatStore>()(
@@ -43,6 +55,7 @@ export const useChatStore = create<ChatStore>()(
       currentSessionId: null,
       loadingSessionId: null,
       loadingSessionIds: [],
+      compressingSessionId: null,
 
       createSession: () => {
         const locale = useSettingStore.getState().locale;
@@ -254,6 +267,25 @@ export const useChatStore = create<ChatStore>()(
 
       isLoadingSession: (sessionId: string): boolean => {
         return get().loadingSessionIds.includes(sessionId);
+      },
+
+      setCompressingContext: (sessionId: string | null) => {
+        set({ compressingSessionId: sessionId });
+      },
+
+      replaceMessagesPrefix: (sessionId, keepFromIndex, summaryMessage) => {
+        set((state: ChatStore) => ({
+          sessions: state.sessions.map((session: ChatSession) => {
+            if (session.id !== sessionId) return session;
+            const idx = Math.max(0, Math.min(keepFromIndex, session.messages.length));
+            const recent = session.messages.slice(idx);
+            return {
+              ...session,
+              updatedAt: Date.now(),
+              messages: [summaryMessage, ...recent],
+            };
+          }),
+        }));
       },
     }),
     {

@@ -62,6 +62,12 @@ import {
   shouldBypassModelForFullTextDownload,
 } from '../utils/documentExportIntent';
 import { flushZustandFilePersist } from '../utils/zustandFileStorage';
+import {
+  estimateSessionChars,
+  shouldCompressContext,
+} from '../utils/contextBudget';
+import { resolveContextSoftLimitChars } from '../utils/inferContextWindow';
+import { compressSessionContext } from '../utils/compressSessionContext';
 
 function userQueryTextForRag(m: Message): string {
   const t = (m.content || '').trim();
@@ -758,6 +764,9 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     clearLoadingForSession,
     updateSessionTitle,
     setSessionWebOverride,
+    compressingSessionId,
+    setCompressingContext,
+    replaceMessagesPrefix,
   } = useChatStore();
 
   const webSearchEnabled = useWebSearchStore((s) => s.enabled);
@@ -770,6 +779,9 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
 
   const isCurrentSessionLoading =
     loadingSessionId !== null && loadingSessionIds.includes(currentSessionId ?? '');
+  const isCompressingCurrent =
+    !!currentSessionId && compressingSessionId === currentSessionId;
+  const isSessionBusy = isCurrentSessionLoading || isCompressingCurrent;
   const { getActiveModel } = useModelStore();
   const [input, setInput] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -878,7 +890,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     textareaRef: inputAreaRef,
     setInput,
     uiLocale,
-    disabled: isCurrentSessionLoading || !speechInputEnabled,
+    disabled: isSessionBusy || !speechInputEnabled,
     isImeComposing: () => imeComposingRef.current,
     labels: speechLabels,
     getVolcAsrConfig: () => {
@@ -901,7 +913,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     phrase: voiceWakePhrase,
     uiLocale,
     paused:
-      isCurrentSessionLoading ||
+      isSessionBusy ||
       speechDictation.listening ||
       speechDictation.starting ||
       voiceReplySpeaking ||
@@ -1861,7 +1873,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   };
 
   const handleEditMessage = (message: Message) => {
-    if (isCurrentSessionLoading) return;
+    if (isSessionBusy) return;
     setEditingMessageId(message.id);
   };
 
@@ -2275,6 +2287,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   const handleSend = async () => {
     if ((!input.trim() && attachments.length === 0) || !currentSessionId) return;
     if (useChatStore.getState().loadingSessionIds.includes(currentSessionId)) return;
+    if (useChatStore.getState().compressingSessionId) return;
 
     cancelVoiceReply();
     if (!sendFromVoiceWakeRef.current) {
@@ -2289,8 +2302,6 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     }
 
     const sendSessionId = currentSessionId;
-    setLoadingSession(sendSessionId);
-    const priorMessages = messages;
     const uploadedFiles: FileInfo[] = [];
 
     if (attachments.length > 0) {
@@ -2311,7 +2322,6 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         }
       }
       if (uploadedFiles.length === 0) {
-        clearLoadingForSession(sendSessionId);
         window.alert(uiLocale === 'en' ? 'Attachment upload failed. Please try again.' : '附件上传失败，请重试。');
         return;
       }
@@ -2327,7 +2337,34 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     const att = t('chat.attachment');
     const textContent = input.trim() || (uploadedFiles.length > 0 ? att : '');
 
-    if (messages.length === 0) {
+    /** 发送前：必要时压缩上下文（进度条同源阈值） */
+    let priorMessages = useChatStore.getState().sessions.find((s) => s.id === sendSessionId)?.messages ?? messages;
+    if (shouldCompressContext(priorMessages, textContent, undefined, undefined, activeModel)) {
+      setCompressingContext(sendSessionId);
+      stickToBottomRef.current = true;
+      requestAnimationFrame(() => {
+        const el = scrollContainerRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+      try {
+        await compressSessionContext({
+          sessionId: sendSessionId,
+          messages: priorMessages,
+          model: activeModel,
+          locale: uiLocale === 'en' ? 'en' : 'zh',
+          summaryTitle: t('chat.contextSummaryTitle'),
+          replaceMessagesPrefix,
+        });
+        priorMessages =
+          useChatStore.getState().sessions.find((s) => s.id === sendSessionId)?.messages ?? priorMessages;
+      } finally {
+        setCompressingContext(null);
+      }
+    }
+
+    setLoadingSession(sendSessionId);
+
+    if (priorMessages.length === 0) {
       const title = (textContent === att ? t('chat.attachmentTitle') : textContent) || t('session.newTitle');
       updateSessionTitle(
         currentSessionId,
@@ -2371,6 +2408,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     const textContent = nextContent.trim();
     if (!textContent || !currentSessionId) return;
     if (useChatStore.getState().loadingSessionIds.includes(currentSessionId)) return;
+    if (useChatStore.getState().compressingSessionId) return;
 
     const activeModel = getActiveModel();
     if (!activeModel) {
@@ -2379,22 +2417,71 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     }
 
     const sendSessionId = currentSessionId;
-    setLoadingSession(sendSessionId);
     const sourceIndex = messages.findIndex((m) => m.id === sourceMessage.id);
     if (sourceIndex < 0) {
+      return;
+    }
+    let priorMessages = messages.slice(0, sourceIndex);
+
+    if (shouldCompressContext(priorMessages, textContent, undefined, undefined, activeModel)) {
+      setCompressingContext(sendSessionId);
+      stickToBottomRef.current = true;
+      try {
+        const compressed = await compressSessionContext({
+          sessionId: sendSessionId,
+          messages: priorMessages,
+          model: activeModel,
+          locale: uiLocale === 'en' ? 'en' : 'zh',
+          summaryTitle: t('chat.contextSummaryTitle'),
+          replaceMessagesPrefix: (sid, keepFrom, summary) => {
+            /** 编辑重发：只压缩 source 之前的 prior，保留 source 及之后消息 */
+            const sess = useChatStore.getState().sessions.find((s) => s.id === sid);
+            if (!sess) return;
+            const head = sess.messages.slice(0, sourceIndex);
+            const recentPrior = head.slice(keepFrom);
+            const tail = sess.messages.slice(sourceIndex);
+            useChatStore.setState((state) => ({
+              sessions: state.sessions.map((session) =>
+                session.id === sid
+                  ? {
+                      ...session,
+                      updatedAt: Date.now(),
+                      messages: [summary, ...recentPrior, ...tail],
+                    }
+                  : session
+              ),
+            }));
+          },
+        });
+        if (compressed.didCompress) {
+          const sess = useChatStore.getState().sessions.find((s) => s.id === sendSessionId);
+          const newSourceIndex = sess?.messages.findIndex((m) => m.id === sourceMessage.id) ?? -1;
+          priorMessages =
+            newSourceIndex >= 0 ? (sess?.messages.slice(0, newSourceIndex) ?? compressed.messages) : compressed.messages;
+        }
+      } finally {
+        setCompressingContext(null);
+      }
+    }
+
+    setLoadingSession(sendSessionId);
+    const latest = useChatStore.getState().sessions.find((s) => s.id === sendSessionId)?.messages ?? messages;
+    const latestSourceIndex = latest.findIndex((m) => m.id === sourceMessage.id);
+    if (latestSourceIndex < 0) {
       clearLoadingForSession(sendSessionId);
       return;
     }
-    const priorMessages = messages.slice(0, sourceIndex);
+    priorMessages = latest.slice(0, latestSourceIndex);
+
     const userMessage: Message = {
       ...sourceMessage,
       role: 'user',
       content: textContent,
-        timestamp: Date.now(),
-        model: activeModel.name,
-      };
+      timestamp: Date.now(),
+      model: activeModel.name,
+    };
 
-    const staleMessageIds = messages.slice(sourceIndex + 1).map((m) => m.id);
+    const staleMessageIds = latest.slice(latestSourceIndex + 1).map((m) => m.id);
     updateMessage(currentSessionId, sourceMessage.id, {
       content: textContent,
       timestamp: userMessage.timestamp,
@@ -2459,7 +2546,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     const el = scrollContainerRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [messages, currentSessionId, showTypingDots, vectorRagStatus, footerH, attachments.length]);
+  }, [messages, currentSessionId, showTypingDots, vectorRagStatus, footerH, attachments.length, isCompressingCurrent]);
 
   return (
     <div
@@ -2639,6 +2726,22 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           </div>
         )}
 
+        {isCompressingCurrent ? (
+          <div
+            className="flex items-center gap-3 py-2"
+            role="status"
+            aria-live="polite"
+            aria-label={t('chat.compressingContext')}
+          >
+            <div className="h-px flex-1 bg-stone-300/60 dark:bg-slate-600/50" />
+            <span className="inline-flex items-center gap-1.5 text-[10px] font-medium text-stone-500 dark:text-slate-400 whitespace-nowrap">
+              <FiLoader size={12} className="animate-spin shrink-0 opacity-80" aria-hidden />
+              {t('chat.compressingContext')}
+            </span>
+            <div className="h-px flex-1 bg-stone-300/60 dark:bg-slate-600/50" />
+          </div>
+        ) : null}
+
         <div ref={messagesEndRef} />
       </div>
       <AgentBrowserPanel />
@@ -2711,8 +2814,9 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
             </div>
           ) : null}
         {(() => {
-          const totalLength = messages.reduce((acc, m) => acc + m.content.length, 0) + input.length;
-          const limit = 20000;
+          const active = getActiveModel();
+          const limit = resolveContextSoftLimitChars(active);
+          const totalLength = estimateSessionChars(messages, input);
           const fillPerc = Math.min((totalLength / limit) * 100, 100);
           const isNearLimit = fillPerc > 80;
           return totalLength > 0 ? (
@@ -2721,6 +2825,11 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                   isNearLimit ? 'bg-orange-500' : 'bg-gradient-to-r from-primary-400 to-teal-500'
                 }`}
               style={{ width: `${fillPerc}%` }}
+              title={t('chat.contextUsageHint', {
+                used: Math.round(totalLength / 1000),
+                limit: Math.round(limit / 1000),
+                pct: Math.round(fillPerc),
+              })}
             />
           ) : null;
         })()}
@@ -2763,7 +2872,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                           : t('chat.voiceInput')
                   }
                   disabled={
-                    isCurrentSessionLoading || !speechDictation.supported || speechDictation.starting
+                    isSessionBusy || !speechDictation.supported || speechDictation.starting
                   }
                   onClick={() => {
                     if (!speechDictation.listening) {
@@ -2789,7 +2898,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                       ? 'bg-red-600 text-white shadow-sm shadow-red-500/25 animate-pulse'
                       : speechDictation.starting
                         ? 'cursor-wait text-primary-600 dark:text-primary-400'
-                        : isCurrentSessionLoading || !speechDictation.supported
+                        : isSessionBusy || !speechDictation.supported
                           ? 'cursor-not-allowed text-stone-400 dark:text-slate-600'
                           : voiceWake.listening
                             ? 'text-primary-600 ring-1 ring-primary-400/60 dark:text-primary-400 dark:ring-primary-500/50'
@@ -2820,7 +2929,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                 className="box-border min-h-10 w-full min-w-0 flex-1 resize-none bg-transparent py-2.5 pl-1 pr-0.5 leading-5 text-stone-800 placeholder-stone-500/70 focus:outline-none dark:text-slate-100 text-[clamp(0.8125rem,0.55vw+0.68rem,0.9375rem)]"
               rows={1}
                 style={{ maxHeight: 'min(28vh, 9rem)' }}
-              disabled={isCurrentSessionLoading}
+              disabled={isSessionBusy}
             />
             <div className="ml-0.5 flex shrink-0 items-center self-stretch border-l border-stone-400/25 pl-1 dark:border-slate-600">
               <ModelSelector compact />
