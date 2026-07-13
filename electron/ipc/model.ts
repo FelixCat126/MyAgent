@@ -3,7 +3,15 @@ import axios from 'axios';
 import { ModelConfig, Message } from '../../src/types';
 import { mapModelCallError } from '../../src/utils/modelErrors';
 import {
+  buildAnthropicAuthHeaders,
+  buildAnthropicThinkingParams,
+  parseAnthropicContentBlocks,
+  resolveAnthropicMessagesUrl,
+  resolveChatApiMode,
+} from '../../src/utils/chatApiMode';
+import {
   errorIndicatesImageUnsupported,
+  formatAnthropicMessages,
   formatOpenAIMultimodal,
   formatOpenAITextOnly,
   isZhipuEndpoint,
@@ -12,7 +20,7 @@ import {
   buildThinkingParams,
 } from './openai-adapters';
 
-/** Claude / Gemini 需单独处理 system；OpenAI 兼容接口一般可直接带 system 消息 */
+/** Gemini 需单独处理 system；OpenAI 兼容接口一般可直接带 system 消息 */
 function splitSystemMessages(messages: Message[]): { systemText: string; convo: Message[] } {
   const systemText = messages
     .filter((m) => m.role === 'system')
@@ -23,13 +31,46 @@ function splitSystemMessages(messages: Message[]): { systemText: string; convo: 
   return { systemText, convo };
 }
 
+async function callAnthropicMessages(opts: {
+  messages: Message[];
+  config: ModelConfig;
+  temperature: number | undefined;
+}): Promise<{ content: string; reasoning?: string; usage?: unknown }> {
+  const { messages, config, temperature } = opts;
+  const { apiUrl, apiKey, modelName, maxTokens, provider } = config;
+  const { system, messages: anthropicMessages } = formatAnthropicMessages(messages);
+  let thinking = buildAnthropicThinkingParams({
+    apiUrl,
+    modelName,
+    provider,
+    maxTokens,
+  });
+  const response = await axios.post(
+    resolveAnthropicMessagesUrl(apiUrl),
+    {
+      model: modelName,
+      max_tokens: Math.max(1, maxTokens || 4096),
+      ...thinking,
+      messages: anthropicMessages,
+      ...(system ? { system } : {}),
+      ...(temperature !== undefined ? { temperature } : {}),
+    },
+    {
+      headers: buildAnthropicAuthHeaders({ apiKey, provider, apiUrl }),
+      timeout: 120000,
+    }
+  );
+  return parseAnthropicContentBlocks(response.data);
+}
+
 function parseOpenAIMessageBlock(msg?: {
   content?: unknown;
   reasoning_content?: unknown;
   reasoning?: unknown;
   thinking?: unknown;
+  reasoning_details?: unknown;
 }): { content: string; reasoning?: string } {
-  const content =
+  let content =
     typeof msg?.content === 'string' ? msg.content : '';
   let reasoning = '';
   for (const k of ['reasoning_content', 'reasoning', 'thinking'] as const) {
@@ -39,7 +80,57 @@ function parseOpenAIMessageBlock(msg?: {
       break;
     }
   }
+  /** MiniMax reasoning_split：reasoning_details 可能为字符串或含 text 的数组 */
+  if (!reasoning && msg?.reasoning_details != null) {
+    const rd = msg.reasoning_details;
+    if (typeof rd === 'string' && rd.trim()) {
+      reasoning = rd;
+    } else if (Array.isArray(rd)) {
+      reasoning = rd
+        .map((item) => {
+          if (typeof item === 'string') return item;
+          if (item && typeof item === 'object' && typeof (item as { text?: unknown }).text === 'string') {
+            return (item as { text: string }).text;
+          }
+          return '';
+        })
+        .filter(Boolean)
+        .join('\n');
+    }
+  }
+  /** 兜底：思考仍嵌在 content 的 <think> 标签里（MiniMax 默认流式/未 split） */
+  if (content && /<\/?think\w*\b/i.test(content)) {
+    const extracted = extractInlineThinkTags(content);
+    content = extracted.content;
+    if (!reasoning && extracted.reasoning) reasoning = extracted.reasoning;
+    else if (reasoning && extracted.reasoning) {
+      /** 已有 reasoning 字段时仍去掉 content 里的标签，避免正文重复 */
+      content = extracted.content;
+    }
+  }
   return reasoning ? { content, reasoning } : { content };
+}
+
+/** 从完整正文中拆出 <think>…</think>（非流式兜底；流式由 StreamingDeltaSplitter 处理） */
+function extractInlineThinkTags(text: string): { content: string; reasoning: string } {
+  const tagRe = /<\/?think\w*[^>]*>/gi;
+  let contentOut = '';
+  let reasoningOut = '';
+  let inThink = false;
+  let lastIdx = 0;
+  let match: RegExpExecArray | null;
+  while ((match = tagRe.exec(text)) !== null) {
+    const between = text.slice(lastIdx, match.index);
+    if (inThink) reasoningOut += between;
+    else contentOut += between;
+    if (/^<\//i.test(match[0])) inThink = false;
+    else inThink = true;
+    lastIdx = match.index + match[0].length;
+  }
+  const tail = text.slice(lastIdx);
+  if (inThink) reasoningOut += tail;
+  else contentOut += tail;
+  return { content: contentOut, reasoning: reasoningOut.trim() };
 }
 
 function parseOpenAIChatResponse(responseData: {
@@ -78,6 +169,21 @@ ipcMain.handle(
     const { provider, apiUrl, apiKey, modelName, maxTokens } = config;
 
     const isZhipuAI = isZhipuEndpoint(apiUrl, modelName);
+    const apiMode = resolveChatApiMode(config);
+
+    /** 通用 Anthropic Messages（provider=claude 或 chatApiMode 解析为 anthropic） */
+    if (provider === 'claude' || apiMode === 'anthropic') {
+      try {
+        return await callAnthropicMessages({ messages, config, temperature });
+      } catch (anthropicErr: unknown) {
+        const canFallback =
+          provider !== 'claude' && (config.chatApiMode ?? 'auto') === 'auto';
+        if (!canFallback) throw anthropicErr;
+        console.warn('[call-model] Anthropic 失败，回退 OpenAI 兼容', {
+          message: anthropicErr instanceof Error ? anthropicErr.message : String(anthropicErr),
+        });
+      }
+    }
 
     // OpenAI / Compatible API（智谱、自定义、Ollama 等）：不做「是否支持图」的客户端猜测，交给接口报错
     if (provider === 'openai' || provider === 'custom' || provider === 'ollama' || isZhipuAI) {
@@ -102,7 +208,7 @@ ipcMain.handle(
             messages: formattedMessages,
             max_tokens: maxTokens,
             ...(temperature !== undefined ? { temperature } : {}),
-            ...(withThinking ? buildThinkingParams() : {}),
+            ...(withThinking ? buildThinkingParams({ apiUrl, modelName, stream: false }) : {}),
           },
           {
             headers,
@@ -150,83 +256,6 @@ ipcMain.handle(
         }
         throw firstErr;
       }
-    }
-
-    // Claude API
-    if (provider === 'claude') {
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey || '',
-        'anthropic-version': '2023-06-01',
-      };
-
-      const { systemText, convo } = splitSystemMessages(messages);
-
-      const formattedMessages = convo.map(msg => {
-        if (msg.files && msg.files.some(f => f.type.startsWith('image/'))) {
-          const imageFile = msg.files.find(f => f.type.startsWith('image/'));
-          return {
-            role: msg.role,
-            content: [
-              {
-                type: 'text',
-                text: msg.content
-              },
-              {
-                type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: imageFile?.type || 'image/png',
-                  data: imageFile?.preview ? imageFile.preview.split(',')[1] : null
-                }
-              }
-            ]
-          };
-        }
-        return {
-          role: msg.role,
-          content: msg.content
-        };
-      });
-
-      const response = await axios.post(
-        `${apiUrl}/messages`,
-        {
-          model: modelName,
-          ...(systemText ? { system: systemText } : {}),
-          messages: formattedMessages,
-          max_tokens: maxTokens,
-          thinking: { type: 'enabled', budget_tokens: Math.min(Math.max(maxTokens - 1000, 1024), 16000) },
-        },
-        {
-          headers,
-          timeout: 60000,
-        }
-      );
-
-      if (response.data.type === 'error') {
-        throw new Error(response.data.error);
-      }
-
-      /** Claude 返回 content 数组：type=thinking 的块含思考过程，type=text 的块含正文 */
-      const blocks: Array<{ type?: string; text?: string; thinking?: string }> = Array.isArray(
-        response.data.content
-      )
-        ? response.data.content
-        : [];
-      const reasoning = blocks
-        .filter((b) => b.type === 'thinking' && typeof b.thinking === 'string')
-        .map((b) => b.thinking as string)
-        .join('\n');
-      const content = blocks
-        .filter((b) => b.type === 'text' && typeof b.text === 'string')
-        .map((b) => b.text as string)
-        .join('\n');
-      return {
-        content: content || '',
-        ...(reasoning.trim() ? { reasoning } : {}),
-        usage: response.data.usage,
-      };
     }
 
     // Gemini API

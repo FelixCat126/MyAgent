@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { ModelConfig } from '../types';
+import { ModelConfig, type ChatApiMode } from '../types';
+import { resolveChatApiMode } from '../utils/chatApiMode';
 import { zustandPersistJson } from '../utils/zustandFileStorage';
 
 /**
@@ -12,6 +13,18 @@ export function modelHasUsableImageGenerator(m: ModelConfig | undefined | null):
   const c = m.imageGeneratorConfig;
   if (c.type === 'http') return Boolean(String(c.endpoint ?? '').trim());
   return Boolean(String(c.command ?? '').trim());
+}
+
+/** 为旧配置推断并落盘显式接口模式（openai | anthropic） */
+export function suggestPersistedChatApiMode(
+  m: Pick<ModelConfig, 'provider' | 'apiUrl' | 'modelName' | 'chatApiMode'>
+): Exclude<ChatApiMode, 'auto'> {
+  return resolveChatApiMode({ ...m, chatApiMode: 'auto' });
+}
+
+function withSuggestedChatApiMode(m: ModelConfig): ModelConfig {
+  if (m.chatApiMode === 'openai' || m.chatApiMode === 'anthropic') return m;
+  return { ...m, chatApiMode: suggestPersistedChatApiMode(m) };
 }
 
 interface ModelStore {
@@ -42,6 +55,7 @@ const defaultOllamaModels: ModelConfig[] = [
     apiUrl: 'http://127.0.0.1:11434',
     apiKey: '',
     modelName: 'qwen3-vl:8b',
+    chatApiMode: 'openai',
     isLocal: true,
     maxTokens: 8192,
   },
@@ -52,6 +66,7 @@ const defaultOllamaModels: ModelConfig[] = [
     apiUrl: 'http://127.0.0.1:11434',
     apiKey: '',
     modelName: 'qwen3-vl:2b',
+    chatApiMode: 'openai',
     isLocal: true,
     maxTokens: 8192,
   },
@@ -62,6 +77,7 @@ const defaultOllamaModels: ModelConfig[] = [
     apiUrl: 'http://127.0.0.1:11434',
     apiKey: '',
     modelName: 'gemma4:26b',
+    chatApiMode: 'openai',
     isLocal: true,
     maxTokens: 8192,
   },
@@ -77,7 +93,7 @@ export const useModelStore = create<ModelStore>()(
 
       initializeDefaultModels: () => {
         const { models } = get();
-        /** 远端/桌面均需：只要列表为空就补默认本机候选，避免因「曾初始化但又删光」永远无法选模型 */
+        /** 远端/桌面均需：只要列表为空就补默认本机候选，避免因「曾初始化后又删光」永远无法选模型 */
         if (models.length > 0) return;
 
         set({
@@ -89,7 +105,7 @@ export const useModelStore = create<ModelStore>()(
 
       addModel: (config: ModelConfig) => {
         set((state: ModelStore) => ({
-          models: [...state.models, config],
+          models: [...state.models, withSuggestedChatApiMode(config)],
           activeModelId: state.activeModelId || config.id,
         }));
       },
@@ -111,7 +127,7 @@ export const useModelStore = create<ModelStore>()(
       updateModel: (id: string, config: Partial<ModelConfig>) => {
         set((state: ModelStore) => ({
           models: state.models.map((m: ModelConfig) =>
-            m.id === id ? { ...m, ...config } : m
+            m.id === id ? withSuggestedChatApiMode({ ...m, ...config }) : m
           ),
         }));
       },
@@ -143,6 +159,28 @@ export const useModelStore = create<ModelStore>()(
     {
       name: 'model-storage',
       storage: zustandPersistJson,
+      version: 1,
+      migrate: (persistedState, fromVersion) => {
+        const state = persistedState as {
+          models?: ModelConfig[];
+          activeModelId?: string | null;
+          imageGenModelId?: string | null;
+          isInitialized?: boolean;
+        };
+        if (!state || !Array.isArray(state.models)) return persistedState as typeof state;
+        if (fromVersion < 1) {
+          state.models = state.models.map((m) => withSuggestedChatApiMode(m));
+        }
+        return state;
+      },
+      onRehydrateStorage: () => (state) => {
+        if (!state?.models?.length) return;
+        const models = state.models.map((m) => withSuggestedChatApiMode(m));
+        const changed = models.some((m, i) => m.chatApiMode !== state.models[i]?.chatApiMode);
+        if (changed) {
+          useModelStore.setState({ models });
+        }
+      },
     }
   )
 );

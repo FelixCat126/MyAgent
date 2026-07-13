@@ -88,22 +88,98 @@ export function isZhipuEndpoint(apiUrl: string, modelName: string): boolean {
   return apiUrl.includes('bigmodel.cn') || modelName.toLowerCase().startsWith('glm-');
 }
 
+import {
+  looksLikeMiniMaxChat,
+  resolveAnthropicMessagesUrl,
+} from '../../src/utils/chatApiMode';
+
+/** @deprecated 使用 looksLikeMiniMaxChat；保留别名兼容旧调用 */
+export function isMiniMaxChatEndpoint(apiUrl: string, modelName: string): boolean {
+  return looksLikeMiniMaxChat(apiUrl, modelName);
+}
+
+/** @deprecated 使用 resolveAnthropicMessagesUrl */
+export function resolveMiniMaxAnthropicMessagesUrl(apiUrl: string): string {
+  return resolveAnthropicMessagesUrl(apiUrl);
+}
+
+export { resolveAnthropicMessagesUrl, looksLikeMiniMaxChat };
+
+/** Anthropic Messages：拆出 system，其余为 user/assistant（含可选图片 / 思考块） */
+export function formatAnthropicMessages(messages: Message[]): {
+  system: string;
+  messages: Array<{ role: string; content: string | Array<Record<string, unknown>> }>;
+} {
+  let system = '';
+  const out: Array<{ role: string; content: string | Array<Record<string, unknown>> }> = [];
+  for (const msg of messages) {
+    if (msg.role === 'system') {
+      const t = normalizeTextContent((msg as { content?: unknown }).content);
+      system = system ? `${system}\n${t}` : t;
+      continue;
+    }
+    if (msg.role !== 'user' && msg.role !== 'assistant') continue;
+    const text = normalizeTextContent((msg as { content?: unknown }).content);
+    if (msg.role === 'user' && msg.files?.some((f) => f.type.startsWith('image/'))) {
+      const imageFile = msg.files.find((f) => f.type.startsWith('image/'))!;
+      const dataUrl = imageFileToDataUrl(imageFile);
+      const b64 = dataUrl.includes(',') ? dataUrl.split(',')[1]! : dataUrl;
+      const mediaType =
+        imageFile.type && imageFile.type.startsWith('image/') ? imageFile.type : 'image/png';
+      out.push({
+        role: 'user',
+        content: [
+          { type: 'text', text: text || '（空）' },
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: mediaType, data: b64 },
+          },
+        ],
+      });
+      continue;
+    }
+    /** MiniMax 多轮要求保留 thinking 块；有 reasoning 时按 content 数组回传 */
+    if (msg.role === 'assistant') {
+      const reasoning = typeof msg.reasoning === 'string' ? msg.reasoning.trim() : '';
+      if (reasoning) {
+        out.push({
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: reasoning },
+            { type: 'text', text: text || '' },
+          ],
+        });
+        continue;
+      }
+      out.push({
+        role: 'assistant',
+        content: [{ type: 'text', text: text || '' }],
+      });
+      continue;
+    }
+    out.push({
+      role: 'user',
+      content: [{ type: 'text', text: text || '（空）' }],
+    });
+  }
+  return { system, messages: out };
+}
+
 /**
- * 生成「开启思考模式」的厂商通用请求参数。
- *
- * 各厂商的思考开关参数不同，但不支持思考的模型会忽略未知字段（OpenAI 兼容协议特性），
- * 因此可以无条件全部带上，一套代码覆盖所有厂商，无需按模型名硬编码判断。
- *
- * - Qwen3 / 通义千问：`enable_thinking: true`
- * - Doubao / 豆包（方舟）：`thinking: "enabled"`（字符串，非对象）
- * - DeepSeek：默认开启，无需参数（带上也无害）
- * - OpenAI o 系列：`reasoning_effort: "medium"`（非 o 系列忽略）
- * - Gemma / 普通 Llama：不支持，忽略未知字段
- *
- * 注：Claude 走独立路径（model.ts 的 Claude 分支），用的是
- * `thinking: { type: "enabled", budget_tokens: N }` 对象格式，不经过此函数。
+ * 生成「开启思考模式」的厂商请求参数（OpenAI 兼容 /chat/completions 路径）。
+ * Anthropic Messages 路径请用 buildAnthropicThinkingParams（见 chatApiMode.ts）。
  */
-export function buildThinkingParams(): Record<string, unknown> {
+export function buildThinkingParams(opts?: {
+  apiUrl?: string;
+  modelName?: string;
+  stream?: boolean;
+}): Record<string, unknown> {
+  if (isMiniMaxChatEndpoint(opts?.apiUrl ?? '', opts?.modelName ?? '')) {
+    return {
+      thinking: { type: 'adaptive' },
+      reasoning_split: true,
+    };
+  }
   return {
     enable_thinking: true,
     thinking: 'enabled',

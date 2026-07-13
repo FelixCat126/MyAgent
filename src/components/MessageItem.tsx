@@ -244,12 +244,13 @@ function AssistantReasoningCollapsible(props: {
   t: (key: string) => string;
 }) {
   const { reasoning, isThoughtStreaming, t } = props;
-  const [expanded, setExpanded] = useState(false);
+  /** 流式输出时展开；结束后自动折叠，仍可手动展开查看 */
+  const [expanded, setExpanded] = useState(isThoughtStreaming);
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollFollowRaf = useRef(0);
 
   useEffect(() => {
-    if (!isThoughtStreaming) setExpanded(false);
+    setExpanded(isThoughtStreaming);
   }, [isThoughtStreaming]);
 
   const showBody = isThoughtStreaming || expanded;

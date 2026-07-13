@@ -294,6 +294,9 @@ export interface ElectronAPI {
   onWindowFocusChanged?: (handler: (focused: boolean) => void) => () => void;
 }
 
+/** 对话接口协议偏好：auto 按 Endpoint/厂商推断；也可手动指定 */
+export type ChatApiMode = 'auto' | 'openai' | 'anthropic';
+
 // 模型配置类型
 export interface ModelConfig {
   id: string;
@@ -302,6 +305,11 @@ export interface ModelConfig {
   apiUrl: string;
   apiKey?: string;
   modelName: string;
+  /**
+   * 对话 API 协议。差异较大时（如需独立 thinking 流）请选 anthropic。
+   * 缺省 / auto：MiniMax、URL 含 anthropic、provider=claude → Anthropic Messages；其余 → OpenAI Chat Completions。
+   */
+  chatApiMode?: ChatApiMode;
   isLocal: boolean;
   maxTokens: number;
   /** 是否允许作为图像生成工具调用的"生图模型"，用于 <GenerateImage> */

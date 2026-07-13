@@ -46,6 +46,7 @@ type EditingFormData = {
   apiUrl: string;
   apiKey: string;
   modelName: string;
+  chatApiMode: NonNullable<ModelConfig['chatApiMode']>;
   isLocal: boolean;
   maxTokens: number;
   isImageGenerator: boolean;
@@ -69,6 +70,7 @@ const defaultFormData: EditingFormData = {
   apiUrl: '',
   apiKey: '',
   modelName: '',
+  chatApiMode: 'auto',
   isLocal: false,
   maxTokens: 4096,
   isImageGenerator: false,
@@ -281,6 +283,7 @@ const SettingsPanel: React.FC = () => {
       apiUrl: model.apiUrl,
       apiKey: model.apiKey || '',
       modelName: model.modelName,
+      chatApiMode: model.chatApiMode || 'auto',
       isLocal: model.isLocal,
       maxTokens: model.maxTokens,
       isImageGenerator: model.isImageGenerator || false,
@@ -338,6 +341,7 @@ const SettingsPanel: React.FC = () => {
       apiUrl: formData.apiUrl,
       apiKey: formData.apiKey,
       modelName: formData.modelName,
+      chatApiMode: formData.chatApiMode,
       isLocal: formData.isLocal,
       maxTokens: formData.maxTokens,
       isImageGenerator: formData.isImageGenerator,
@@ -458,6 +462,33 @@ const SettingsPanel: React.FC = () => {
               <option value="custom">{t('settings.provider.custom')}</option>
             </select>
           </div>
+
+          {(formData.provider === 'openai' ||
+            formData.provider === 'custom' ||
+            formData.provider === 'ollama') && (
+            <div>
+              <label className="block text-xs font-medium text-stone-700 dark:text-gray-300 mb-1">
+                {t('settings.form.chatApiMode')}
+              </label>
+              <select
+                value={formData.chatApiMode}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    chatApiMode: e.target.value as EditingFormData['chatApiMode'],
+                  })
+                }
+                className="w-full px-3 py-2 border border-stone-400/35 dark:border-gray-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 bg-stone-100/90 dark:bg-gray-700 text-stone-900 dark:text-white"
+              >
+                <option value="auto">{t('settings.form.chatApiMode.auto')}</option>
+                <option value="openai">{t('settings.form.chatApiMode.openai')}</option>
+                <option value="anthropic">{t('settings.form.chatApiMode.anthropic')}</option>
+              </select>
+              <p className="mt-1 text-[11px] text-stone-500 dark:text-gray-400 leading-snug">
+                {t('settings.form.chatApiModeHint')}
+              </p>
+            </div>
+          )}
 
           <div>
             <label className="block text-xs font-medium text-stone-700 dark:text-gray-300 mb-1">

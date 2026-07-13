@@ -94,6 +94,37 @@ describe('StreamingDeltaSplitter', () => {
     expect(r.content).toBe('');
     expect(r.reasoning).toBe('');
   });
+
+  it('MiniMax 流式：思考嵌在 content 的 <think> 标签中应拆出', () => {
+    const s = new StreamingDeltaSplitter();
+    const r1 = s.feed(
+      'data: {"choices":[{"delta":{"content":"<think>\\nThe user"}}]}'
+    );
+    const r2 = s.feed(
+      'data: {"choices":[{"delta":{"content":" is asking.\\n</think>\\n答案正文"}}]}'
+    );
+    expect(r1.reasoning + r2.reasoning).toContain('The user');
+    expect(r1.reasoning + r2.reasoning).toContain('is asking');
+    expect(r1.content + r2.content).toContain('答案正文');
+    expect(r1.content + r2.content).not.toContain('<think>');
+  });
+
+  it('MiniMax reasoning_split：reasoning_details.text 累计差分', () => {
+    const s = new StreamingDeltaSplitter();
+    const r1 = s.feed(
+      'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"先分析"}]}}]}'
+    );
+    const r2 = s.feed(
+      'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"先分析问题"}]}}]}'
+    );
+    const r3 = s.feed('data: {"choices":[{"delta":{"content":"答案"}}]}');
+    s.flush();
+    expect(r1.reasoning).toBe('先分析');
+    expect(r2.reasoning).toBe('问题');
+    expect(r1.reasoning + r2.reasoning).toBe('先分析问题');
+    expect(r3.content).toBe('答案');
+    expect(r3.reasoning).toBe('');
+  });
 });
 
 describe('extractContentAndReasoningFromSseDataLine', () => {
