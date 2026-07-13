@@ -175,6 +175,22 @@ export interface ElectronAPI {
     error?: string;
   }>;
   agentWebClose: () => Promise<{ ok: boolean; closed?: boolean; error?: string }>;
+  /** 将远程网页图片落盘为本机附件（可选 referer / 页内 base64） */
+  agentWebSaveRemoteImage: (arg: {
+    url?: string;
+    referer?: string;
+    fileName?: string;
+    base64?: string;
+    contentType?: string;
+  }) => Promise<{
+    ok: boolean;
+    path?: string;
+    name?: string;
+    type?: string;
+    size?: number;
+    preview?: string;
+    error?: string;
+  }>;
   /** 为工作区构建向量索引（需先配置嵌入服务与模型）；省略 mode 或与 incremental 等效时：能复用指纹则仅处理变更/新文件，否则内部全文重建；mode: 'full' 强制全文 */
   knowledgeIndexWorkspace: (arg: {
     root: string;
@@ -292,6 +308,21 @@ export interface ModelConfig {
   isImageGenerator?: boolean;
   imageGeneratorConfig?: {
     type: 'cli' | 'http';
+    /**
+     * 生图厂商标识，用于显式路由适配器（优先于 endpoint/模式推断）。
+     * - bailian-wanx：阿里云百炼 DashScope 通义万相（wan2.6 同步）
+     * - volc-seedream：火山方舟豆包 Seedream（OpenAI Images 兼容）
+     * - openai-images：OpenAI Images 及其兼容网关
+     * - sdwebui：AUTOMATIC1111/Forge txt2img
+     * - ollama：Ollama /api/generate
+     * - custom：自定义（走 raw/auto 兜底）
+     * 留空时按 httpFormat + endpoint 自动推断（向后兼容老配置）。
+     */
+    provider?: 'bailian-wanx' | 'volc-seedream' | 'openai-images' | 'sdwebui' | 'ollama' | 'custom' | string;
+    /** 结构化 API 密钥；优先于 env 中厂商对应 key，向后兼容老配置 */
+    apiKey?: string;
+    /** 结构化模型名；优先于 env 中厂商对应 key，向后兼容老配置 */
+    model?: string;
     /** CLI：可执行文件或脚本路径 */
     command?: string;
     /** HTTP：完整 URL（如 SD WebUI txt2img、Ollama /api/generate） */
@@ -301,8 +332,8 @@ export interface ModelConfig {
      * HTTP 响应解析：auto 自动识别；sdwebui = Automatic1111/Forge txt2img JSON；
      * ollama = Ollama /api/generate JSON；openai_images = POST /images/generations（OpenAI Images 兼容，含火山方舟/豆包远端）；
      * raw = 响应体即为图片二进制
-      */
-      httpFormat?: 'auto' | 'sdwebui' | 'ollama' | 'openai_images' | 'raw';
+     */
+    httpFormat?: 'auto' | 'sdwebui' | 'ollama' | 'openai_images' | 'raw';
     /**
      * CLI 参数：每行一条，占位符 {{prompt}} {{outputPath}} {{width}} {{height}}
      * 留空则不给进程传 argv，仅用环境变量（推荐本地脚本读 MYAGENT_*）

@@ -50,4 +50,20 @@ describe('webBrowseIntent', () => {
     expect(resolveWebBrowseOpenUrl(intent!, q)).toContain('image.baidu.com');
     expect(resolveWebBrowseOpenUrl(intent!, q)).toContain(encodeURIComponent('美女'));
   });
+
+  it('「返回第一张」即使用户未说图片也走图片搜索 URL', () => {
+    const q = '打开百度，搜索"美女"，返回第一张';
+    const intent = parseWebBrowseIntent(q);
+    expect(intent?.kind).toBe('baidu_search');
+    expect(resolveWebBrowseOpenUrl(intent!, q)).toContain('image.baidu.com');
+  });
+
+  it('谷歌图片搜索走 tbm=isch', () => {
+    const q = '打开谷歌搜索手表图片，返回第一张';
+    const intent = parseWebBrowseIntent(q);
+    expect(intent?.kind).toBe('google_search');
+    const url = resolveWebBrowseOpenUrl(intent!, q);
+    expect(url).toContain('tbm=isch');
+    expect(url).toContain('google.com');
+  });
 });

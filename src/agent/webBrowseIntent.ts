@@ -63,10 +63,21 @@ export function buildBaiduImageSearchUrl(query: string): string {
   return `https://image.baidu.com/search/index?tn=baiduimage&word=${encodeURIComponent(query)}`;
 }
 
+export function buildGoogleImageSearchUrl(query: string): string {
+  return `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(query)}`;
+}
+
 /** 根据用户话术选择普通网页搜索或图片搜索 URL */
 export function resolveWebBrowseOpenUrl(intent: WebBrowseIntent, userText: string): string {
-  if (intent.kind === 'baidu_search' && /图片/i.test(userText)) {
+  const wantsImage =
+    /图片|照片|相片|image/i.test(userText) ||
+    userWantsWebFirstImage(userText) ||
+    /进入.{0,8}图片|图片搜索|image\s*search/i.test(userText);
+  if (intent.kind === 'baidu_search' && wantsImage) {
     return buildBaiduImageSearchUrl(intent.query);
+  }
+  if (intent.kind === 'google_search' && wantsImage) {
+    return buildGoogleImageSearchUrl(intent.query);
   }
   return buildWebBrowseUrl(intent);
 }
@@ -143,10 +154,11 @@ export function buildWebBrowseUrl(intent: WebBrowseIntent): string {
 export async function executeWebBrowseIntent(
   intent: WebBrowseIntent,
   locale: Locale,
-  userText?: string
+  userText?: string,
+  opts?: { shouldCancel?: () => boolean }
 ): Promise<{ ok: true; message: string } | { ok: false; error: string }> {
   const url = userText ? resolveWebBrowseOpenUrl(intent, userText) : buildWebBrowseUrl(intent);
-  const r = await agentBrowserOpen(url);
+  const r = await agentBrowserOpen(url, { shouldCancel: opts?.shouldCancel });
   if (!r.ok) return r;
 
   if (intent.kind === 'baidu_search') {
@@ -184,6 +196,7 @@ async function summarizeWebSnapshot(
   handlers?: {
     onThinkingDelta?: (chunk: string) => void;
     onContentDelta?: (chunk: string) => void;
+    shouldCancel?: () => boolean;
   }
 ): Promise<{ content: string; reasoning?: string }> {
   const messages: Message[] = [
@@ -208,6 +221,7 @@ async function summarizeWebSnapshot(
   const r = await callModelAgentRound(messages, model, locale, {
     onThinkingDelta: handlers?.onThinkingDelta,
     onDelta: handlers?.onContentDelta,
+    shouldCancel: handlers?.shouldCancel,
   });
   const content = String(r.content ?? '').trim();
   const fallback =
@@ -222,6 +236,7 @@ export type WebPageDescribeHandlers = {
   onThinkingDelta?: (chunk: string) => void;
   onContentDelta?: (chunk: string) => void;
   onReplyContent?: (text: string) => void;
+  shouldCancel?: () => boolean;
 };
 
 function formatOpenedPanelHead(
@@ -251,16 +266,21 @@ export async function executeWebPageDescribe(
   handlers?: WebPageDescribeHandlers
 ): Promise<{ ok: true; message: string; reasoning?: string } | { ok: false; error: string }> {
   /** 后台加载页面，对话区保持「···」直到进入分析/回答流 */
-  const opened = await agentBrowserOpen(url, { revealPanel: false });
+  const opened = await agentBrowserOpen(url, {
+    revealPanel: false,
+    shouldCancel: handlers?.shouldCancel,
+  });
   if (!opened.ok) return opened;
 
-  const read = await agentBrowserRead({ maxChars: 8000 });
+  const read = await agentBrowserRead({ maxChars: 8000, shouldCancel: handlers?.shouldCancel });
   if (!read.ok) {
     useAgentBrowserStore.getState().reveal();
     return {
       ok: false,
       error:
-        locale === 'en'
+        read.error === 'AGENT_CANCELLED' || handlers?.shouldCancel?.()
+          ? 'AGENT_CANCELLED'
+          : locale === 'en'
           ? `Page opened but could not read content: ${read.error}`
           : `页面已打开，但读取内容失败：${read.error}`,
     };
@@ -292,11 +312,13 @@ export async function executeWebPageDescribe(
     {
       onThinkingDelta: handlers?.onThinkingDelta,
       onContentDelta: (chunk) => {
+        if (handlers?.shouldCancel?.()) return;
         if (!chunk) return;
         revealPanelOnce();
         streamedSummary += chunk;
         handlers?.onReplyContent?.(head + streamedSummary);
       },
+      shouldCancel: handlers?.shouldCancel,
     }
   );
 

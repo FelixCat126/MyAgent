@@ -9,8 +9,9 @@ import {
   isZhipuEndpoint,
   messagesHaveImageFiles,
   resolveOpenAiCompatibleBaseUrl,
+  buildThinkingParams,
 } from './openai-adapters';
-import { extractContentAndReasoningFromSseDataLine } from '../utils/streamChatCompletionDelta';
+import { StreamingDeltaSplitter } from '../utils/streamChatCompletionDelta';
 
 const abortByStream = new Map<number, AbortController>();
 
@@ -75,13 +76,17 @@ function registerModelStreamIpc() {
 
         let formattedMessages = formatOpenAIMultimodal(messages) as Array<{ role: string; content: unknown }>;
 
-        const doStream = async (msgs: typeof formattedMessages) => {
+        const doStream = async (
+          msgs: typeof formattedMessages,
+          withThinking = true
+        ) => {
           const body: Record<string, unknown> = {
             model: modelName,
             messages: msgs,
             max_tokens: maxTokens,
             stream: true,
             ...(temperature !== undefined ? { temperature } : {}),
+            ...(withThinking ? buildThinkingParams() : {}),
           };
           const url = `${apiBase}/chat/completions`;
           return axios.post(url, body, {
@@ -93,16 +98,39 @@ function registerModelStreamIpc() {
           });
         };
 
+        /** 判断错误是否为 400（可能因思考参数不被支持导致） */
+        const isBadRequest = (e: unknown): boolean => {
+          const ax = e as AxiosError;
+          return ax?.response?.status === 400;
+        };
+
         const tryRequest = async () => {
           try {
-            return await doStream(formattedMessages);
+            return await doStream(formattedMessages, true);
           } catch (firstErr: unknown) {
+            /** 图片不支持：改为纯文字重试 */
             if (messagesHaveImageFiles(messages) && errorIndicatesImageUnsupported(firstErr)) {
               formattedMessages = formatOpenAITextOnly(messages) as Array<{
                 role: string;
                 content: unknown;
               }>;
-              return await doStream(formattedMessages);
+              try {
+                return await doStream(formattedMessages, true);
+              } catch (secondErr: unknown) {
+                /** 图片重试仍 400：可能是思考参数不支持，去掉再试 */
+                if (isBadRequest(secondErr)) {
+                  return await doStream(formattedMessages, false);
+                }
+                throw secondErr;
+              }
+            }
+            /** 首次即 400（无图片场景）：可能是思考参数不被该模型支持，去掉重试 */
+            if (isBadRequest(firstErr)) {
+              try {
+                return await doStream(formattedMessages, false);
+              } catch {
+                throw firstErr; // 去掉思考参数仍失败，抛原始错误
+              }
             }
             throw firstErr;
           }
@@ -114,14 +142,16 @@ function registerModelStreamIpc() {
           on: (ev: 'data' | 'end' | 'error', fn: (x?: string | Error) => void) => void;
         };
 
-        /** OpenAI 兼容流（含多数 Ollama /v1/chat/completions）为 SSE */
+        /** OpenAI 兼容流（含多数 Ollama /v1/chat/completions）为 SSE。
+         *  使用有状态解析器处理跨 chunk 的 <think>…</think> 内联标签。 */
+        const splitter = new StreamingDeltaSplitter();
         stream.on('data', (chunk: string | Buffer) => {
           buffer += chunk.toString();
           const parts = buffer.split('\n');
           buffer = parts.pop() || '';
           for (const line of parts) {
             const trimmed = line.replace(/\r$/, '').trim();
-            const { content, reasoning } = extractContentAndReasoningFromSseDataLine(trimmed);
+            const { content, reasoning } = splitter.feed(trimmed);
             sendDelta(wc, content);
             sendThinkingDelta(wc, reasoning);
           }
@@ -131,11 +161,12 @@ function registerModelStreamIpc() {
             if (buffer.trim()) {
               for (const ln of buffer.split('\n')) {
                 const trimmed = ln.replace(/\r$/, '').trim();
-                const { content, reasoning } = extractContentAndReasoningFromSseDataLine(trimmed);
+                const { content, reasoning } = splitter.feed(trimmed);
                 sendDelta(wc, content);
                 sendThinkingDelta(wc, reasoning);
               }
             }
+            splitter.flush();
             resolve();
           });
           stream.on('error', (e) => reject(e));

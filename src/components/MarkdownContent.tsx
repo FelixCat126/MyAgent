@@ -82,8 +82,9 @@ type CodeProps = {
 
 /**
  * 助手消息正文：GFM 表格、列表等； fenced 代码块带复制按钮
+ * memo 化：text 不变时跳过 Markdown 重解析（流式更新只影响最后一条消息）
  */
-const MarkdownContent: React.FC<MarkdownContentProps> = ({
+const MarkdownContent: React.FC<MarkdownContentProps> = React.memo(({
   text,
   className = '',
   copyCodeLabel = '复制',
@@ -117,6 +118,6 @@ const MarkdownContent: React.FC<MarkdownContentProps> = ({
       </ReactMarkdown>
     </div>
   );
-};
+});
 
 export default MarkdownContent;

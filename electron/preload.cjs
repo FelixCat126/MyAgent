@@ -111,6 +111,8 @@ window.electron = {
   agentWebRead: (arg) => ipcRenderer.invoke('agent-web-read', cloneForIpc(arg ?? null)),
   agentWebEval: (arg) => ipcRenderer.invoke('agent-web-eval', cloneForIpc(arg)),
   agentWebClose: () => ipcRenderer.invoke('agent-web-close'),
+  agentWebSaveRemoteImage: (arg) =>
+    ipcRenderer.invoke('agent-web-save-remote-image', cloneForIpc(arg)),
   knowledgeIndexWorkspace: (arg) => ipcRenderer.invoke('knowledge-index-workspace', cloneForIpc(arg)),
   knowledgeSearch: (arg) => ipcRenderer.invoke('knowledge-search', cloneForIpc(arg)),
   knowledgeGetIndexStatus: () => ipcRenderer.invoke('knowledge-index-status'),

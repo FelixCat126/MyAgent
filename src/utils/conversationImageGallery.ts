@@ -1,5 +1,6 @@
 import { pathToFileURL } from 'url';
 import type { Message } from '../types';
+import { attachmentImageDisplaySrc } from './attachmentDisplaySrc';
 
 /** 当前会话内可串联预览的附件图片（按消息时间顺序、每则消息内文件顺序） */
 export type ConversationImageGalleryItem = {
@@ -16,12 +17,7 @@ export function buildConversationImageGallery(messages: Message[]): Conversation
     if (!msg.files?.length) continue;
     msg.files.forEach((file, fileIndex) => {
       if (!file.type.startsWith('image/')) return;
-      const hasPreview = file.preview && file.preview.startsWith('data:');
-      const displaySrc = hasPreview
-        ? file.preview!
-        : file.path
-          ? pathToFileURL(file.path).href.replace(/^file:/i, 'local-file:')
-          : '';
+      const displaySrc = attachmentImageDisplaySrc(file);
       if (!displaySrc || !file.path) return;
       out.push({
         messageId: msg.id,

@@ -157,6 +157,20 @@ export function getAgentSearchRoots(deniedPaths: string[]): string[] {
     }
   }
 
+  if (process.platform === 'linux') {
+    for (const mountRoot of ['/mnt', '/media']) {
+      try {
+        for (const name of fs.readdirSync(mountRoot)) {
+          if (!name || name.startsWith('.')) continue;
+          const p = path.resolve(mountRoot, name);
+          if (!isAgentPathBlocked(p, deniedPaths)) roots.add(p);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   return [...roots];
 }
 
@@ -206,6 +220,8 @@ export function resolveAgentReadPath(
     path.resolve(home, 'Documents', trimmed),
     path.resolve(home, 'Downloads', trimmed),
     path.resolve(home, 'Desktop', trimmed),
+    path.resolve(home, 'Pictures', trimmed),
+    path.resolve(home, 'Movies', trimmed),
   ];
   const seen = new Set<string>();
   for (const candidate of candidates) {

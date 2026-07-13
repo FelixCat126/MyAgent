@@ -33,20 +33,73 @@ function hasExplicitAuthorizationHeader(headers: Record<string, string>): boolea
   return Object.keys(headers).some((k) => k.toLowerCase() === 'authorization');
 }
 
-function bearerFromBareApiKeysInEnv(env: Record<string, string> | undefined): string | undefined {
+/**
+ * 按候选 env key 顺序查找裸 API Key 并规范化为 Bearer。
+ * 不同厂商候选 key 不同，集中收敛，避免散落。
+ */
+function bearerFromEnvCandidates(
+  env: Record<string, string> | undefined,
+  candidates: string[]
+): string | undefined {
   if (!env) return undefined;
-  const ordered = ['ARK_API_KEY', 'VOLC_ENGINE_API_KEY', 'VOLCES_API_KEY', 'VOLC_IMAGE_API_KEY'];
-  for (const k of ordered) {
+  for (const k of candidates) {
     const raw = typeof env[k] === 'string' ? env[k].trim() : '';
     if (raw) return normalizeBearerAuthorization(raw);
   }
   return undefined;
 }
 
-function mergedCustomHeadersForImageHttp(env: Record<string, string> | undefined): Record<string, string> {
+/** 火山方舟：ARK_API_KEY 及历史别名 */
+const VOLC_API_KEY_CANDIDATES = ['ARK_API_KEY', 'VOLC_ENGINE_API_KEY', 'VOLCES_API_KEY', 'VOLC_IMAGE_API_KEY'];
+/** 百炼 DashScope */
+const BAILIAN_API_KEY_CANDIDATES = ['DASHSCOPE_API_KEY', 'BAILIAN_API_KEY', 'ALIYUN_API_KEY'];
+/** OpenAI 及通用 */
+const OPENAI_API_KEY_CANDIDATES = ['OPENAI_API_KEY', 'REMOTE_API_KEY'];
+/** 智谱 BigModel */
+const ZHIPU_API_KEY_CANDIDATES = ['ZHIPU_API_KEY', 'BIGMODEL_API_KEY', 'GLM_API_KEY'];
+
+/**
+ * 解析生图鉴权 Bearer（向后兼容）：
+ * 1) 结构化 config.apiKey（新）优先；
+ * 2) 否则按 provider 选对应厂商候选 env key；
+ * 3) provider 未知时退化到旧的「火山 key 全集」推断，保证老配置不破。
+ */
+function resolveProviderBearer(
+  config: NonNullable<ModelConfig['imageGeneratorConfig']>,
+  env: Record<string, string> | undefined
+): string | undefined {
+  const structured = typeof config.apiKey === 'string' ? config.apiKey.trim() : '';
+  if (structured) return normalizeBearerAuthorization(structured);
+
+  switch (config.provider) {
+    case 'bailian-wanx':
+      return bearerFromEnvCandidates(env, BAILIAN_API_KEY_CANDIDATES);
+    case 'volc-seedream':
+      return bearerFromEnvCandidates(env, VOLC_API_KEY_CANDIDATES);
+    case 'openai-images':
+      return (
+        bearerFromEnvCandidates(env, OPENAI_API_KEY_CANDIDATES) ??
+        bearerFromEnvCandidates(env, VOLC_API_KEY_CANDIDATES)
+      );
+    case 'zhipu-cogview':
+      return bearerFromEnvCandidates(env, ZHIPU_API_KEY_CANDIDATES);
+    case 'ollama':
+    case 'sdwebui':
+    case 'custom':
+      return undefined;
+    default:
+      /** 老配置（无 provider）：保留原有火山全集推断行为 */
+      return bearerFromEnvCandidates(env, VOLC_API_KEY_CANDIDATES);
+  }
+}
+
+function mergedCustomHeadersForImageHttp(
+  env: Record<string, string> | undefined,
+  config?: NonNullable<ModelConfig['imageGeneratorConfig']>
+): Record<string, string> {
   const merged = extraHttpHeadersFromImageEnv(env);
   if (!hasExplicitAuthorizationHeader(merged)) {
-    const b = bearerFromBareApiKeysInEnv(env);
+    const b = config ? resolveProviderBearer(config, env) : bearerFromEnvCandidates(env, VOLC_API_KEY_CANDIDATES);
     if (b) merged.Authorization = b;
   }
   return merged;
@@ -664,9 +717,14 @@ function buildUnifiedImageRequest(params: ImageGenerationParams): UnifiedImageRe
 }
 
 function resolveOpenAiCompatibleImageModel(
+  config: NonNullable<ModelConfig['imageGeneratorConfig']>,
   env: Record<string, string> | undefined,
   volcArk: boolean
 ): string {
+  /** 结构化 config.model 优先（新）；其次 env 厂商候选 key（向后兼容） */
+  const structured = typeof config.model === 'string' ? config.model.trim() : '';
+  if (structured) return structured;
+
   const modelEnv =
     env?.REMOTE_IMAGE_MODEL ||
     env?.IMAGE_MODEL ||
@@ -678,7 +736,7 @@ function resolveOpenAiCompatibleImageModel(
   if (!model) {
     const example = volcArk ? 'doubao-seedream-4-5-251128' : 'gpt-image-1';
     throw new Error(
-      `OpenAI Images 请在环境变量中填写模型名：\`REMOTE_IMAGE_MODEL\` 或 \`IMAGE_MODEL\`（例：${example}）。鉴权可用 \`ARK_API_KEY=…\` 或 \`HEADER_AUTHORIZATION=Bearer …\`。`
+      `OpenAI Images 请填写模型名（设置中的「模型名」或环境变量 \`REMOTE_IMAGE_MODEL\`/\`IMAGE_MODEL\`，例：${example}）。鉴权可用「API 密钥」字段、\`ARK_API_KEY=…\` 或 \`HEADER_AUTHORIZATION=Bearer …\`。`
     );
   }
   return model;
@@ -686,15 +744,16 @@ function resolveOpenAiCompatibleImageModel(
 
 const volcSeedreamAdapter: HttpImageProviderAdapter = {
   id: 'volc-seedream',
-  match: ({ mode, endpoint }) =>
-    mode === 'openai_images' && isVolcArkImageGenerationsEndpoint(endpoint),
-  async build({ endpoint, env, request, headers }) {
+  match: ({ mode, endpoint, config }) =>
+    config.provider === 'volc-seedream' ||
+    (mode === 'openai_images' && isVolcArkImageGenerationsEndpoint(endpoint)),
+  async build({ endpoint, config, env, request, headers }) {
     if (!hasExplicitAuthorizationHeader(headers)) {
       throw new Error(
-        '火山方舟返回 401 多为鉴权未带上：请在生图模型「环境变量」中填写 `ARK_API_KEY=你的密钥`（等价于 curl 的 Bearer），或填写 `HEADER_AUTHORIZATION=Bearer 你的密钥`；不要使用对话模型的 Key 占位。'
+        '火山方舟返回 401 多为鉴权未带上：请在生图模型「API 密钥」字段填写密钥，或在「环境变量」中填写 `ARK_API_KEY=你的密钥`（等价于 curl 的 Bearer），或填写 `HEADER_AUTHORIZATION=Bearer 你的密钥`；不要使用对话模型的 Key 占位。'
       );
     }
-    const model = resolveOpenAiCompatibleImageModel(env, true);
+    const model = resolveOpenAiCompatibleImageModel(config, env, true);
     const body = await arkVolcDoubaoCompatibleRequestBody(env, model, request.params);
     return {
       provider: 'volc-seedream',
@@ -709,11 +768,17 @@ const volcSeedreamAdapter: HttpImageProviderAdapter = {
 
 const openAiImagesAdapter: HttpImageProviderAdapter = {
   id: 'openai-images',
-  match: ({ mode }) => mode === 'openai_images',
-  build({ endpoint, env, request }) {
-    const model = resolveOpenAiCompatibleImageModel(env, false);
-    const rf =
-      (env?.IMAGE_RESPONSE_FORMAT || env?.RESPONSE_FORMAT || '').trim() || 'b64_json';
+  match: ({ mode, config }) =>
+    config.provider === 'openai-images' ||
+    config.provider === 'zhipu-cogview' ||
+    (!config.provider && mode === 'openai_images'),
+  build({ endpoint, config, env, request }) {
+    const model = resolveOpenAiCompatibleImageModel(config, env, false);
+    /** 智谱 CogView 只返回 URL（不支持 b64_json），强制用 url */
+    const isZhipu = config.provider === 'zhipu-cogview';
+    const rf = isZhipu
+      ? 'url'
+      : (env?.IMAGE_RESPONSE_FORMAT || env?.RESPONSE_FORMAT || '').trim() || 'b64_json';
     let size =
       typeof request.width === 'number' &&
       request.width > 0 &&
@@ -736,7 +801,8 @@ const openAiImagesAdapter: HttpImageProviderAdapter = {
 
 const sdWebUiAdapter: HttpImageProviderAdapter = {
   id: 'sdwebui',
-  match: ({ mode }) => mode === 'sdwebui',
+  match: ({ mode, config }) =>
+    config.provider === 'sdwebui' || (!config.provider && mode === 'sdwebui'),
   build({ endpoint, request }) {
     return {
       provider: 'sdwebui',
@@ -759,9 +825,15 @@ const sdWebUiAdapter: HttpImageProviderAdapter = {
 
 const ollamaAdapter: HttpImageProviderAdapter = {
   id: 'ollama',
-  match: ({ mode }) => mode === 'ollama',
-  build({ endpoint, env, request }) {
-    const model = env?.OLLAMA_MODEL || env?.ollama_model || 'flux';
+  match: ({ mode, config }) =>
+    config.provider === 'ollama' || (!config.provider && mode === 'ollama'),
+  build({ endpoint, config, env, request }) {
+    /** config.model 优先（新），其次 env（向后兼容） */
+    const model =
+      (typeof config.model === 'string' ? config.model.trim() : '') ||
+      env?.OLLAMA_MODEL ||
+      env?.ollama_model ||
+      'flux';
     const body: Record<string, unknown> = {
       model,
       prompt: request.prompt,
@@ -790,7 +862,140 @@ const rawAutoAdapter: HttpImageProviderAdapter = {
   },
 };
 
+/**
+ * 百炼/万相响应解析（wan2.6 同步协议）：
+ * { output: { choices: [ { message: { content: [ { image: "url", type: "image" } ] } } ] } }
+ * 兼容旧版异步轮询结构 { output: { results: [ { url } ] } } 作为兜底。
+ */
+function extractImagesFromBailianResponse(data: unknown): { urls: string[]; b64s: string[] } {
+  const urls: string[] = [];
+  const b64s: string[] = [];
+  const pushUrl = (u: unknown) => {
+    const s = typeof u === 'string' ? u.trim() : '';
+    if (/^https?:\/\//i.test(s)) urls.push(s);
+  };
+  const pushB64 = (b: unknown) => {
+    const s = typeof b === 'string' ? b.trim() : '';
+    if (s.length >= 48) b64s.push(s);
+  };
+
+  if (!data || typeof data !== 'object') return { urls, b64s };
+  const j = data as Record<string, unknown>;
+  const output = j.output as Record<string, unknown> | undefined;
+
+  /** wan2.6 同步：output.choices[].message.content[].image */
+  const choices = Array.isArray(output?.choices) ? output!.choices : undefined;
+  if (Array.isArray(choices)) {
+    for (const choice of choices) {
+      if (!choice || typeof choice !== 'object') continue;
+      const c = choice as Record<string, unknown>;
+      const message = c.message as Record<string, unknown> | undefined;
+      const content = Array.isArray(message?.content) ? message!.content : undefined;
+      if (Array.isArray(content)) {
+        for (const item of content) {
+          if (!item || typeof item !== 'object') continue;
+          const ci = item as Record<string, unknown>;
+          pushUrl(ci.image);
+          pushB64(ci.image);
+        }
+      }
+    }
+  }
+
+  /** 兼容旧版异步轮询：output.results[].url */
+  const results = Array.isArray(output?.results) ? output!.results : undefined;
+  if (Array.isArray(results)) {
+    for (const item of results) {
+      if (!item || typeof item !== 'object') continue;
+      const r = item as Record<string, unknown>;
+      pushUrl(r.url);
+      pushB64(r.b64_image);
+      pushB64(r.image);
+    }
+  }
+
+  /** 兜底：递归找任何 image/url 字段 */
+  if (!urls.length && !b64s.length) {
+    for (const v of Object.values(j)) {
+      if (typeof v === 'string') {
+        pushUrl(v);
+        pushB64(v);
+      }
+    }
+  }
+  return { urls, b64s };
+}
+
+/**
+ * 百炼/万相 wan2.6 size 格式为 "宽*高"（星号分隔），总像素在 [1280*1280, 1440*1440] 之间。
+ * 用户未指定时默认 1280*1280；可通过 env.IMAGE_SIZE 覆盖。
+ */
+function inferBailianWanxSize(params: ImageGenerationParams, env: Record<string, string> | undefined): string {
+  const forced = (env?.IMAGE_SIZE || env?.WANX_SIZE || '').trim();
+  if (forced) return forced;
+  const w = typeof params.width === 'number' && params.width > 0 ? Math.round(params.width) : 1280;
+  const h = typeof params.height === 'number' && params.height > 0 ? Math.round(params.height) : 1280;
+  return `${w}*${h}`;
+}
+
+const bailianWanxAdapter: HttpImageProviderAdapter = {
+  id: 'bailian-wanx',
+  match: ({ config, endpoint }) =>
+    config.provider === 'bailian-wanx' ||
+    (!config.provider && /\bdashscope\.aliyuncs\.com\b/i.test(endpoint)),
+  async build({ endpoint, config, env, request, headers }) {
+    /** 防御：wan2.6 同步调用必须用 multimodal-generation/generation；旧版 image-synthesis 会返回异步 task_id */
+    if (!/multimodal-generation\/generation/i.test(endpoint)) {
+      throw new Error(
+        '百炼/万相接口地址不正确：wan2.6 同步调用请使用 `https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation`。请在「高级」中检查或重新选择「百炼/通义万相」预设以自动填入。'
+      );
+    }
+    if (!hasExplicitAuthorizationHeader(headers)) {
+      throw new Error(
+        '百炼/万相鉴权未带上：请在生图模型「API 密钥」字段填写 DashScope Key，或在「环境变量」中填写 `DASHSCOPE_API_KEY=sk-…`。'
+      );
+    }
+    /** config.model 优先（新），其次 env（向后兼容） */
+    const model =
+      (typeof config.model === 'string' ? config.model.trim() : '') ||
+      env?.REMOTE_IMAGE_MODEL ||
+      env?.IMAGE_MODEL ||
+      env?.WANX_MODEL ||
+      '';
+    if (!model) {
+      throw new Error(
+        '百炼/万相请填写模型名（设置中的「模型名」或环境变量 `REMOTE_IMAGE_MODEL`/`IMAGE_MODEL`，例：wan2.6-t2i）。'
+      );
+    }
+    const size = inferBailianWanxSize(request.params, env);
+    const n =
+      typeof request.count === 'number' && request.count > 0
+        ? Math.max(1, Math.min(4, Math.round(request.count)))
+        : 1;
+    /** wan2.6 同步协议请求体：input.messages[].content[].text + parameters */
+    const body: Record<string, unknown> = {
+      model,
+      input: {
+        messages: [
+          {
+            role: 'user',
+            content: [{ text: request.prompt ?? '' }],
+          },
+        ],
+      },
+      parameters: {
+        size,
+        n,
+        watermark: false,
+        prompt_extend: true,
+      },
+    };
+    return { provider: 'bailian-wanx', mode: 'auto', endpoint, body };
+  },
+};
+
 const httpImageProviderAdapters: HttpImageProviderAdapter[] = [
+  bailianWanxAdapter,
   volcSeedreamAdapter,
   openAiImagesAdapter,
   sdWebUiAdapter,
@@ -1048,7 +1253,8 @@ function extractImageFromOllamaFriendlyBody(buf: Buffer): Buffer | null {
 function formatAxiosGenerateHttpError(
   endpoint: string,
   status: number,
-  bodyBuf: ArrayBuffer | Buffer | Uint8Array
+  bodyBuf: ArrayBuffer | Buffer | Uint8Array,
+  providerHint?: string
 ): string {
   const raw = (Buffer.isBuffer(bodyBuf)
     ? bodyBuf
@@ -1058,18 +1264,41 @@ function formatAxiosGenerateHttpError(
     .slice(0, 1400)
     .trim();
   if (!raw) {
+    /** 无响应体：按厂商给出针对性排查提示，避免一律显示 Ollama 模板 */
+    if (providerHint) {
+      return `请求 ${endpoint} 返回 HTTP ${status}（无响应体）。${providerHint}`;
+    }
     return `请求 ${endpoint} 返回 HTTP ${status}（无响应体）；请核对 OLLAMA_MODEL、接口是否为 /api/generate，并将 Ollama 升级到支持生图的版本`;
   }
   try {
-    const j = JSON.parse(raw) as { error?: unknown };
+    const j = JSON.parse(raw) as { error?: unknown; code?: unknown; message?: unknown; request_id?: unknown };
+    /** 百炼/DashScope 错误格式：{ code, message, request_id } */
+    if (typeof j.code === 'string' && typeof j.message === 'string') {
+      const rid = typeof j.request_id === 'string' ? `（request_id: ${j.request_id}）` : '';
+      return `HTTP ${status} [${j.code}]：${j.message}${rid}`;
+    }
     if (typeof j.error === 'string') return `HTTP ${status}：${j.error}`;
     if (j.error !== undefined && j.error !== null) {
       return `HTTP ${status}：${JSON.stringify(j.error).slice(0, 800)}`;
     }
+    /** 有 message 但无 code/error（部分网关） */
+    if (typeof j.message === 'string') return `HTTP ${status}：${j.message}`;
   } catch {
     /* 非 JSON */
   }
   return `HTTP ${status}：${raw.slice(0, 900)}`;
+}
+
+/** 百炼/万相 404 等常见错误的排查提示 */
+function bailianHttpErrorHint(endpoint: string): string {
+  const full = 'dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation';
+  if (/\/api\/v1\/?$/.test(endpoint) && !endpoint.includes('services')) {
+    return `接口地址不完整：wan2.6 同步调用需要完整路径 \`${full}\`，请在「高级」中补全 endpoint。`;
+  }
+  if (/image-synthesis/i.test(endpoint)) {
+    return `当前用的是旧版异步接口 image-synthesis（返回 task_id，需轮询）。wan2.6 同步请改用 \`${full}\`。`;
+  }
+  return `请核对接口地址是否为 \`/services/aigc/multimodal-generation/generation\`、模型名是否为 \`wan2.6-t2i\`、API Key 是否为有效的 DashScope Key。`;
 }
 
 type CliGeneratedImage = { url: string; path: string; width: number; height: number };
@@ -1386,7 +1615,7 @@ async function generateImageHttp(
 
   const endpoint = config.endpoint.trim();
   const mode = detectHttpFormat(endpoint, config);
-  const customHdr = mergedCustomHeadersForImageHttp(config.env);
+  const customHdr = mergedCustomHeadersForImageHttp(config.env, config);
 
   /** Node 兜底请求也需鉴权头等（远端 OpenAI Images 同理） */
   const mergedFetchHeaders: Record<string, string> = {
@@ -1403,6 +1632,7 @@ async function generateImageHttp(
     params,
   });
   const postBody = builtReq.body;
+  const providerKind = builtReq.provider;
   const ollamaModel = builtReq.ollamaModel || config.env?.OLLAMA_MODEL || config.env?.ollama_model || 'flux';
   const volcOpenAi = Boolean(builtReq.volcOpenAi);
   const readBodyAsStreamingText = Boolean(builtReq.readBodyAsStreamingText);
@@ -1449,7 +1679,10 @@ async function generateImageHttp(
   let lastEmptyDiagEndpoint = endpoint;
 
   if (!response.ok) {
-    throw new Error(formatAxiosGenerateHttpError(endpoint, httpStatus, buf));
+    /** 按厂商给出针对性排查提示，避免一律显示 Ollama 模板 */
+    let hint: string | undefined;
+    if (providerKind === 'bailian-wanx') hint = bailianHttpErrorHint(endpoint);
+    throw new Error(formatAxiosGenerateHttpError(endpoint, httpStatus, buf, hint));
   }
 
   const bodyPayload = JSON.stringify(postBody);
@@ -1614,6 +1847,39 @@ async function generateImageHttp(
     }
   }
 
+  /**
+   * 百炼/万相同步协议：响应 JSON 为 { output: { results: [{ url | b64_image }] } }。
+   * URL 需下载为二进制；b64_image 直接解码。支持多张。
+   */
+  if (providerKind === 'bailian-wanx' && !looksLikeBinaryImage(buf) && !ct.startsWith('image/')) {
+    let bailianJson: unknown = null;
+    try {
+      bailianJson = JSON.parse(utf8Full) as unknown;
+    } catch {
+      /* fallthrough */
+    }
+    if (bailianJson) {
+      const { urls, b64s } = extractImagesFromBailianResponse(bailianJson);
+      if (urls.length > 0) {
+        const buffers: Buffer[] = [];
+        for (const u of urls) {
+          buffers.push(await fetchImageBinaryFromUrl(u, IMAGE_GEN_TIMEOUT_MS));
+        }
+        return writePngBuffersToOutputFiles(buffers, outputDir, params);
+      }
+      if (b64s.length > 0) {
+        const buffers: Buffer[] = [];
+        for (const b of b64s) {
+          const buf2 = base64FieldToImageBuffer(b);
+          if (buf2) buffers.push(buf2);
+        }
+        if (buffers.length > 0) {
+          return writePngBuffersToOutputFiles(buffers, outputDir, params);
+        }
+      }
+    }
+  }
+
   /** 二进制图优先（任何 mode） */
   if (looksLikeBinaryImage(buf)) {
     imageBuf = buf;
@@ -1743,9 +2009,29 @@ async function invokeGenerateImageIpc(params: ImageGenerationParams, onImage?: I
 
   try {
     if (config.type === 'http') {
-      const imgs = await generateImageHttp(params, config);
-      imgs.forEach((img, idx) => onImage?.(img, idx + 1, imgs.length));
-      return imgs;
+      /** HTTP 多张补齐：各厂商单次请求有上限（百炼4、火山~15、OpenAI10、SDWebUI8、Ollama/raw1），
+       *  当期望张数超过单次返回时，串行循环补齐，使最终总数尽量接近用户期望。 */
+      const desiredCount =
+        typeof params.count === 'number' && params.count > 0 ? Math.max(1, params.count) : 1;
+      const collected: GeneratedImage[] = [];
+      /** 安全上限：防止异常死循环 */
+      const maxRounds = Math.min(12, Math.ceil(desiredCount / 1));
+      for (let round = 0; round < maxRounds && collected.length < desiredCount; round++) {
+        const remaining = desiredCount - collected.length;
+        const roundParams: ImageGenerationParams = {
+          ...params,
+          count: remaining,
+        };
+        const imgs = await generateImageHttp(roundParams, config);
+        if (imgs.length === 0) break; // 厂商没返回，继续也没意义
+        for (const img of imgs) {
+          collected.push(img);
+          onImage?.(img, collected.length, desiredCount);
+        }
+        /** 厂商单次就满足了，或本轮没进展（返回数<=0），停止避免空转 */
+        if (imgs.length >= remaining) break;
+      }
+      return collected;
     }
     return await generateImageCli(params, config, onImage);
   } catch (error: unknown) {

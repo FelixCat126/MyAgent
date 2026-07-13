@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useModelStore } from '../store/modelStore';
+import { useModelStore, modelHasUsableImageGenerator } from '../store/modelStore';
 import { useWebSearchStore } from '../store/webSearchStore';
 import { useSettingStore } from '../store/settingStore';
 import { useWorkspaceStore } from '../store/workspaceStore';
@@ -29,6 +29,12 @@ import { useI18n } from '../hooks/useI18n';
 import { useSystemTtsAvailable } from '@/hooks/useSystemTtsAvailable';
 import { useMediaInputAvailability } from '@/hooks/useMediaInputAvailability';
 import { isAgentToolsBuildEnabled } from '@/agent/buildFlags';
+import {
+  IMAGE_PROVIDER_PRESETS,
+  getImageProviderPreset,
+  getPresetDefaults,
+  type ImageProviderId,
+} from '../utils/imageProviderPresets';
 
 type EditingFormData = {
   name: string;
@@ -45,6 +51,12 @@ type EditingFormData = {
   imageGenEnv: string;
   imageGenHttpFormat: 'auto' | 'sdwebui' | 'ollama' | 'openai_images' | 'raw';
   imageGenCliArgLines: string;
+  /** 生图厂商预设（新）；custom = 自定义 */
+  imageGenProvider: ImageProviderId | '';
+  /** 结构化生图 API Key（新）；优先于 env */
+  imageGenApiKey: string;
+  /** 结构化生图模型名（新）；优先于 env */
+  imageGenModel: string;
 };
 
 const defaultFormData: EditingFormData = {
@@ -62,6 +74,9 @@ const defaultFormData: EditingFormData = {
   imageGenEnv: '',
   imageGenHttpFormat: 'auto',
   imageGenCliArgLines: '',
+  imageGenProvider: '',
+  imageGenApiKey: '',
+  imageGenModel: '',
 };
 
 function parseEnvMap(text: string): Record<string, string> {
@@ -117,7 +132,7 @@ const SettingsPanel: React.FC = () => {
   const { t, locale } = useI18n();
   const systemTtsAvailable = useSystemTtsAvailable(locale);
   const ttsPlaybackReady = systemTtsAvailable === true;
-  const { models, addModel, removeModel, updateModel } = useModelStore();
+  const { models, addModel, removeModel, updateModel, imageGenModelId, setImageGenModel } = useModelStore();
   const {
     enabled: webSearchEnabled,
     provider: webSearchProvider,
@@ -273,6 +288,10 @@ const SettingsPanel: React.FC = () => {
         : '',
       imageGenHttpFormat: model.imageGeneratorConfig?.httpFormat || 'auto',
       imageGenCliArgLines: model.imageGeneratorConfig?.cliArgLines || '',
+      imageGenProvider:
+        (model.imageGeneratorConfig?.provider as ImageProviderId | undefined) || '',
+      imageGenApiKey: model.imageGeneratorConfig?.apiKey || '',
+      imageGenModel: model.imageGeneratorConfig?.model || '',
     });
     setShowForm(true);
   };
@@ -305,6 +324,9 @@ const SettingsPanel: React.FC = () => {
         ? {
             imageGeneratorConfig: {
               type: formData.imageGenType as 'cli' | 'http',
+              ...(formData.imageGenProvider ? { provider: formData.imageGenProvider } : {}),
+              ...(formData.imageGenApiKey.trim() ? { apiKey: formData.imageGenApiKey.trim() } : {}),
+              ...(formData.imageGenModel.trim() ? { model: formData.imageGenModel.trim() } : {}),
               command: formData.imageGenCommand,
               endpoint: formData.imageGenEndpoint,
               env: envMap,
@@ -494,101 +516,192 @@ const SettingsPanel: React.FC = () => {
 
               {formData.isImageGenerator ? (
                 <>
+                  {/* ===== 第一步：厂商预设 ===== */}
                   <div>
                     <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
-                      {t('settings.form.toolType')}
+                      {t('settings.form.imageProvider')}
                     </label>
                     <select
-                      value={formData.imageGenType}
-                      onChange={(e) => setFormData({ ...formData, imageGenType: e.target.value })}
+                      value={formData.imageGenProvider || ''}
+                      onChange={(e) => {
+                        const id = e.target.value as ImageProviderId | '';
+                        const defaults = getPresetDefaults(id || undefined);
+                        const switching = id !== formData.imageGenProvider;
+                        setFormData({
+                          ...formData,
+                          imageGenProvider: id,
+                          /** 预设默认值映射到 formData 字段名（custom 不覆盖） */
+                          imageGenType: id === 'custom' ? formData.imageGenType : (defaults.type ?? formData.imageGenType),
+                          imageGenEndpoint: id === 'custom' ? formData.imageGenEndpoint : (defaults.endpoint ?? formData.imageGenEndpoint),
+                          imageGenHttpFormat: id === 'custom' ? formData.imageGenHttpFormat : (defaults.httpFormat ?? formData.imageGenHttpFormat),
+                          /** 切换厂商时：模型名取预设默认值，API Key 清空待填 */
+                          imageGenApiKey: id && switching ? '' : formData.imageGenApiKey,
+                          imageGenModel: switching ? (defaults.model ?? '') : formData.imageGenModel,
+                        });
+                      }}
                       className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-medium focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
                     >
-                      <option value="cli">{t('settings.form.cliTool')}</option>
-                      <option value="http">{t('settings.form.httpServer')}</option>
+                      <option value="">{t('settings.form.imageProviderPh')}</option>
+                      {IMAGE_PROVIDER_PRESETS.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {t(p.labelKey)}
+                        </option>
+                      ))}
                     </select>
+                    {(() => {
+                      const preset = getImageProviderPreset(formData.imageGenProvider || undefined);
+                      return preset ? (
+                        <p className="mt-1 text-[10px] text-stone-500 dark:text-slate-500">
+                          {t(preset.descKey)}
+                        </p>
+                      ) : null;
+                    })()}
                   </div>
 
-                  {formData.imageGenType === 'cli' ? (
-                    <div>
-                      <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
-                        {t('settings.form.cliCommand')}
-                      </label>
-                      <input
-                        type="text"
-                        value={formData.imageGenCommand}
-                        onChange={(e) => setFormData({ ...formData, imageGenCommand: e.target.value })}
-                        placeholder={t('settings.form.cliCommandPh')}
-                        className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-medium focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
+                  {/* ===== 第二步：简单字段（API Key / 模型名） ===== */}
+                  {(() => {
+                    const preset = getImageProviderPreset(formData.imageGenProvider || undefined);
+                    const showApiField = preset ? preset.needsApiKey : false;
+                    if (!showApiField) return null;
+                    return (
+                      <div className="space-y-2">
+                        <div>
+                          <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                            {t('settings.form.imageApiKey')}
+                          </label>
+                          <input
+                            type="password"
+                            autoComplete="off"
+                            value={formData.imageGenApiKey}
+                            onChange={(e) => setFormData({ ...formData, imageGenApiKey: e.target.value })}
+                            placeholder={
+                              preset?.apiKeyPlaceholderKey
+                                ? t(preset.apiKeyPlaceholderKey)
+                                : 'sk-…'
+                            }
+                            className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                            {t('settings.form.imageModel')}
+                          </label>
+                          <input
+                            type="text"
+                            value={formData.imageGenModel}
+                            onChange={(e) => setFormData({ ...formData, imageGenModel: e.target.value })}
+                            placeholder={preset?.defaultModel || t('settings.form.imageModelPh')}
+                            className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
+                          />
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* ===== 第三步：高级（CLI / endpoint / env / httpFormat） ===== */}
+                  <details className="group/details rounded-lg border border-stone-300/38 bg-stone-100/70 px-2 py-1.5 dark:border-white/10 dark:bg-slate-900/55">
+                    <summary className="flex cursor-pointer items-center gap-1 select-none text-[10px] font-medium text-stone-600 dark:text-slate-400 list-none [&::-webkit-details-marker]:hidden">
+                      <FiChevronRight
+                        size={12}
+                        className="shrink-0 text-stone-400 transition-transform duration-200 group-open/details:rotate-90 dark:text-slate-500"
+                        aria-hidden
                       />
-                      <div className="mt-2">
-                        <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
-                          {t('settings.form.cliArgs')}
-                        </label>
-                        <textarea
-                          value={formData.imageGenCliArgLines}
-                          onChange={(e) => setFormData({ ...formData, imageGenCliArgLines: e.target.value })}
-                          placeholder={t('settings.form.cliArgsPh')}
-                          rows={5}
-                          className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-[10px] font-mono leading-snug bg-stone-50/90 dark:bg-slate-800 text-stone-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary-500"
-                        />
-                      </div>
-                    </div>
-                  ) : formData.imageGenType === 'http' ? (
-                    <>
+                      {t('settings.form.imageGenAdvanced')}
+                    </summary>
+                    <div className="mt-2 space-y-3 border-t border-stone-300/35 pt-2 dark:border-white/8">
                       <div>
                         <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
-                          {t('settings.form.httpEndpoint')}
-                        </label>
-                        <input
-                          type="text"
-                          value={formData.imageGenEndpoint}
-                          onChange={(e) => setFormData({ ...formData, imageGenEndpoint: e.target.value })}
-                          placeholder={t('settings.form.httpEndpointPh')}
-                          className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-medium focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
-                          {t('settings.form.responseFormat')}
+                          {t('settings.form.toolType')}
                         </label>
                         <select
-                          value={formData.imageGenHttpFormat}
-                          onChange={(e) =>
-                            setFormData({
-                              ...formData,
-                              imageGenHttpFormat: e.target.value as EditingFormData['imageGenHttpFormat'],
-                            })
-                          }
-                          className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
+                          value={formData.imageGenType}
+                          onChange={(e) => setFormData({ ...formData, imageGenType: e.target.value })}
+                          className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-medium focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
                         >
-                          <option value="auto">{t('settings.form.format.auto')}</option>
-                          <option value="sdwebui">{t('settings.form.format.sdwebui')}</option>
-                          <option value="ollama">{t('settings.form.format.ollama')}</option>
-                          <option value="openai_images">{t('settings.form.format.openai_images')}</option>
-                          <option value="raw">{t('settings.form.format.raw')}</option>
+                          <option value="cli">{t('settings.form.cliTool')}</option>
+                          <option value="http">{t('settings.form.httpServer')}</option>
                         </select>
-                        <p className="mt-1 text-[10px] text-stone-500 dark:text-slate-500">
-                          {t('settings.form.ollamaEnvHint')}{' '}
-                          <code className="text-[9px]">OLLAMA_MODEL=…</code>
-                        </p>
+                      </div>
+
+                      {formData.imageGenType === 'cli' ? (
+                        <div>
+                          <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                            {t('settings.form.cliCommand')}
+                          </label>
+                          <input
+                            type="text"
+                            value={formData.imageGenCommand}
+                            onChange={(e) => setFormData({ ...formData, imageGenCommand: e.target.value })}
+                            placeholder={t('settings.form.cliCommandPh')}
+                            className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-medium focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
+                          />
+                          <div className="mt-2">
+                            <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                              {t('settings.form.cliArgs')}
+                            </label>
+                            <textarea
+                              value={formData.imageGenCliArgLines}
+                              onChange={(e) => setFormData({ ...formData, imageGenCliArgLines: e.target.value })}
+                              placeholder={t('settings.form.cliArgsPh')}
+                              rows={5}
+                              className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-[10px] font-mono leading-snug bg-stone-50/90 dark:bg-slate-800 text-stone-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary-500"
+                            />
+                          </div>
+                        </div>
+                      ) : formData.imageGenType === 'http' ? (
+                        <>
+                          <div>
+                            <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                              {t('settings.form.httpEndpoint')}
+                            </label>
+                            <input
+                              type="text"
+                              value={formData.imageGenEndpoint}
+                              onChange={(e) => setFormData({ ...formData, imageGenEndpoint: e.target.value })}
+                              placeholder={t('settings.form.httpEndpointPh')}
+                              className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-medium focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                              {t('settings.form.responseFormat')}
+                            </label>
+                            <select
+                              value={formData.imageGenHttpFormat}
+                              onChange={(e) =>
+                                setFormData({
+                                  ...formData,
+                                  imageGenHttpFormat: e.target.value as EditingFormData['imageGenHttpFormat'],
+                                })
+                              }
+                              className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
+                            >
+                              <option value="auto">{t('settings.form.format.auto')}</option>
+                              <option value="sdwebui">{t('settings.form.format.sdwebui')}</option>
+                              <option value="ollama">{t('settings.form.format.ollama')}</option>
+                              <option value="openai_images">{t('settings.form.format.openai_images')}</option>
+                              <option value="raw">{t('settings.form.format.raw')}</option>
+                            </select>
+                          </div>
+                        </>
+                      ) : null}
+                      <div>
+                        <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                          {t('settings.form.envVars')}
+                        </label>
+                        <textarea
+                          value={formData.imageGenEnv}
+                          onChange={(e) => setFormData({ ...formData, imageGenEnv: e.target.value })}
+                          placeholder={t('settings.form.envPh')}
+                          className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-[10px] font-mono leading-tight bg-stone-50/90 dark:bg-slate-800 text-stone-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary-500"
+                          rows={2}
+                        />
                         <p className="mt-1 text-[10px] text-stone-500 dark:text-slate-500">
                           {t('settings.form.imageGenHttpExtraHint')}
                         </p>
                       </div>
-                    </>
-                  ) : null}
-                  <div>
-                    <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
-                      {t('settings.form.envVars')}
-                    </label>
-                    <textarea
-                      value={formData.imageGenEnv}
-                      onChange={(e) => setFormData({ ...formData, imageGenEnv: e.target.value })}
-                      placeholder={t('settings.form.envPh')}
-                      className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-[10px] font-mono leading-tight bg-stone-50/90 dark:bg-slate-800 text-stone-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary-500"
-                      rows={2}
-                    />
-                  </div>
+                    </div>
+                  </details>
                 </>
               ) : null}
             </div>
@@ -683,6 +796,33 @@ const SettingsPanel: React.FC = () => {
                       {t('settings.list.add')}
                     </button>
                   </div>
+                  {(() => {
+                    /** 生图模型独立选择：从所有勾选了「生图工具」且配置可用的模型中选一个 */
+                    const imageGenCandidates = models.filter((m) => modelHasUsableImageGenerator(m));
+                    if (imageGenCandidates.length === 0) return null;
+                    return (
+                      <div className="border-t border-stone-300/38 px-3 pb-3 pt-2.5 dark:border-white/10">
+                        <label className="mb-1 block text-[10px] font-medium text-stone-600 dark:text-gray-400">
+                          {t('settings.imageGenModel')}
+                        </label>
+                        <select
+                          value={imageGenModelId ?? ''}
+                          onChange={(e) => setImageGenModel(e.target.value || null)}
+                          className="w-full rounded-md border border-stone-400/25 bg-stone-100/90 px-2 py-1.5 text-xs text-stone-900 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-slate-700 dark:text-white"
+                        >
+                          <option value="">{t('settings.imageGenModelAuto')}</option>
+                          {imageGenCandidates.map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.name}（{m.modelName}）
+                            </option>
+                          ))}
+                        </select>
+                        <p className="mt-1 text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
+                          {t('settings.imageGenModelHint')}
+                        </p>
+                      </div>
+                    );
+                  })()}
                 </>
               )}
             </div>

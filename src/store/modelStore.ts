@@ -3,18 +3,34 @@ import { persist } from 'zustand/middleware';
 import { ModelConfig } from '../types';
 import { zustandPersistJson } from '../utils/zustandFileStorage';
 
+/**
+ * 判断一个模型是否配置了可用的生图工具（HTTP endpoint 或 CLI command）。
+ * 独立于对话模型：对话模型和生图模型可以是不同的 ModelConfig。
+ */
+export function modelHasUsableImageGenerator(m: ModelConfig | undefined | null): boolean {
+  if (!m?.isImageGenerator || !m.imageGeneratorConfig) return false;
+  const c = m.imageGeneratorConfig;
+  if (c.type === 'http') return Boolean(String(c.endpoint ?? '').trim());
+  return Boolean(String(c.command ?? '').trim());
+}
+
 interface ModelStore {
   models: ModelConfig[];
   activeModelId: string | null;
+  /** 独立生图模型 ID；null = 自动选择第一个可用的生图模型（向后兼容） */
+  imageGenModelId: string | null;
   isInitialized: boolean;
-  
+
   // Actions
   addModel: (config: ModelConfig) => void;
   removeModel: (id: string) => void;
   updateModel: (id: string, config: Partial<ModelConfig>) => void;
   setActiveModel: (id: string) => void;
+  setImageGenModel: (id: string | null) => void;
   getActiveModel: () => ModelConfig | null;
   initializeDefaultModels: () => void;
+  /** 生效的生图模型：优先 imageGenModelId，否则自动找第一个可用生图模型 */
+  getEffectiveImageGenModel: () => ModelConfig | undefined;
 }
 
 // 默认 Ollama 模型配置
@@ -56,6 +72,7 @@ export const useModelStore = create<ModelStore>()(
     (set, get) => ({
       models: [],
       activeModelId: null,
+      imageGenModelId: null,
       isInitialized: false,
 
       initializeDefaultModels: () => {
@@ -85,6 +102,8 @@ export const useModelStore = create<ModelStore>()(
             activeModelId: state.activeModelId === id
               ? (newModels.length > 0 ? newModels[0].id : null)
               : state.activeModelId,
+            /** 删除的恰好是生图模型 → 清空，回退到自动选择 */
+            imageGenModelId: state.imageGenModelId === id ? null : state.imageGenModelId,
           };
         });
       },
@@ -101,9 +120,24 @@ export const useModelStore = create<ModelStore>()(
         set({ activeModelId: id });
       },
 
+      setImageGenModel: (id: string | null) => {
+        set({ imageGenModelId: id });
+      },
+
       getActiveModel: () => {
         const { models, activeModelId } = get();
         return models.find((m: ModelConfig) => m.id === activeModelId) || null;
+      },
+
+      getEffectiveImageGenModel: () => {
+        const { models, imageGenModelId } = get();
+        /** 1) 显式选定的生图模型 */
+        if (imageGenModelId) {
+          const m = models.find((x) => x.id === imageGenModelId);
+          if (m && modelHasUsableImageGenerator(m)) return m;
+        }
+        /** 2) 自动选择第一个配置了可用生图工具的模型 */
+        return models.find((m) => modelHasUsableImageGenerator(m));
       },
     }),
     {

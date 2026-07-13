@@ -67,6 +67,20 @@ describe('agentPathScope', () => {
     }
   });
 
+  it('resolveAgentReadPath 可解析 Pictures 下相对路径', () => {
+    const dir = path.join(home, 'Pictures', '.myagent-agent-read-pic');
+    const file = path.join(dir, 'probe.jpg');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, 'probe');
+    try {
+      const r = resolveAgentReadPath('.myagent-agent-read-pic/probe.jpg', []);
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.path).toBe(file);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('resolveScopedAgentPath 仍可用于工作区 sandbox', () => {
     const root = path.resolve('/tmp/myagent-scope-root');
     const r = resolveScopedAgentPath('notes/readme.md', [root]);

@@ -12,6 +12,7 @@ import {
   findConversationGalleryIndex,
   type ConversationImageGalleryItem,
 } from '@/utils/conversationImageGallery';
+import { attachmentImageDisplaySrc } from '@/utils/attachmentDisplaySrc';
 import {
   DownloadLocalFileError,
   downloadDisplayImage,
@@ -159,12 +160,7 @@ function ImageGeneratingPlaceholder({
         {Array.from({ length: slotCount }).map((_, idx) => {
           const file = imageFiles[idx];
           if (file) {
-            const hasPreview = file.preview && file.preview.startsWith('data:');
-            const displaySrc = hasPreview
-              ? file.preview
-              : file.path
-                ? pathToFileURL(file.path).href.replace(/^file:/i, 'local-file:')
-                : '';
+            const displaySrc = attachmentImageDisplaySrc(file);
             return (
               <div key={file.path || `img-${idx}`} className="relative min-w-0 transition-all" title={file.name}>
                 <div className="flex w-max flex-col gap-1">
@@ -754,7 +750,7 @@ function formatMessageTime(ts: number) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-const MessageItem: React.FC<MessageItemProps> = ({
+const MessageItemBase: React.FC<MessageItemProps> = ({
   message,
   onEdit,
   editing = false,
@@ -846,10 +842,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
 
   const renderFileDownloadButton = (file: FileInfo) => {
     if (!file.path) return null;
-    const displaySrc =
-      file.preview && file.preview.startsWith('data:')
-        ? file.preview
-        : pathToFileURL(file.path).href.replace(/^file:/i, 'local-file:');
+    const displaySrc = attachmentImageDisplaySrc(file);
 
     return (
       <button
@@ -1031,13 +1024,8 @@ const MessageItem: React.FC<MessageItemProps> = ({
                     <div className={`mb-2 ${MULTI_IMAGE_ATTACHMENT_GRID}`}>
                   {message.files.map((file, index) => {
                     const isImage = file.type.startsWith('image/');
-                    const hasPreview = file.preview && file.preview.startsWith('data:');
-                        const displaySrc = hasPreview
-                          ? file.preview
-                          : isImage
-                            ? pathToFileURL(file.path).href.replace(/^file:/i, 'local-file:')
-                            : '';
-                    const canShowImage = isImage && (hasPreview || file.path);
+                    const displaySrc = isImage ? attachmentImageDisplaySrc(file) : '';
+                    const canShowImage = isImage && Boolean(displaySrc);
 
                     return (
                       <div
@@ -1277,13 +1265,8 @@ const MessageItem: React.FC<MessageItemProps> = ({
                     <div className={MULTI_IMAGE_ATTACHMENT_GRID}>
                       {message.files.map((file, index) => {
                         const isImage = file.type.startsWith('image/');
-                        const hasPreview = file.preview && file.preview.startsWith('data:');
-                        const displaySrc = hasPreview
-                          ? file.preview
-                          : isImage
-                            ? pathToFileURL(file.path).href.replace(/^file:/i, 'local-file:')
-                            : '';
-                        const canShowImage = isImage && (hasPreview || file.path);
+                        const displaySrc = isImage ? attachmentImageDisplaySrc(file) : '';
+                        const canShowImage = isImage && Boolean(displaySrc);
 
                         return (
                           <div
@@ -1383,5 +1366,23 @@ const MessageItem: React.FC<MessageItemProps> = ({
     </>
   );
 };
+
+/**
+ * memo 化：流式更新最后一条消息时，避免已完成消息重渲染（含 Markdown 重解析）。
+ * 自定义比较：只关注影响渲染的关键 props；函数 props（onEdit 等）引用变化不触发重渲染，
+ * 因为它们的行为不随消息内容变化。
+ */
+const MessageItem = React.memo(MessageItemBase, (prev, next) => {
+  if (prev.message !== next.message) return false;
+  if (prev.editing !== next.editing) return false;
+  if (prev.selected !== next.selected) return false;
+  if (prev.selectionMode !== next.selectionMode) return false;
+  if (prev.conversationStreaming !== next.conversationStreaming) return false;
+  if (prev.streamingAssistantId !== next.streamingAssistantId) return false;
+  if (prev.showInlineStreamPlaceholder !== next.showInlineStreamPlaceholder) return false;
+  if (prev.imageGenProgress !== next.imageGenProgress) return false;
+  if (prev.conversationGallery !== next.conversationGallery) return false;
+  return true;
+});
 
 export default MessageItem;

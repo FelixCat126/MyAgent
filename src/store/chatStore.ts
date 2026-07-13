@@ -8,8 +8,10 @@ import { useSettingStore } from './settingStore';
 interface ChatStore {
   sessions: ChatSession[];
   currentSessionId: string | null;
-  /** 正在等待模型回复的会话 id；仅该会话内显示加载动画 */
+  /** 正在等待模型回复的会话 id（派生：取 loadingSessionIds 第一个，兼容旧代码） */
   loadingSessionId: string | null;
+  /** 正在执行/等待回复的会话 id 集合（支持多会话并发转圈） */
+  loadingSessionIds: string[];
 
   // Actions
   createSession: () => string;
@@ -27,16 +29,20 @@ interface ChatStore {
     patch: { extraRoots?: string[] }
   ) => void;
   updateSessionTitle: (sessionId: string, title: string) => void;
+  /** null = 清空全部；非 null = 加入加载集合（支持多会话并发） */
   setLoadingSession: (sessionId: string | null) => void;
   clearLoadingForSession: (sessionId: string) => void;
+  /** 判断指定会话是否正在加载 */
+  isLoadingSession: (sessionId: string) => boolean;
 }
 
 export const useChatStore = create<ChatStore>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       sessions: [],
       currentSessionId: null,
       loadingSessionId: null,
+      loadingSessionIds: [],
 
       createSession: () => {
         const locale = useSettingStore.getState().locale;
@@ -209,13 +215,45 @@ export const useChatStore = create<ChatStore>()(
       },
 
       setLoadingSession: (sessionId: string | null) => {
-        set({ loadingSessionId: sessionId });
+        /** null = 清空全部；非 null = 加入集合（支持多会话并发转圈） */
+        if (sessionId === null) {
+          set({ loadingSessionId: null, loadingSessionIds: [] });
+        } else {
+          set((state: ChatStore) => {
+            if (state.loadingSessionIds.includes(sessionId)) {
+              return { loadingSessionId: state.loadingSessionIds[0] ?? null };
+            }
+            const next = [...state.loadingSessionIds, sessionId];
+            return { loadingSessionId: next[0] ?? null, loadingSessionIds: next };
+          });
+        }
       },
 
       clearLoadingForSession: (sessionId: string) => {
-        set((state: ChatStore) =>
-          state.loadingSessionId === sessionId ? { loadingSessionId: null } : {}
-        );
+        set((state: ChatStore) => {
+          /** 要清除的 id 不在加载集合中 → 状态不变 */
+          if (!state.loadingSessionIds.includes(sessionId)) {
+            return {};
+          }
+          const next = state.loadingSessionIds.filter((id) => id !== sessionId);
+          /** 回复完成时，若用户已切到别的会话，标记未读（亮点提示） */
+          const becameUnread = sessionId !== state.currentSessionId;
+          return {
+            loadingSessionId: next[0] ?? null,
+            loadingSessionIds: next,
+            ...(becameUnread
+              ? {
+                  sessions: state.sessions.map((s: ChatSession) =>
+                    s.id === sessionId ? { ...s, unreadAssistantReply: true } : s
+                  ),
+                }
+              : {}),
+          };
+        });
+      },
+
+      isLoadingSession: (sessionId: string): boolean => {
+        return get().loadingSessionIds.includes(sessionId);
       },
     }),
     {

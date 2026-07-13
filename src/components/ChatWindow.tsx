@@ -7,7 +7,7 @@ import React, {
   useMemo,
 } from 'react';
 import { useChatStore } from '../store/chatStore';
-import { useModelStore } from '../store/modelStore';
+import { useModelStore, modelHasUsableImageGenerator } from '../store/modelStore';
 import { useWebSearchStore } from '../store/webSearchStore';
 import { useSettingStore } from '../store/settingStore';
 import { useParticleStore } from '../store/particleStore';
@@ -245,25 +245,51 @@ async function buildMessagesWithOptionalWebSearch(
   }
 }
 
-function modelHasUsableImageGenerator(m: ModelConfig | undefined): boolean {
-  if (!m?.isImageGenerator || !m.imageGeneratorConfig) return false;
-  const c = m.imageGeneratorConfig;
-  if (c.type === 'http') return Boolean(String(c.endpoint ?? '').trim());
-  return Boolean(String(c.command ?? '').trim());
+/**
+ * 检测模型回复是否为「拒绝生图/绘图」话术（中英文）。
+ * 用于：图已成功生成时，清除这种与实际行为矛盾的文本。
+ * 策略：只要同时含「拒绝类语义」和「画图/生图类语义」即判定为拒绝，
+ *       覆盖"根据系统设定我被禁止进行AI生图""无法绘制人体艺术图"等多种表述。
+ */
+function isImageRefusalText(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  /** 拒绝话术通常较短（<300字）；长说明性回复不可能是纯拒绝 */
+  if (t.length > 300) return false;
+
+  /** —— 中文：拒绝类动词词根 —— */
+  const zhRefusal = /(不能|无法|不具备|没法|没有能力|不会|被禁止|禁止|无法使用|不支持|无权|拒绝|根据系统设定|系统设定|出于安全|内容政策)/.test(t);
+  /** —— 中文：画图/生图动作词根（宽匹配，含"AI 生图""人体艺术图""绘制图片"等） —— */
+  const zhImageAction = /(生图|绘图|画图|生成图|绘制|画出|为你画|为您.*?(画|绘|制作)|制作.*?(图|图片|图像)|AI.*?(生图|画图|绘图|生成图)|人体艺术图|插画|画作|图片|图像)/.test(t);
+  if (zhRefusal && zhImageAction) return true;
+
+  /** —— 中文直白型（不依赖双段命中） —— */
+  if (/(不能|无法|被禁止).{0,12}(为您|帮你|为你)?.{0,4}(生成|画|绘|制作|创建).{0,8}(图|图片|图像)/.test(t)) return true;
+  if (/我.*(不具备|没有).*(生图|绘图|生成图片|图像生成|绘图能力)/.test(t)) return true;
+
+  /** —— 英文拒绝模式 —— */
+  const enRefusal = /\b(can'?t|cannot|unable|not able|don'?t have|do not have|am not|prohibited|not (?:allowed|supported|permitted)|refuse|decline|against my (?:programming|guidelines|policy))\b/i.test(t);
+  const enImageAction = /\b(generate|create|draw|produce|make)\b.{0,20}\b(images?|pictures?|art|illustrations?|paintings?)\b/i.test(t)
+    || /\bAI image\b/i.test(t);
+  if (enRefusal && enImageAction) return true;
+
+  return false;
 }
 
 /** 已配置生图工具时注入系统说明，否则模型（如豆包）会按常识声称「不能生图」 */
-function shouldUseLocalCreativePolicy(activeModel: ModelConfig): boolean {
-  return activeModel.provider === 'ollama' || activeModel.isLocal || activeModel.imageGeneratorConfig?.type === 'cli';
+function shouldUseLocalCreativePolicy(imageGenModel: ModelConfig | undefined): boolean {
+  if (!imageGenModel) return false;
+  return imageGenModel.provider === 'ollama' || imageGenModel.isLocal || imageGenModel.imageGeneratorConfig?.type === 'cli';
 }
 
 function prependImageGenCapabilitySystem(
   messages: Message[],
   locale: Locale,
-  activeModel: ModelConfig
+  imageGenModel: ModelConfig | undefined
 ): Message[] {
-  if (!modelHasUsableImageGenerator(activeModel)) return messages;
-  const localPolicy = shouldUseLocalCreativePolicy(activeModel)
+  /** 只要存在任意可用的生图模型（独立于对话模型），就注入「你能生图」提示 */
+  if (!modelHasUsableImageGenerator(imageGenModel)) return messages;
+  const localPolicy = shouldUseLocalCreativePolicy(imageGenModel)
     ? tUi(locale, 'chat.imageGenToolLocalPolicy')
     : '';
   const inj: Message = {
@@ -524,7 +550,8 @@ async function postProcessAssistantContent(
   }
 
   const resolveImageGeneratorModel = (): ModelConfig | undefined => {
-    return modelHasUsableImageGenerator(activeModel) ? activeModel : undefined;
+    /** 生图模型独立于对话模型：优先用户选定的，否则自动找第一个可用 */
+    return useModelStore.getState().getEffectiveImageGenModel();
   };
   const imgGenModel = resolveImageGeneratorModel();
   const hooks = opts?.imageGenHooks;
@@ -675,6 +702,11 @@ async function postProcessAssistantContent(
 
   text = stripGenerateImageArtifactsForDisplay(text);
 
+  /** 修复言行不一：若实际已成功生成图，但模型文本里含「不能生图」类拒绝话术，则清除 */
+  if (generatedFiles.length > 0 && isImageRefusalText(text)) {
+    text = '';
+  }
+
   return { content: text, files };
 }
 
@@ -712,6 +744,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     appendToMessage,
     appendReasoningToMessage,
     loadingSessionId,
+    loadingSessionIds,
     setLoadingSession,
     clearLoadingForSession,
     updateSessionTitle,
@@ -727,7 +760,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   const ttsPlaybackReady = systemTtsAvailable === true;
 
   const isCurrentSessionLoading =
-    loadingSessionId !== null && loadingSessionId === currentSessionId;
+    loadingSessionId !== null && loadingSessionIds.includes(currentSessionId ?? '');
   const { getActiveModel } = useModelStore();
   const [input, setInput] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -741,7 +774,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   const inputAreaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   /** 距底部小于该值视为「在底部」，流式输出时可自动跟随滚动 */
-  const SCROLL_STICK_BOTTOM_PX = 72;
+  const SCROLL_STICK_BOTTOM_PX = 120;
   const stickToBottomRef = useRef(true);
   const [inlineImageIndex, setInlineImageIndex] = useState(0);
   const [streamingTargetAssistantId, setStreamingTargetAssistantId] = useState<string | null>(null);
@@ -764,6 +797,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   /** 用户点击中止后 onEnd 中用于区分「无输出取消」（删气泡）与「有错结束」 */
   const streamCancelledByUserRef = useRef(false);
   const streamingAssistantIdRef = useRef<string | null>(null);
+  /** 当前流式回复所属会话；切会话时点阵不误绑其他会话 */
+  const streamingSessionIdRef = useRef<string | null>(null);
   /** 中文/日文等 IME 组字中为 true，避免 Enter 上屏时被当成发送 */
   const imeComposingRef = useRef(false);
 
@@ -907,7 +942,11 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
    */
   useEffect(() => {
     const setAct = useParticleStore.getState().setAgentActivity;
-    if (isStreaming) {
+    const streamOwnsCurrent =
+      isStreaming &&
+      streamingSessionIdRef.current != null &&
+      streamingSessionIdRef.current === currentSessionId;
+    if (streamOwnsCurrent) {
       const sess = sessions.find((s) => s.id === currentSessionId);
       const msg = sess?.messages.find((m) => m.id === streamingTargetAssistantId);
       const contentLen = (msg?.content ?? '').trim().length;
@@ -967,6 +1006,26 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   const currentSession = sessions.find((s: ChatSession) => s.id === currentSessionId);
   const messages = currentSession?.messages || [];
   const conversationGallery = useMemo(() => buildConversationImageGallery(messages), [messages]);
+  /**
+   * 新对话分隔线：同一会话内，若最后两条消息间隔超过阈值，在间隔处显示一条"以下为新对话内容"。
+   * 只保留最近一条断点（从后往前找第一个满足条件的）。阈值 15 分钟，参考同类软件普遍设计。
+   */
+  const newConversationDividerIndex = useMemo(() => {
+    const GAP_MS = 15 * 60 * 1000; // 15 分钟
+    if (messages.length < 2) return -1;
+    for (let i = messages.length - 1; i >= 1; i--) {
+      const prev = messages[i - 1];
+      const curr = messages[i];
+      if (
+        typeof prev?.timestamp === 'number' &&
+        typeof curr?.timestamp === 'number' &&
+        curr.timestamp - prev.timestamp >= GAP_MS
+      ) {
+        return i;
+      }
+    }
+    return -1;
+  }, [messages]);
   const [conversationGalleryIdx, setConversationGalleryIdx] = useState<number | null>(null);
   const [conversationGalleryNonce, setConversationGalleryNonce] = useState(0);
 
@@ -1013,7 +1072,19 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
       let ragHint: VectorRagSendHint;
       const exportHint = inferDocumentExportHint(userMessage.content);
       const isLocalImageFind = looksLikeLocalImageFindRequest(userMessage.content);
-      const skipContextInject = looksLikeLocalFileAgentRequest(userMessage.content);
+      const isWebBrowseTask = looksLikeWebBrowseRequest(userMessage.content);
+      const willRunLocalAgent =
+        isAgentToolsBuildEnabled() &&
+        !exportHint?.document &&
+        useSettingStore.getState().agentLocalToolsEnabled &&
+        looksLikeLocalFileAgentRequest(userMessage.content);
+      const willRunWebAgent =
+        isAgentToolsBuildEnabled() &&
+        !exportHint?.document &&
+        useSettingStore.getState().agentBrowserEnabled &&
+        isWebBrowseTask;
+      /** 本机/网页 Agent 任务均跳过向量注入，避免无关 RAG 干扰工具链 */
+      const skipContextInject = willRunLocalAgent || willRunWebAgent;
       try {
         const built = await buildOutgoingChain(
           historyBeforeUser,
@@ -1025,9 +1096,9 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           },
           { skipContextInject }
         );
-        chain = isLocalImageFind
+        chain = isLocalImageFind || isWebBrowseTask
           ? built.chain
-          : prependImageGenCapabilitySystem(built.chain, uiLocale, activeModel);
+          : prependImageGenCapabilitySystem(built.chain, uiLocale, useModelStore.getState().getEffectiveImageGenModel());
         ragHint = built.ragHint;
       } catch (e) {
         console.error(e);
@@ -1082,7 +1153,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         toolCallCount: 0,
       });
       const imageToolExpected =
-        preplannedImageIntent.shouldGenerate && modelHasUsableImageGenerator(activeModel);
+        preplannedImageIntent.shouldGenerate &&
+        !!useModelStore.getState().getEffectiveImageGenModel();
       if (imageToolExpected) {
         plainModel.maxTokens = Math.min(plainModel.maxTokens || 1024, 1024);
       }
@@ -1123,6 +1195,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
       ) {
         const assistantId = `${Date.now() + 1}-a`;
         streamingAssistantIdRef.current = assistantId;
+        streamingSessionIdRef.current = sendSessionId;
         setStreamingTargetAssistantId(assistantId);
         setIsStreaming(true);
         addMessage(sendSessionId, {
@@ -1156,6 +1229,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         };
 
         try {
+          streamCancelledByUserRef.current = false;
           const agentOut = await runAgentLoop({
             chatSessionId: sendSessionId,
             chainMessages: chainForModel,
@@ -1163,6 +1237,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
             userText: userMessage.content,
             locale: uiLocale,
             onThinkingDelta: queueAgentReasoning,
+            shouldCancel: () => streamCancelledByUserRef.current,
             onReplyContent: (text) => {
               updateMessage(sendSessionId, assistantId, { content: text });
             },
@@ -1213,7 +1288,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
               assistantText: agentOut.displayText,
               toolCallCount: extractGenerateImageCalls(agentOut.displayText).length,
             });
-            if (isLocalImageFind) {
+            if (isLocalImageFind || isWebBrowseTask) {
               updateMessage(sendSessionId, assistantId, {
                 content: agentOut.displayText ?? '',
                 files: mergeAssistantFiles(assistantId, agentOut.exportFiles),
@@ -1244,6 +1319,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
             }
             setIsStreaming(false);
             streamingAssistantIdRef.current = null;
+            streamingSessionIdRef.current = null;
             setStreamingTargetAssistantId(null);
             clearLoadingForSession(sendSessionId);
             return;
@@ -1251,14 +1327,24 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         } catch (agentErr) {
           console.error('[Agent]', agentErr);
           drainAgentReasoning();
+          const cancelled =
+            streamCancelledByUserRef.current ||
+            (agentErr instanceof Error &&
+              (agentErr.message === 'AGENT_CANCELLED' ||
+                (agentErr as Error & { code?: string }).code === 'AGENT_CANCELLED'));
           updateMessage(sendSessionId, assistantId, {
-            content: t('chat.requestFailed') + (agentErr instanceof Error ? agentErr.message : String(agentErr)),
+            content: cancelled
+              ? t('chat.stoppedBanner')
+              : t('chat.requestFailed') + (agentErr instanceof Error ? agentErr.message : String(agentErr)),
           });
           clearLoadingForSession(sendSessionId);
+          return;
         } finally {
           setIsStreaming(false);
           streamingAssistantIdRef.current = null;
+          streamingSessionIdRef.current = null;
           setStreamingTargetAssistantId(null);
+          streamCancelledByUserRef.current = false;
         }
       }
 
@@ -1268,6 +1354,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         const assistantId = `${Date.now()}-doc`;
         let artifactBuffer = '';
         streamingAssistantIdRef.current = assistantId;
+        streamingSessionIdRef.current = sendSessionId;
         setStreamingTargetAssistantId(assistantId);
         setIsStreaming(true);
         addMessage(sendSessionId, {
@@ -1354,6 +1441,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                 setIsStreaming(false);
                 clearLoadingForSession(sendSessionId);
                 streamingAssistantIdRef.current = null;
+                streamingSessionIdRef.current = null;
                 setStreamingTargetAssistantId(null);
               }
             })();
@@ -1373,6 +1461,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         streamCancelledByUserRef.current = false;
         const assistantId = `${Date.now()}-a`;
         streamingAssistantIdRef.current = assistantId;
+        streamingSessionIdRef.current = sendSessionId;
         setStreamingTargetAssistantId(assistantId);
         setIsStreaming(true);
         addMessage(sendSessionId, {
@@ -1396,49 +1485,69 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         const voiceReplyThisTurn = Boolean(speechReaderRef.current);
 
         const imgBase = inlineImageIndexRef.current;
-        /** 合并 content delta（不在流式中解析 myagent_tool / extractGenerateImageCalls，避免出现该片段时对整缓冲区反复括号扫描导致卡死；生图在 onEnd 统一 postProcess） */
-        let pendingContentDelta = '';
-        let contentDeltaFlushRaf = 0;
-        const flushPendingContentDeltaImmediately = () => {
-          if (contentDeltaFlushRaf !== 0) {
-            window.cancelAnimationFrame(contentDeltaFlushRaf);
-            contentDeltaFlushRaf = 0;
-          }
-          const merged = pendingContentDelta;
-          pendingContentDelta = '';
-          if (!merged) return;
-          appendToMessage(sendSessionId, assistantId, merged);
-        };
-        const queueContentDeltaChunk = (d: string): void => {
-          pendingContentDelta += d;
-          if (contentDeltaFlushRaf !== 0) return;
-          contentDeltaFlushRaf = window.requestAnimationFrame(() => {
-            contentDeltaFlushRaf = 0;
-            flushPendingContentDeltaImmediately();
-          });
+        /**
+         * 逐字符动画流式渲染器（content 和 reasoning 共用）。
+         *
+         * 用固定间隔定时器（TICK_MS=25ms ≈ 40fps 写入）替代 rAF，
+         * 每次tick取少量字符追加到 store。固定间隔保证帧间衔接均匀无"瘸"感。
+         *
+         * 速度档位（在上一版基础上再降 ~10%）：
+         * - buffer ≤14 字 → 每次 1 字（最丝滑）
+         * - ≤38 字 → 每次 2 字
+         * - ≤90 字 → 每次 len/12
+         * - >90 字 → 每次 len/6（积压严重时加速追赶）
+         */
+        const TICK_MS = 25;
+        const createAnimStream = (
+          appendFn: (sessionId: string, msgId: string, chunk: string) => void
+        ) => {
+          let buffer = '';
+          let timerId: ReturnType<typeof setInterval> | null = null;
+          const flush = () => {
+            if (timerId !== null) {
+              clearInterval(timerId);
+              timerId = null;
+            }
+            if (!buffer) return;
+            appendFn(sendSessionId, assistantId, buffer);
+            buffer = '';
+          };
+          const tick = () => {
+            if (!buffer) {
+              if (timerId !== null) {
+                clearInterval(timerId);
+                timerId = null;
+              }
+              return;
+            }
+            const len = buffer.length;
+            let take: number;
+            if (len <= 14) take = 1;
+            else if (len <= 38) take = 2;
+            else if (len <= 90) take = Math.ceil(len / 12);
+            else take = Math.ceil(len / 6);
+            const chunk = buffer.slice(0, take);
+            buffer = buffer.slice(take);
+            appendFn(sendSessionId, assistantId, chunk);
+          };
+          return {
+            push(d: string) {
+              if (!d) return;
+              buffer += d;
+              if (timerId === null) {
+                timerId = setInterval(tick, TICK_MS);
+              }
+            },
+            flush,
+          };
         };
 
-        /** 合并 thinking channel，极低频更新 store（否则每条 reasoning token + 滚动同步会把主线程钉死） */
-        let pendingReasoningDelta = '';
-        let reasoningFlushRaf = 0;
-        const drainReasoningBufferUnsafe = (): void => {
-          if (reasoningFlushRaf !== 0) {
-            window.cancelAnimationFrame(reasoningFlushRaf);
-            reasoningFlushRaf = 0;
-          }
-          const merged = pendingReasoningDelta;
-          pendingReasoningDelta = '';
-          if (!merged) return;
-          appendReasoningToMessage(sendSessionId, assistantId, merged);
-        };
-        const queueReasoningDeltaChunk = (th: string): void => {
-          pendingReasoningDelta += th;
-          if (reasoningFlushRaf !== 0) return;
-          reasoningFlushRaf = window.requestAnimationFrame(() => {
-            reasoningFlushRaf = 0;
-            drainReasoningBufferUnsafe();
-          });
-        };
+        const contentStream = createAnimStream(appendToMessage);
+        const reasoningStream = createAnimStream(appendReasoningToMessage);
+        const flushPendingContentDeltaImmediately = contentStream.flush;
+        const drainReasoningBufferUnsafe = reasoningStream.flush;
+        const queueContentDeltaChunk = contentStream.push;
+        const queueReasoningDeltaChunk = reasoningStream.push;
 
         const unsub = window.electron.subscribeModelStream(plainMessages, plainModel, {
           onDelta: (d) => {
@@ -1479,6 +1588,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                   setIsStreaming(false);
                   clearLoadingForSession(sendSessionId);
                   streamingAssistantIdRef.current = null;
+                  streamingSessionIdRef.current = null;
                   setStreamingTargetAssistantId(null);
                   return;
                 }
@@ -1503,6 +1613,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                   setIsStreaming(false);
                   clearLoadingForSession(sendSessionId);
                   streamingAssistantIdRef.current = null;
+                  streamingSessionIdRef.current = null;
                   setStreamingTargetAssistantId(null);
                   return;
                 }
@@ -1510,6 +1621,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                 /** SSE 正文已全部写入本地消息；先于生图后处理解除「流式」态，使 strip 与生图占位顺序符合「先说清再画图」 */
                 setIsStreaming(false);
                 streamingAssistantIdRef.current = null;
+                streamingSessionIdRef.current = null;
                 setStreamingTargetAssistantId(null);
                 speechReaderRef.current?.finish();
 
@@ -1571,6 +1683,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                 setIsStreaming(false);
                 clearLoadingForSession(sendSessionId);
                 streamingAssistantIdRef.current = null;
+                streamingSessionIdRef.current = null;
                 setStreamingTargetAssistantId(null);
               }
             })();
@@ -1732,6 +1845,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     streamUnsubRef.current?.();
     streamUnsubRef.current = null;
     setIsStreaming(false);
+    streamingSessionIdRef.current = null;
     const sid = currentSessionId;
     if (sid) clearLoadingForSession(sid);
     /** streamingAssistantIdRef 由 onEnd 清理，便于识别待删空气泡 */
@@ -1895,7 +2009,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     const bridge = {
       getSnapshot: async () => {
         const chat = useChatStore.getState();
-        const { sessions: ss, currentSessionId: cid, loadingSessionId } = chat;
+        const { sessions: ss, currentSessionId: cid, loadingSessionId, loadingSessionIds } = chat;
         return {
           sessions: ss.map((s) => ({
             id: s.id,
@@ -1907,6 +2021,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           })),
           currentSessionId: cid,
           loadingSessionId,
+          loadingSessionIds,
         };
       },
       getActiveModelLabel: async () => {
@@ -2003,7 +2118,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         if (!sess) throw new Error(tUi(locale, 'remoteGateway.sessionMissing'));
 
         chat.switchSession(sessionId);
-        if (chat.loadingSessionId === sessionId) {
+        if (chat.isLoadingSession(sessionId)) {
           throw new Error(tUi(locale, 'remoteGateway.busySession'));
         }
 
@@ -2075,7 +2190,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           throw new Error(tUi(locale, 'remoteGateway.sessionMissing'));
         }
         chat.switchSession(sessionId);
-        if (chat.loadingSessionId === sessionId) {
+        if (chat.isLoadingSession(sessionId)) {
           throw new Error(tUi(locale, 'remoteGateway.busySession'));
         }
         const priorMessages = sess.messages.slice();
@@ -2150,7 +2265,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
 
   const handleSend = async () => {
     if ((!input.trim() && attachments.length === 0) || !currentSessionId) return;
-    if (useChatStore.getState().loadingSessionId === currentSessionId) return;
+    if (useChatStore.getState().loadingSessionIds.includes(currentSessionId)) return;
 
     cancelVoiceReply();
     if (!sendFromVoiceWakeRef.current) {
@@ -2170,6 +2285,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     const uploadedFiles: FileInfo[] = [];
 
     if (attachments.length > 0) {
+      let uploadFailed = 0;
       for (const file of attachments) {
         try {
           const buffer = await file.arrayBuffer();
@@ -2182,7 +2298,20 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           uploadedFiles.push(info);
         } catch (e) {
           console.error('上传附件失败', e);
+          uploadFailed += 1;
         }
+      }
+      if (uploadedFiles.length === 0) {
+        clearLoadingForSession(sendSessionId);
+        window.alert(uiLocale === 'en' ? 'Attachment upload failed. Please try again.' : '附件上传失败，请重试。');
+        return;
+      }
+      if (uploadFailed > 0) {
+        window.alert(
+          uiLocale === 'en'
+            ? `${uploadFailed} attachment(s) failed to upload and were skipped.`
+            : `有 ${uploadFailed} 个附件上传失败，已忽略失败项继续发送。`
+        );
       }
     }
 
@@ -2232,7 +2361,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   const handleSubmitEditedMessage = async (sourceMessage: Message, nextContent: string) => {
     const textContent = nextContent.trim();
     if (!textContent || !currentSessionId) return;
-    if (useChatStore.getState().loadingSessionId === currentSessionId) return;
+    if (useChatStore.getState().loadingSessionIds.includes(currentSessionId)) return;
 
     const activeModel = getActiveModel();
     if (!activeModel) {
@@ -2425,16 +2554,26 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           </div>
         )}
 
-        {messages.map((message) => {
+        {messages.map((message, index) => {
           const reasoningTrim = (message.reasoning ?? '').trim();
           const hideEmptyStreamBubble =
             isStreaming &&
             message.role === 'assistant' &&
-            message.id === streamingAssistantIdRef.current &&
+            message.id === streamingTargetAssistantId &&
             !(message.content ?? '').trim().length &&
             !reasoningTrim.length;
           if (hideEmptyStreamBubble) return <React.Fragment key={message.id} />;
           return (
+          <React.Fragment key={message.id}>
+            {index === newConversationDividerIndex && (
+              <div className="flex items-center gap-3 py-1" role="separator" aria-label={t('chat.newConversationDivider')}>
+                <div className="h-px flex-1 bg-stone-300/60 dark:bg-slate-600/50" />
+                <span className="text-[10px] font-medium text-stone-400 dark:text-slate-500 whitespace-nowrap">
+                  {t('chat.newConversationDivider')}
+                </span>
+                <div className="h-px flex-1 bg-stone-300/60 dark:bg-slate-600/50" />
+              </div>
+            )}
           <MessageItem
             key={message.id}
             message={message}
@@ -2469,6 +2608,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
                   : message.imageGenProgress
               }
             />
+          </React.Fragment>
           );
         })}
 

@@ -29,6 +29,7 @@ const electronStub: ElectronAPI = {
   agentWebRead: async () => ({ ok: false, error: 'stub' }),
   agentWebEval: async () => ({ ok: false, error: 'stub' }),
   agentWebClose: async () => ({ ok: true, closed: false }),
+  agentWebSaveRemoteImage: async () => ({ ok: false, error: 'stub' }),
   saveLocalFileCopy: async () => ({ ok: false }),
   knowledgeIndexWorkspace: async () => ({ ok: false, error: 'stub' }),
   knowledgeSearch: async () => ({ ok: false, error: 'stub' }),

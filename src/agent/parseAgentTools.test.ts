@@ -24,6 +24,21 @@ describe('parseAgentTools', () => {
     expect(a).toBe(b);
   });
 
+  it('提图类 web_eval 归一为同一签名', () => {
+    const a = toolCallSignature({
+      tool: 'web_eval',
+      js: 'document.querySelector("[data-imgurl]")',
+      raw: '',
+    });
+    const b = toolCallSignature({
+      tool: 'web_eval',
+      js: 'for (const img of document.querySelectorAll(".imgitem img")) { if (img.naturalWidth>48) return img }',
+      raw: '',
+    });
+    expect(a).toBe(b);
+    expect(a).toBe('web_eval:baidu-first-image-extract');
+  });
+
   it('stripAgentLocalToolArtifacts 去掉工具 JSON', () => {
     const raw =
       '已处理。\n{"myagent_tool":"local_export","format":"xlsx","content":"|a|b|\\n|-|-|\\n|1|2|","name":"汇总"}';

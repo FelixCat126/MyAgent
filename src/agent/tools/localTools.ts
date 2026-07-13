@@ -1,4 +1,5 @@
 import type { FileInfo, KnowledgeEmbedConfig } from '../../types';
+import { useSettingStore } from '../../store/settingStore';
 import { expandTopicSynonyms, textMentionsTopicKeywords } from '../localFileIntent';
 import type { AgentToolCall } from '../parseAgentTools';
 import { toolCallSignature } from '../parseAgentTools';
@@ -12,7 +13,22 @@ import {
 export type AgentLocalToolContext = {
   deniedPaths: string[];
   workspaceRoot: string;
+  shouldCancel?: () => boolean;
 };
+
+function assertLocalToolsEnabled(): string | null {
+  if (!useSettingStore.getState().agentLocalToolsEnabled) {
+    return '错误：未开启「本机文档 Agent」，无法执行本机文件工具。请在设置 → Agent 中开启。';
+  }
+  return null;
+}
+
+function assertBrowserEnabled(): string | null {
+  if (!useSettingStore.getState().agentBrowserEnabled) {
+    return '错误：未开启「对话内嵌浏览」，无法执行网页工具。请在设置 → Agent 中开启。';
+  }
+  return null;
+}
 
 function mimeFromImagePath(absPath: string): string {
   const ext = absPath.split('.').pop()?.toLowerCase() ?? '';
@@ -73,6 +89,15 @@ export async function executeAgentLocalTool(
 ): Promise<string> {
   const { deniedPaths, workspaceRoot } = ctx;
 
+  if (call.tool.startsWith('local_')) {
+    const denied = assertLocalToolsEnabled();
+    if (denied) return denied;
+  }
+  if (call.tool.startsWith('web_')) {
+    const denied = assertBrowserEnabled();
+    if (denied) return denied;
+  }
+
   switch (call.tool) {
     case 'local_search': {
       if (call.mode === 'image') {
@@ -104,11 +129,15 @@ export async function executeAgentLocalTool(
           maxChars: 12_000,
           embed,
         });
-        if (r.ok && r.text?.trim() && textMentionsTopicKeywords(r.text, call.query)) {
+        if (r.ok && r.text?.trim()) {
           const meta = r.meta
             ? `\n（命中 ${r.meta.usedChunks ?? 0}/${r.meta.chunkCount ?? 0} 个分块）`
             : '';
-          return `${r.text}${meta}`;
+          // 关键词二次过滤仅作提示，不再整段丢弃语义结果（避免同义词/表述差异误杀）
+          const keywordNote = textMentionsTopicKeywords(r.text, call.query)
+            ? ''
+            : '\n（提示：语义命中正文未直接出现查询关键词，请结合上下文判断相关性）';
+          return `${r.text}${meta}${keywordNote}`;
         }
       }
       const r = await window.electron.agentLocalFindByName({
@@ -175,7 +204,7 @@ export async function executeAgentLocalTool(
     }
 
     case 'web_open': {
-      const r = await agentBrowserOpen(call.url);
+      const r = await agentBrowserOpen(call.url, { shouldCancel: ctx.shouldCancel });
       if (!r.ok) return `错误：${r.error}`;
       return `已在对话区下方打开：${r.title || r.url}\nURL：${r.url}`;
     }
@@ -184,6 +213,7 @@ export async function executeAgentLocalTool(
       const r = await agentBrowserRead({
         maxChars: call.maxChars,
         selector: call.selector,
+        shouldCancel: ctx.shouldCancel,
       });
       if (!r.ok) return `错误：${r.error}`;
       const head = call.selector
@@ -193,7 +223,7 @@ export async function executeAgentLocalTool(
     }
 
     case 'web_eval': {
-      const r = await agentBrowserEval({ js: call.js });
+      const r = await agentBrowserEval({ js: call.js, shouldCancel: ctx.shouldCancel });
       if (!r.ok) return `错误：${r.error}`;
       const resStr =
         typeof r.result === 'string' ? r.result : JSON.stringify(r.result ?? null);
@@ -215,7 +245,8 @@ export async function runAgentLocalToolBatch(
   calls: AgentToolCall[],
   ctx: AgentLocalToolContext,
   embed: KnowledgeEmbedConfig | null,
-  executed?: Map<string, string>
+  executed?: Map<string, string>,
+  opts?: { shouldCancel?: () => boolean }
 ): Promise<{ resultText: string; exportFiles: FileInfo[]; attachFiles: FileInfo[]; skippedDuplicate: number }> {
   const parts: string[] = [];
   const exportFiles: FileInfo[] = [];
@@ -223,6 +254,10 @@ export async function runAgentLocalToolBatch(
   let skippedDuplicate = 0;
 
   for (const call of calls) {
+    if (opts?.shouldCancel?.()) {
+      parts.push('【已取消】用户停止了本次操作。');
+      break;
+    }
     const sig = toolCallSignature(call);
     const cached = executed?.get(sig);
     if (cached !== undefined) {
@@ -232,6 +267,23 @@ export async function runAgentLocalToolBatch(
           '（该步骤已完成，请勿再次输出相同 JSON；请根据以上结果用自然语言回答用户。）'
       );
       continue;
+    }
+
+    if (call.tool.startsWith('local_')) {
+      const denied = assertLocalToolsEnabled();
+      if (denied) {
+        executed?.set(sig, denied);
+        parts.push(`【${call.tool}】${denied}`);
+        continue;
+      }
+    }
+    if (call.tool.startsWith('web_')) {
+      const denied = assertBrowserEnabled();
+      if (denied) {
+        executed?.set(sig, denied);
+        parts.push(`【${call.tool}】${denied}`);
+        continue;
+      }
     }
 
     if (call.tool === 'local_export') {
@@ -266,5 +318,13 @@ export async function runAgentLocalToolBatch(
     parts.push(`【${call.tool}】\n${out}`);
   }
 
-  return { resultText: parts.join('\n\n').slice(0, 24_000), exportFiles, attachFiles, skippedDuplicate };
+  return {
+    resultText:
+      parts.join('\n\n').length > 24_000
+        ? parts.join('\n\n').slice(0, 24_000) + '\n\n（工具结果已截断，以上为前部内容）'
+        : parts.join('\n\n'),
+    exportFiles,
+    attachFiles,
+    skippedDuplicate,
+  };
 }

@@ -3,11 +3,13 @@ import { FiExternalLink, FiRefreshCw, FiX } from 'react-icons/fi';
 import { useAgentBrowserStore } from '../store/agentBrowserStore';
 import {
   notifyWebviewDomReady,
+  notifyWebviewUserReload,
   registerAgentBrowserWebview,
 } from '../agent/browser/agentBrowserController';
 
 const AgentBrowserPanel: React.FC = () => {
-  const { visible, url, title, loading, close, setPageMeta, setLoading } = useAgentBrowserStore();
+  const { visible, url, displayUrl, title, loading, close, setPageMeta, setLoading } =
+    useAgentBrowserStore();
   const webviewRef = useRef<Electron.WebviewTag>(null);
 
   /** url 一旦设定就保持 webview 在 DOM 中（可隐藏），避免 open→read 竞态 */
@@ -20,7 +22,7 @@ const AgentBrowserPanel: React.FC = () => {
     }
     registerAgentBrowserWebview(webviewRef.current);
     return () => registerAgentBrowserWebview(null);
-  }, [keepMounted, url]);
+  }, [keepMounted]);
 
   useEffect(() => {
     const wv = webviewRef.current;
@@ -50,11 +52,13 @@ const AgentBrowserPanel: React.FC = () => {
       wv.removeEventListener('did-finish-load', syncMeta);
       wv.removeEventListener('page-title-updated', syncMeta);
     };
-  }, [keepMounted, url, setPageMeta, setLoading]);
+  }, [keepMounted, setPageMeta, setLoading]);
 
   if (!keepMounted) return null;
 
+  const shownUrl = displayUrl || url;
   const reload = (): void => {
+    notifyWebviewUserReload();
     webviewRef.current?.reload();
   };
 
@@ -70,7 +74,7 @@ const AgentBrowserPanel: React.FC = () => {
       {visible ? (
         <div className="flex shrink-0 items-center gap-2 border-b border-stone-600/20 px-3 py-1.5 dark:border-white/10">
           <span className="min-w-0 flex-1 truncate text-xs text-stone-700 dark:text-slate-200">
-            {loading ? '加载中…' : title || url}
+            {loading ? '加载中…' : title || shownUrl}
           </span>
           <button
             type="button"
@@ -83,7 +87,7 @@ const AgentBrowserPanel: React.FC = () => {
           <button
             type="button"
             onClick={() => {
-              if (url) window.open(url, '_blank');
+              if (shownUrl) window.open(shownUrl, '_blank');
             }}
             className="rounded p-1 text-stone-500 hover:bg-stone-200/80 dark:text-slate-400 dark:hover:bg-slate-800"
             title="在系统浏览器打开"
@@ -100,7 +104,13 @@ const AgentBrowserPanel: React.FC = () => {
           </button>
         </div>
       ) : null}
-      <webview ref={webviewRef} src={url} className="min-h-0 flex-1 w-full" style={{ border: 'none' }} />
+      {/* 固定 about:blank，导航一律走 loadURL，避免受控 src 与重定向互相打架 */}
+      <webview
+        ref={webviewRef}
+        src="about:blank"
+        className="min-h-0 flex-1 w-full"
+        style={{ border: 'none' }}
+      />
     </div>
   );
 };

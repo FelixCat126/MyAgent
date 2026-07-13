@@ -33,7 +33,7 @@ interface SettingStore {
   gazeFollowEnabled: boolean;
   /** 水下 Agent：本机文档检索/读取/导出（全机范围，系统核心目录需授权） */
   agentLocalToolsEnabled: boolean;
-  /** 水下 Agent：对话区内嵌浏览（Phase B，默认关） */
+  /** 水下 Agent：对话区内嵌浏览（默认开，可在设置关闭） */
   agentBrowserEnabled: boolean;
   /** Agent 禁止访问的路径（非授权列表，每行一条；系统核心目录已内置禁止） */
   agentDeniedPaths: string[];

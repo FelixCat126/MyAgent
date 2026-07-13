@@ -88,4 +88,27 @@ export function isZhipuEndpoint(apiUrl: string, modelName: string): boolean {
   return apiUrl.includes('bigmodel.cn') || modelName.toLowerCase().startsWith('glm-');
 }
 
+/**
+ * 生成「开启思考模式」的厂商通用请求参数。
+ *
+ * 各厂商的思考开关参数不同，但不支持思考的模型会忽略未知字段（OpenAI 兼容协议特性），
+ * 因此可以无条件全部带上，一套代码覆盖所有厂商，无需按模型名硬编码判断。
+ *
+ * - Qwen3 / 通义千问：`enable_thinking: true`
+ * - Doubao / 豆包（方舟）：`thinking: "enabled"`（字符串，非对象）
+ * - DeepSeek：默认开启，无需参数（带上也无害）
+ * - OpenAI o 系列：`reasoning_effort: "medium"`（非 o 系列忽略）
+ * - Gemma / 普通 Llama：不支持，忽略未知字段
+ *
+ * 注：Claude 走独立路径（model.ts 的 Claude 分支），用的是
+ * `thinking: { type: "enabled", budget_tokens: N }` 对象格式，不经过此函数。
+ */
+export function buildThinkingParams(): Record<string, unknown> {
+  return {
+    enable_thinking: true,
+    thinking: 'enabled',
+    reasoning_effort: 'medium',
+  };
+}
+
 export { resolveOpenAiCompatibleBaseUrl } from '../../src/utils/openAiCompatBase';

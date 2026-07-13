@@ -18,7 +18,13 @@ import {
 import {
   agentBrowserOpen,
   agentBrowserExtractFirstImage,
+  materializeWebImageAttachment,
   BAIDU_FIRST_IMAGE_EXTRACT_SIG,
+  acquireAgentBrowserLock,
+  releaseAgentBrowserLock,
+  createAgentCancelledError,
+  isAgentCancelledError,
+  AGENT_CANCELLED_CODE,
 } from './browser/agentBrowserController';
 import { useAgentBrowserStore } from '../store/agentBrowserStore';
 import { useWorkspaceStore } from '../store/workspaceStore';
@@ -92,7 +98,13 @@ export type RunAgentLoopArgs = {
   onContentDelta?: (chunk: string) => void;
   /** 最终自然语言回复就绪（供 ChatWindow 写入正文 + 驱动点阵 replying） */
   onReplyContent?: (text: string) => void;
+  /** 用户点停止时返回 true，贯穿工具轮次 */
+  shouldCancel?: () => boolean;
 };
+
+function assertAgentNotCancelled(shouldCancel?: () => boolean): void {
+  if (shouldCancel?.()) throw createAgentCancelledError();
+}
 
 function buildUserTaskAnchor(userText: string, locale: Locale): Message {
   const isExcerpt = userRequestsExcerpt(userText);
@@ -304,15 +316,44 @@ async function runAutoImageSearch(
 }
 
 export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopResult> {
-  if (!useSettingStore.getState().agentBrowserEnabled) {
-    /* browser off — fall through to local agent */
-  } else if (userWantsWebPageDescription(args.userText)) {
+  const browserEnabled = useSettingStore.getState().agentBrowserEnabled;
+  const localEnabled = useSettingStore.getState().agentLocalToolsEnabled;
+  let browserLocked = false;
+  let browserLockToken = 0;
+
+  const cancelledResult = (): AgentLoopResult => {
+    const msg =
+      args.locale === 'en' ? '(Generation stopped)' : '（已停止生成）';
+    args.onReplyContent?.(msg);
+    return { handled: true, displayText: msg };
+  };
+
+  try {
+    assertAgentNotCancelled(args.shouldCancel);
+
+  if (userWantsWebPageDescription(args.userText)) {
+    if (!browserEnabled) {
+      const msg =
+        args.locale === 'en'
+          ? 'Enable “In-chat browser” in Settings → Agent to open and describe web pages inside the app.'
+          : '请先在设置 → Agent 中开启「对话内嵌浏览」，才能打开并介绍网页。';
+      args.onReplyContent?.(msg);
+      return { handled: true, displayText: msg };
+    }
+    const lock = acquireAgentBrowserLock(args.chatSessionId);
+    if (!lock.ok) {
+      args.onReplyContent?.(lock.error);
+      return { handled: true, displayText: lock.error };
+    }
+    browserLocked = true;
+    browserLockToken = lock.token;
     const url = extractUrlFromUserText(args.userText);
     if (!url) {
       const msg = buildWebBrowseMissingUrlMessage(args.locale);
       args.onReplyContent?.(msg);
       return { handled: true, displayText: msg };
     }
+    assertAgentNotCancelled(args.shouldCancel);
     const described = await executeWebPageDescribe(
       url,
       args.userText,
@@ -320,7 +361,9 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
       args.locale,
       {
         onThinkingDelta: args.onThinkingDelta,
+        onContentDelta: args.onContentDelta,
         onReplyContent: args.onReplyContent,
+        shouldCancel: args.shouldCancel,
       }
     );
     if (described.ok) {
@@ -331,13 +374,16 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
         reasoning: described.reasoning,
       };
     }
+    if (described.error === AGENT_CANCELLED_CODE || args.shouldCancel?.()) {
+      return cancelledResult();
+    }
     args.onReplyContent?.(described.error);
     return { handled: true, displayText: described.error };
   }
 
   const webIntent = parseWebBrowseIntent(args.userText);
   if (webIntent && isSimpleWebBrowseOnly(args.userText, webIntent)) {
-    if (!useSettingStore.getState().agentBrowserEnabled) {
+    if (!browserEnabled) {
       const msg =
         args.locale === 'en'
           ? 'Enable “In-chat browser” in Settings → Agent to open web pages inside the app.'
@@ -345,21 +391,52 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
       args.onReplyContent?.(msg);
       return { handled: true, displayText: msg };
     }
-    const webOut = await executeWebBrowseIntent(webIntent, args.locale, args.userText);
+    const lock = acquireAgentBrowserLock(args.chatSessionId);
+    if (!lock.ok) {
+      args.onReplyContent?.(lock.error);
+      return { handled: true, displayText: lock.error };
+    }
+    browserLocked = true;
+    browserLockToken = lock.token;
+    assertAgentNotCancelled(args.shouldCancel);
+    const webOut = await executeWebBrowseIntent(webIntent, args.locale, args.userText, {
+      shouldCancel: args.shouldCancel,
+    });
     if (webOut.ok) {
       args.onReplyContent?.(webOut.message);
       return { handled: true, displayText: webOut.message };
     }
+    if (webOut.error === AGENT_CANCELLED_CODE || args.shouldCancel?.()) {
+      return cancelledResult();
+    }
+    args.onReplyContent?.(webOut.error);
+    return { handled: true, displayText: webOut.error };
+  }
+
+  const needsBrowser =
+    browserEnabled &&
+    (looksLikeWebBrowseRequest(args.userText) || needsWebAgentWorkflow(args.userText));
+  if (needsBrowser) {
+    const lock = acquireAgentBrowserLock(args.chatSessionId);
+    if (!lock.ok) {
+      args.onReplyContent?.(lock.error);
+      return { handled: true, displayText: lock.error };
+    }
+    browserLocked = true;
+    browserLockToken = lock.token;
   }
 
   const workspaceRoot = useWorkspaceStore.getState().rootPath.trim();
   const deniedPaths = useSettingStore.getState().agentDeniedPaths;
-  const toolCtx = { deniedPaths, workspaceRoot };
+  const toolCtx = { deniedPaths, workspaceRoot, shouldCancel: args.shouldCancel };
   const embed = useKnowledgeStore.getState().getEmbedConfigForIpc();
   const agentSystem: Message = {
     id: `agent-sys-${Date.now()}`,
     role: 'system',
-    content: buildAgentCapabilitySystem(args.locale, workspaceRoot, '~'),
+    content: buildAgentCapabilitySystem(args.locale, workspaceRoot, '~', {
+      localEnabled,
+      browserEnabled,
+    }),
     timestamp: Date.now(),
     model: 'agent-capability',
   };
@@ -380,65 +457,6 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
   let duplicateOnlyRounds = 0;
   let collectedExportFiles: FileInfo[] = [];
   let collectedAttachFiles: FileInfo[] = [];
-
-  if (
-    webIntent &&
-    needsWebAgentWorkflow(args.userText) &&
-    useSettingStore.getState().agentBrowserEnabled
-  ) {
-    const openUrl = resolveWebBrowseOpenUrl(webIntent, args.userText);
-    const opened = await agentBrowserOpen(openUrl, { revealPanel: true });
-    useAgentBrowserStore.getState().reveal();
-    if (opened.ok) {
-      const prefetchBody = `已在对话区下方打开：${opened.title || openUrl}\nURL：${openUrl}`;
-      executedTools.set(
-        toolCallSignature({ tool: 'web_open', url: openUrl, raw: '' }),
-        prefetchBody
-      );
-
-      let imagePrefetchNote = '';
-      if (userWantsWebFirstImage(args.userText)) {
-        const extracted = await agentBrowserExtractFirstImage();
-        if (extracted.ok) {
-          const extractBody = `已提取第一张图片：${extracted.url}\n来源页：${extracted.pageUrl || openUrl}`;
-          executedTools.set(BAIDU_FIRST_IMAGE_EXTRACT_SIG, extractBody);
-          const baseName =
-            webIntent.kind === 'baidu_search' ? webIntent.query : 'web-image';
-          collectedAttachFiles.push({
-            name: `${baseName}-1.jpg`,
-            path: extracted.url,
-            type: 'image/jpeg',
-            size: 0,
-            preview: extracted.url,
-          });
-          imagePrefetchNote =
-            args.locale === 'en'
-              ? `\n\n[System extracted the first image]\n${extracted.url}\nImage is attached to the reply. Tell the user briefly; do NOT claim no images were found.`
-              : `\n\n【系统已自动提取第一张图片并加入附件】\n${extracted.url}\n请用一句话告知用户（图片在下方面板与附件中）；禁止再说「未找到图片」。`;
-        } else {
-          imagePrefetchNote =
-            args.locale === 'en'
-              ? `\n\n[System could not auto-extract an image: ${extracted.error}]`
-              : `\n\n【系统未能自动提取图片】${extracted.error}`;
-        }
-      }
-
-      messages = [
-        ...messages,
-        {
-          id: `agent-web-prefetch-${Date.now()}`,
-          role: 'system',
-          content:
-            (args.locale === 'en'
-              ? `[System already web_opened — panel visible below; do NOT open the same URL again]\nURL: ${openUrl}\n\nUse web_read/web_eval only if still needed, then answer in plain language. Task: ${args.userText}`
-              : `【系统已 web_open，下方面板已显示；禁止再次打开同一 URL】\n${openUrl}\n\n仅在必要时 web_read/web_eval，然后必须用自然语言完成：${args.userText}`) +
-            imagePrefetchNote,
-          timestamp: Date.now(),
-          model: 'agent-web-prefetch',
-        },
-      ];
-    }
-  }
   let lastReasoning = '';
   let autoSearchDone = false;
   let autoSearchEmpty = false;
@@ -446,7 +464,94 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
   let didReadSource = false;
   let webWrapNudged = false;
 
+  if (webIntent && needsWebAgentWorkflow(args.userText) && browserEnabled) {
+    const openUrl = resolveWebBrowseOpenUrl(webIntent, args.userText);
+    const opened = await agentBrowserOpen(openUrl, {
+      revealPanel: true,
+      shouldCancel: args.shouldCancel,
+    });
+    useAgentBrowserStore.getState().reveal();
+    if (!opened.ok) {
+      if (opened.error === AGENT_CANCELLED_CODE || args.shouldCancel?.()) {
+        return cancelledResult();
+      }
+      const failMsg =
+        args.locale === 'en'
+          ? `Could not open the page: ${opened.error}`
+          : `无法打开网页：${opened.error}`;
+      args.onReplyContent?.(failMsg);
+      return { handled: true, displayText: failMsg };
+    }
+
+    const prefetchBody = `已在对话区下方打开：${opened.title || openUrl}\nURL：${openUrl}`;
+    executedTools.set(
+      toolCallSignature({ tool: 'web_open', url: openUrl, raw: '' }),
+      prefetchBody
+    );
+
+    let imagePrefetchNote = '';
+    if (userWantsWebFirstImage(args.userText)) {
+      const extracted = await agentBrowserExtractFirstImage({ shouldCancel: args.shouldCancel });
+      if (!extracted.ok && (extracted.error === AGENT_CANCELLED_CODE || args.shouldCancel?.())) {
+        return cancelledResult();
+      }
+      if (extracted.ok) {
+        const extractBody = `已提取第一张图片：${extracted.url}\n来源页：${extracted.pageUrl || openUrl}`;
+        executedTools.set(BAIDU_FIRST_IMAGE_EXTRACT_SIG, extractBody);
+        const baseName =
+          webIntent.kind === 'baidu_search' || webIntent.kind === 'google_search'
+            ? webIntent.query
+            : 'web-image';
+        const saved = await materializeWebImageAttachment({
+          imageUrl: extracted.url,
+          pageUrl: extracted.pageUrl || openUrl,
+          fileName: `${baseName}-1`,
+          shouldCancel: args.shouldCancel,
+        });
+        if (!saved.ok && (saved.error === AGENT_CANCELLED_CODE || args.shouldCancel?.())) {
+          return cancelledResult();
+        }
+        if (saved.ok) {
+          collectedAttachFiles.push(saved.file);
+          didReadSource = true;
+          imagePrefetchNote =
+            args.locale === 'en'
+              ? `\n\n[System extracted the first image]\n${extracted.url}\nImage is attached to the reply. Tell the user briefly; do NOT claim no images were found. Do NOT call web_eval/web_open again for the same image.`
+              : `\n\n【系统已自动提取第一张图片并加入附件】\n${extracted.url}\n请用一句话告知用户（图片在下方面板与附件中）；禁止再说「未找到图片」；禁止再次 web_eval/web_open 取同一张图。`;
+        } else {
+          imagePrefetchNote =
+            args.locale === 'en'
+              ? `\n\n[System extracted image URL but failed to save locally: ${saved.error}]\nURL: ${extracted.url}`
+              : `\n\n【系统已提取图片 URL，但落盘失败】${saved.error}\nURL：${extracted.url}`;
+        }
+      } else {
+        imagePrefetchNote =
+          args.locale === 'en'
+            ? `\n\n[System could not auto-extract an image: ${extracted.error}]`
+            : `\n\n【系统未能自动提取图片】${extracted.error}`;
+      }
+    }
+
+    messages = [
+      ...messages,
+      {
+        id: `agent-web-prefetch-${Date.now()}`,
+        role: 'system',
+        content:
+          (args.locale === 'en'
+            ? `[System already web_opened — panel visible below; do NOT open the same URL again]\nURL: ${openUrl}\n\nUse web_read/web_eval only if still needed, then answer in plain language. Task: ${args.userText}`
+            : `【系统已 web_open，下方面板已显示；禁止再次打开同一 URL】\n${openUrl}\n\n仅在必要时 web_read/web_eval，然后必须用自然语言完成：${args.userText}`) +
+          imagePrefetchNote,
+        timestamp: Date.now(),
+        model: 'agent-web-prefetch',
+      },
+    ];
+  }
+
   if (looksLikeLocalImageFindRequest(args.userText) && !looksLikeWebBrowseRequest(args.userText)) {
+    if (!localEnabled) {
+      /* 本机工具关闭时不做预取 */
+    } else {
     const imgPrefetch = await runAutoImageSearch(args.userText, toolCtx, args.locale);
     if (imgPrefetch) {
       messages = [...messages, imgPrefetch.message];
@@ -455,7 +560,8 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
       autoSearchEmpty = imgPrefetch.empty;
       autoSearchQuery = extractLocalSearchQuery(args.userText);
     }
-  } else if (!looksLikeWebBrowseRequest(args.userText)) {
+    }
+  } else if (!looksLikeWebBrowseRequest(args.userText) && localEnabled) {
     const prefetch = await runAutoSearch(args.userText, toolCtx, embed, args.locale);
     if (prefetch) {
       messages = [...messages, prefetch.message];
@@ -466,9 +572,10 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
   }
 
   for (let round = 0; round < MAX_AGENT_ROUNDS; round++) {
+    assertAgentNotCancelled(args.shouldCancel);
     const response = await callModelAgentRound(messages, args.model, args.locale, {
       onThinkingDelta: args.onThinkingDelta,
-      onDelta: args.onContentDelta,
+      shouldCancel: args.shouldCancel,
     });
     const content = String(response.content ?? '').trim();
     const reasoningIn = response.reasoning?.trim() ?? '';
@@ -579,9 +686,10 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
 
       if (
         !isWebTask &&
-        modelDefersLocalFileWorkToUser(content, args.userText) &&
         autoSearchDone &&
-        autoSearchEmpty
+        autoSearchEmpty &&
+        !didReadSource &&
+        looksLikeLocalFileAgentRequest(args.userText)
       ) {
         displayText = buildEmptyLocalSearchFallbackDisplay(
           autoSearchQuery || extractLocalSearchQuery(args.userText),
@@ -613,9 +721,23 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
     };
     messages = [...messages, assistantMsg];
 
+    assertAgentNotCancelled(args.shouldCancel);
     const { resultText, exportFiles, attachFiles, skippedDuplicate } =
-      await runAgentLocalToolBatch(toolCalls, toolCtx, embed, executedTools);
+      await runAgentLocalToolBatch(toolCalls, toolCtx, embed, executedTools, {
+        shouldCancel: args.shouldCancel,
+      });
+    assertAgentNotCancelled(args.shouldCancel);
     if (toolCalls.some((t) => t.tool === 'local_read' || t.tool === 'web_read')) {
+      didReadSource = true;
+    }
+    if (
+      toolCalls.some(
+        (t) =>
+          t.tool === 'web_eval' &&
+          (toolCallSignature(t) === BAIDU_FIRST_IMAGE_EXTRACT_SIG ||
+            /data-imgurl|first.?image|imgitem|naturalWidth/i.test(t.js))
+      )
+    ) {
       didReadSource = true;
     }
     collectedExportFiles = [...collectedExportFiles, ...exportFiles];
@@ -679,4 +801,10 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
     reasoning: lastReasoning || undefined,
     exportFiles: allFiles.length ? allFiles : undefined,
   };
+  } catch (e) {
+    if (isAgentCancelledError(e)) return cancelledResult();
+    throw e;
+  } finally {
+    if (browserLocked) releaseAgentBrowserLock(args.chatSessionId, browserLockToken);
+  }
 }

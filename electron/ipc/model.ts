@@ -9,6 +9,7 @@ import {
   isZhipuEndpoint,
   messagesHaveImageFiles,
   resolveOpenAiCompatibleBaseUrl,
+  buildThinkingParams,
 } from './openai-adapters';
 
 /** Claude / Gemini 需单独处理 system；OpenAI 兼容接口一般可直接带 system 消息 */
@@ -93,7 +94,7 @@ ipcMain.handle(
       const apiBase = resolveOpenAiCompatibleBaseUrl(apiUrl, provider);
       let formattedMessages = formatOpenAIMultimodal(messages);
 
-      const postChat = () =>
+      const postChat = (withThinking = true) =>
         axios.post(
           `${apiBase}/chat/completions`,
           {
@@ -101,6 +102,7 @@ ipcMain.handle(
             messages: formattedMessages,
             max_tokens: maxTokens,
             ...(temperature !== undefined ? { temperature } : {}),
+            ...(withThinking ? buildThinkingParams() : {}),
           },
           {
             headers,
@@ -108,8 +110,13 @@ ipcMain.handle(
           }
         );
 
+      const isBadRequest = (e: unknown): boolean => {
+        const ax = e as { response?: { status?: number } };
+        return ax?.response?.status === 400;
+      };
+
       try {
-        const response = await postChat();
+        const response = await postChat(true);
         return parseOpenAIChatResponse(response.data);
       } catch (firstErr: unknown) {
         if (
@@ -121,8 +128,25 @@ ipcMain.handle(
             (firstErr as Error).message
           );
           formattedMessages = formatOpenAITextOnly(messages);
-          const response = await postChat();
-          return parseOpenAIChatResponse(response.data);
+          try {
+            const response = await postChat(true);
+            return parseOpenAIChatResponse(response.data);
+          } catch (secondErr: unknown) {
+            if (isBadRequest(secondErr)) {
+              const response = await postChat(false);
+              return parseOpenAIChatResponse(response.data);
+            }
+            throw secondErr;
+          }
+        }
+        /** 首次即 400（无图片场景）：可能是思考参数不被该模型支持，去掉重试 */
+        if (isBadRequest(firstErr)) {
+          try {
+            const response = await postChat(false);
+            return parseOpenAIChatResponse(response.data);
+          } catch {
+            throw firstErr;
+          }
         }
         throw firstErr;
       }
@@ -172,6 +196,7 @@ ipcMain.handle(
           ...(systemText ? { system: systemText } : {}),
           messages: formattedMessages,
           max_tokens: maxTokens,
+          thinking: { type: 'enabled', budget_tokens: Math.min(Math.max(maxTokens - 1000, 1024), 16000) },
         },
         {
           headers,
@@ -183,8 +208,23 @@ ipcMain.handle(
         throw new Error(response.data.error);
       }
 
+      /** Claude 返回 content 数组：type=thinking 的块含思考过程，type=text 的块含正文 */
+      const blocks: Array<{ type?: string; text?: string; thinking?: string }> = Array.isArray(
+        response.data.content
+      )
+        ? response.data.content
+        : [];
+      const reasoning = blocks
+        .filter((b) => b.type === 'thinking' && typeof b.thinking === 'string')
+        .map((b) => b.thinking as string)
+        .join('\n');
+      const content = blocks
+        .filter((b) => b.type === 'text' && typeof b.text === 'string')
+        .map((b) => b.text as string)
+        .join('\n');
       return {
-        content: response.data.content[0]?.text || '',
+        content: content || '',
+        ...(reasoning.trim() ? { reasoning } : {}),
         usage: response.data.usage,
       };
     }
@@ -249,8 +289,24 @@ ipcMain.handle(
         }
       );
 
-      const text = response.data.candidates[0]?.content?.parts[0]?.text || '';
-      return { content: text };
+      /** Gemini 返回 parts 数组：thought=true 的是思考过程，其余是正文 */
+      const parts: Array<{ text?: string; thought?: boolean }> = Array.isArray(
+        response.data.candidates?.[0]?.content?.parts
+      )
+        ? response.data.candidates[0].content.parts
+        : [];
+      const reasoning = parts
+        .filter((p) => p.thought === true && typeof p.text === 'string')
+        .map((p) => p.text as string)
+        .join('\n');
+      const content = parts
+        .filter((p) => !p.thought && typeof p.text === 'string')
+        .map((p) => p.text as string)
+        .join('\n');
+      return {
+        content: content || '',
+        ...(reasoning.trim() ? { reasoning } : {}),
+      };
     }
 
     throw new Error(`Unsupported model provider: ${provider}`);

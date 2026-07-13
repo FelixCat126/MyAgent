@@ -82,14 +82,22 @@ export function toolCallSignature(call: AgentToolCall): string {
       return `local_list:${call.subpath ?? ''}:${call.maxDepth ?? ''}:${(call.extensions ?? []).join(',')}`;
     case 'local_read':
       return `local_read:${call.path.trim()}`;
-    case 'local_export':
-      return `local_export:${call.format}:${call.name}:${call.content.slice(0, 120)}`;
+    case 'local_export': {
+      const c = call.content;
+      return `local_export:${call.format}:${call.name}:${c.length}:${c.slice(0, 80)}:${c.slice(-80)}`;
+    }
     case 'web_open':
       return `web_open:${normalizeToolUrl(call.url)}`;
     case 'web_read':
       return `web_read:${call.selector ?? ''}:${call.maxChars ?? 4000}`;
-    case 'web_eval':
-      return `web_eval:${call.js.replace(/\s+/g, ' ').trim()}`;
+    case 'web_eval': {
+      const jsNorm = call.js.replace(/\s+/g, ' ').trim();
+      // 提图类脚本归一为同一签名，避免微调 JS 绕过去重
+      if (/data-imgurl|imgitem|first.?image|naturalWidth|data-objurl/i.test(jsNorm)) {
+        return 'web_eval:baidu-first-image-extract';
+      }
+      return `web_eval:${jsNorm}`;
+    }
     case 'web_close':
       return 'web_close';
     default:

@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { useChatStore } from '../store/chatStore';
 import { ChatSession } from '../types';
 import { filterSessionsByQuery } from '../utils/sessionFilter';
-import { FiTrash2, FiEdit2, FiSearch, FiDownload, FiImage } from 'react-icons/fi';
+import { FiTrash2, FiEdit2, FiSearch, FiDownload, FiImage, FiLoader } from 'react-icons/fi';
 import { useI18n } from '../hooks/useI18n';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
 import { useSettingStore } from '../store/settingStore';
@@ -14,7 +14,7 @@ const SessionList: React.FC = () => {
   const resolvedTheme = useResolvedTheme();
   const particleFieldEnabled = useSettingStore((s) => s.particleFieldEnabled);
   const openImageLibrary = useImageLibraryOpener();
-  const { sessions, currentSessionId, switchSession, deleteSession, updateSessionTitle } = useChatStore();
+  const { sessions, currentSessionId, switchSession, deleteSession, updateSessionTitle, loadingSessionIds } = useChatStore();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
   const [search, setSearch] = useState('');
@@ -73,7 +73,7 @@ const SessionList: React.FC = () => {
         ) : null}
         <div className="relative">
           <FiSearch
-            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-stone-400 dark:text-slate-500"
+            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-stone-600 dark:text-slate-300"
             size={14}
             aria-hidden
           />
@@ -82,7 +82,7 @@ const SessionList: React.FC = () => {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder={t('sessionList.search')}
-            className="w-full rounded-lg border border-stone-400/30 bg-stone-100/80 py-1.5 pl-8 pr-2 text-xs text-stone-800 placeholder-stone-400 focus:border-primary-500/60 focus:outline-none focus:ring-1 focus:ring-primary-500/50 dark:border-slate-600 dark:bg-slate-800/80 dark:text-slate-100"
+            className="w-full rounded-lg border border-stone-400/30 bg-stone-100/80 py-1.5 pl-8 pr-2 text-xs text-stone-800 placeholder-stone-600 dark:placeholder-slate-300 focus:border-primary-500/60 focus:outline-none focus:ring-1 focus:ring-primary-500/50 dark:border-slate-600 dark:bg-slate-800/80 dark:text-slate-100"
           />
         </div>
         <div className="flex w-full gap-1.5">
@@ -153,14 +153,6 @@ const SessionList: React.FC = () => {
                   >
                     {session.title}
                   </h3>
-                  {session.unreadAssistantReply && currentSessionId !== session.id ? (
-                    <span
-                      className="flex-shrink-0 inline-flex h-5 min-w-[1.25rem] px-1 items-center justify-center rounded-md bg-primary-500 text-[10px] font-bold text-white shadow-md shadow-primary-500/30"
-                      title={t('sessionList.badgeTitle')}
-                    >
-                      {t('sessionList.badge')}
-                    </span>
-                  ) : null}
                 </div>
               )}
               <p className="text-xs text-stone-500 dark:text-slate-500 mt-1.5 font-medium">
@@ -172,25 +164,61 @@ const SessionList: React.FC = () => {
               </p>
             </div>
             
-            {/* 隐藏按钮组 */}
-            <div
-              className={`flex flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity ${editingId === session.id ? 'hidden' : ''}`}
-            >
-              <button
-                onClick={(e) => startEdit(e, session)}
-                className="p-1.5 hover:bg-stone-400/20 dark:hover:bg-slate-700 rounded-lg transition-colors text-stone-500 hover:text-primary-500 mr-1"
-                title={t('sessionList.rename')}
-              >
-                <FiEdit2 size={13} />
-              </button>
-              <button
-                onClick={(e) => handleDelete(e, session.id)}
-                className="p-1.5 hover:bg-red-50/80 dark:hover:bg-red-500/10 rounded-lg transition-colors text-stone-500 hover:text-red-500"
-                title={t('sessionList.delete')}
-              >
-                <FiTrash2 size={13} />
-              </button>
-            </div>
+            {/* 右侧区域：转圈/亮点（槽位1） + 编辑（槽位2） + 删除（槽位3），三槽位等宽等距 */}
+            {(() => {
+              if (editingId === session.id) {
+                return <div className="flex flex-shrink-0" />;
+              }
+              const isCurrent = currentSessionId === session.id;
+              const isLoading = loadingSessionIds.includes(session.id);
+              /** 完成亮点：非选中 + 未读才显示；选中不显示 */
+              const showDot = !isCurrent && !isLoading && session.unreadAssistantReply;
+              /** 统一槽位：固定 28px 方块，内含 13px 图标，间距统一 gap-0.5(2px) */
+              const slot = 'flex items-center justify-center w-7 h-7 shrink-0';
+              return (
+                <div className="flex flex-shrink-0 items-start gap-0.5 pt-[1px]">
+                  {/* 槽位1：转圈（loading）或亮点（完成未读），始终占位保持布局稳定 */}
+                  <span
+                    className={`${slot} transition-opacity ${
+                      isLoading || showDot ? 'opacity-100' : 'opacity-0'
+                    }`}
+                    title={isLoading ? t('sessionList.loading') : showDot ? t('sessionList.badgeTitle') : undefined}
+                  >
+                    {isLoading ? (
+                      <FiLoader
+                        size={13}
+                        className="animate-spin text-primary-500 dark:text-primary-400"
+                        aria-label={t('sessionList.loading')}
+                      />
+                    ) : showDot ? (
+                      <span className="inline-block h-1.5 w-1.5 rounded-full bg-primary-500" />
+                    ) : null}
+                  </span>
+
+                  {/* 槽位2：编辑按钮 */}
+                  <div className={`${slot} opacity-0 group-hover:opacity-100 transition-opacity`}>
+                    <button
+                      onClick={(e) => startEdit(e, session)}
+                      className="flex items-center justify-center w-full h-full rounded-lg hover:bg-stone-400/20 dark:hover:bg-slate-700 transition-colors text-stone-600 dark:text-slate-300 hover:text-primary-500"
+                      title={t('sessionList.rename')}
+                    >
+                      <FiEdit2 size={13} />
+                    </button>
+                  </div>
+
+                  {/* 槽位3：删除按钮 */}
+                  <div className={`${slot} opacity-0 group-hover:opacity-100 transition-opacity`}>
+                    <button
+                      onClick={(e) => handleDelete(e, session.id)}
+                      className="flex items-center justify-center w-full h-full rounded-lg hover:bg-red-50/80 dark:hover:bg-red-500/10 transition-colors text-stone-600 dark:text-slate-300 hover:text-red-500"
+                      title={t('sessionList.delete')}
+                    >
+                      <FiTrash2 size={13} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
       ))}
