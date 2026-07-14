@@ -20,10 +20,9 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
 
-    /* Path mappings */
-    "baseUrl": ".",
+    /* Path mappings（相对本配置文件，避免已弃用的 baseUrl） */
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["./src/*"]
     }
   },
   "include": ["src", "electron"],
