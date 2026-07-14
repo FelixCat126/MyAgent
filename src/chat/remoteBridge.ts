@@ -12,6 +12,7 @@ import {
   resolveInjectExtras,
   tryClaimSessionSend,
 } from './sendPipeline';
+import { resubmitEditedUserMessage } from './resubmitEditedUserMessage';
 
 export function installRemoteChatBridge(opts: {
   runModelReply: (
@@ -155,58 +156,26 @@ export function installRemoteChatBridge(opts: {
 
       chat.switchSession(sessionId);
 
-      const msgs = sess.messages;
-      const sourceIndex = msgs.findIndex((m) => m.id === messageId);
-      if (sourceIndex < 0) throw new Error('remote: message not found');
-      const sourceMessage = msgs[sourceIndex];
-      if (sourceMessage.role !== 'user') throw new Error('remote: only user messages can be resent');
-
-      if (!textContent) throw new Error(tUi(locale, 'remoteGateway.emptySend'));
-
-      if (!tryClaimSessionSend(sessionId)) {
-        throw new Error(tUi(locale, 'remoteGateway.busySession'));
-      }
-
-      let priorMessages = msgs.slice(0, sourceIndex);
-      const userMessage: Message = {
-        ...sourceMessage,
-        role: 'user',
-        content: textContent,
-        timestamp: Date.now(),
-        model: activeModel.name,
-      };
-      const staleMessageIds = msgs.slice(sourceIndex + 1).map((m) => m.id);
-
+      const webOn = effectiveWebEnabled(sess, useWebSearchStore.getState().enabled);
       try {
-        const webOn = effectiveWebEnabled(sess, useWebSearchStore.getState().enabled);
-        const ensured = await ensureContextBeforeSend({
+        const result = await resubmitEditedUserMessage({
           sessionId,
-          priorMessages,
-          draftInput: textContent,
+          messageId,
+          textContent,
           model: activeModel,
           locale: locale === 'en' ? 'en' : 'zh',
           summaryTitle: tUi(locale, 'chat.contextSummaryTitle'),
-          editSourceMessageId: messageId,
-          injectExtras: resolveInjectExtras({ webEnabled: webOn }),
+          webEnabled: webOn,
+          runModelReply: opts.runModelReply,
         });
-        priorMessages = ensured.priorMessages;
-
-        chat.updateMessage(sessionId, messageId, {
-          content: textContent,
-          timestamp: userMessage.timestamp,
-          model: activeModel.name,
-        });
-        if (staleMessageIds.length > 0) chat.removeMessages(sessionId, staleMessageIds);
-
-        if (
-          !addFullTextBypassIfNeeded({
-            sessionId,
-            modelName: activeModel.name,
-            textContent,
-            hasAttachments: Boolean(sourceMessage.files?.length),
-          })
-        ) {
-          await opts.runModelReply(sessionId, priorMessages, userMessage, activeModel);
+        if (!result.ok) {
+          if (result.reason === 'busy') throw new Error(tUi(locale, 'remoteGateway.busySession'));
+          if (result.reason === 'empty') throw new Error(tUi(locale, 'remoteGateway.emptySend'));
+          if (result.reason === 'session-missing') {
+            throw new Error(tUi(locale, 'remoteGateway.sessionMissing'));
+          }
+          if (result.reason === 'not-user') throw new Error('remote: only user messages can be resent');
+          throw new Error('remote: message not found');
         }
         await flushZustandFilePersist();
       } catch (e) {

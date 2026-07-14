@@ -1,0 +1,31 @@
+import type React from 'react';
+import type { Message } from '../types';
+import type { Locale } from '../i18n/types';
+import type { StreamingSpeechReader } from '../utils/streamingSpeech';
+
+export type RunModelReplyUi = {
+  locale: Locale;
+  t: (key: string, params?: Record<string, string | number>) => string;
+  consumeVoiceWakeReply: () => boolean;
+  setVoiceReplySpeaking: (v: boolean) => void;
+  setVectorRagStatus: (v: { text: string; tone: 'success' | 'info' | 'error' } | null) => void;
+  setImageGenProgress: (v: { current: number; total: number; messageId: string } | null) => void;
+  setIsStreaming: (v: boolean) => void;
+  setStreamingTargetAssistantId: (id: string | null) => void;
+  setInlineImageIndex: React.Dispatch<React.SetStateAction<number>>;
+  inlineImageIndexRef: React.MutableRefObject<number>;
+  streamingAssistantIdRef: React.MutableRefObject<string | null>;
+  streamingSessionIdRef: React.MutableRefObject<string | null>;
+  streamUnsubRef: React.MutableRefObject<(() => void) | null>;
+  streamHadErrorRef: React.MutableRefObject<boolean>;
+  streamCancelledByUserRef: React.MutableRefObject<boolean>;
+  imageGenCancelledRef: React.MutableRefObject<boolean>;
+  imageGenSyncRef: React.MutableRefObject<{ sessionId: string; messageId: string } | null>;
+  speechReaderRef: React.MutableRefObject<StreamingSpeechReader | null>;
+  addMessage: (sessionId: string, message: Message) => void;
+  updateMessage: (sessionId: string, messageId: string, patch: Partial<Message>) => void;
+  appendToMessage: (sessionId: string, messageId: string, chunk: string) => void;
+  appendReasoningToMessage: (sessionId: string, messageId: string, chunk: string) => void;
+  removeMessage: (sessionId: string, messageId: string) => void;
+  clearLoadingForSession: (sessionId: string) => void;
+};

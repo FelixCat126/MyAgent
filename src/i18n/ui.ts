@@ -85,6 +85,7 @@ const zh: Record<string, string> = {
   'chat.documentDraftingTerminal': '正在流式起草文档…',
   'chat.buildFailed': '构建请求失败：',
   'chat.requestFailed': '请求失败：',
+  'chat.sendFailed': '发送失败：',
   'chat.stopped': '（已停止）',
   'chat.streamInterrupted': '【流式输出中断】以下为本机或远端接口报错（已在上方尽可能保留模型已生成的内容）：',
   'chat.stoppedBanner': '（已停止生成）',
@@ -493,6 +494,7 @@ const en: Record<string, string> = {
   'chat.documentDraftingTerminal': 'Streaming document draft…',
   'chat.buildFailed': 'Failed to build the request: ',
   'chat.requestFailed': 'Request failed: ',
+  'chat.sendFailed': 'Send failed: ',
   'chat.stopped': '(Stopped)',
   'chat.streamInterrupted':
     '[Stream interrupted] The following error occurred (any model output above should be preserved when possible):',

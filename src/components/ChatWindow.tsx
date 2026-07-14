@@ -51,6 +51,7 @@ import {
   resolveInjectExtras,
   tryClaimSessionSend,
 } from '../chat/sendPipeline';
+import { resubmitEditedUserMessage } from '../chat/resubmitEditedUserMessage';
 import { runModelReply as executeModelReply, type RunModelReplyUi } from '../chat/runModelReply';
 import { installRemoteChatBridge } from '../chat/remoteBridge';
 
@@ -714,7 +715,9 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
       await runModelReply(sendSessionId, priorMessages, userMessage, activeModel);
     } catch (e) {
       clearLoadingForSession(sendSessionId);
-      throw e;
+      console.error('[handleSend]', e);
+      const detail = e instanceof Error ? e.message : String(e);
+      window.alert(t('chat.sendFailed') + detail);
     }
   };
 
@@ -729,71 +732,34 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     }
 
     const sendSessionId = currentSessionId;
-    const sourceIndex = messages.findIndex((m) => m.id === sourceMessage.id);
-    if (sourceIndex < 0) {
-      return;
-    }
-    if (!tryClaimSessionSend(sendSessionId)) return;
+    if (messages.findIndex((m) => m.id === sourceMessage.id) < 0) return;
 
-    let priorMessages = messages.slice(0, sourceIndex);
+    const webOn = currentSession
+      ? effectiveWebEnabled(currentSession, webSearchEnabled)
+      : webSearchEnabled;
 
     try {
       stickToBottomRef.current = true;
-      const webOn = currentSession
-        ? effectiveWebEnabled(currentSession, webSearchEnabled)
-        : webSearchEnabled;
-      const ensured = await ensureContextBeforeSend({
+      const result = await resubmitEditedUserMessage({
         sessionId: sendSessionId,
-        priorMessages,
-        draftInput: textContent,
+        messageId: sourceMessage.id,
+        textContent,
         model: activeModel,
         locale: uiLocale === 'en' ? 'en' : 'zh',
         summaryTitle: t('chat.contextSummaryTitle'),
-        editSourceMessageId: sourceMessage.id,
-        injectExtras: resolveInjectExtras({ webEnabled: webOn }),
+        webEnabled: webOn,
+        runModelReply,
       });
-      priorMessages = ensured.priorMessages;
-
-      const latest = useChatStore.getState().sessions.find((s) => s.id === sendSessionId)?.messages ?? messages;
-      const latestSourceIndex = latest.findIndex((m) => m.id === sourceMessage.id);
-      if (latestSourceIndex < 0) {
-        clearLoadingForSession(sendSessionId);
+      if (!result.ok) {
+        if (result.reason === 'busy') return;
         return;
       }
-      priorMessages = latest.slice(0, latestSourceIndex);
-
-      const userMessage: Message = {
-        ...sourceMessage,
-        role: 'user',
-        content: textContent,
-        timestamp: Date.now(),
-        model: activeModel.name,
-      };
-
-      const staleMessageIds = latest.slice(latestSourceIndex + 1).map((m) => m.id);
-      updateMessage(sendSessionId, sourceMessage.id, {
-        content: textContent,
-        timestamp: userMessage.timestamp,
-        model: activeModel.name,
-      });
-      if (staleMessageIds.length > 0) removeMessages(sendSessionId, staleMessageIds);
       setEditingMessageId(null);
-
-      if (
-        addFullTextBypassIfNeeded({
-          sessionId: sendSessionId,
-          modelName: activeModel.name,
-          textContent,
-          hasAttachments: Boolean(sourceMessage.files?.length),
-        })
-      ) {
-        return;
-      }
-
-      await runModelReply(sendSessionId, priorMessages, userMessage, activeModel);
     } catch (e) {
       clearLoadingForSession(sendSessionId);
-      throw e;
+      console.error('[handleSubmitEditedMessage]', e);
+      const detail = e instanceof Error ? e.message : String(e);
+      window.alert(t('chat.sendFailed') + detail);
     }
   };
 
