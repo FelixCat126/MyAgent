@@ -1,11 +1,11 @@
 import type { Message } from '../types';
 import type { Locale } from '../i18n/types';
 import { t } from '../i18n/ui';
+import { ATTACH_DOCUMENT_MAX_TEXT_CHARS } from '../chat/payloadBoundary';
+
+export { ATTACH_DOCUMENT_MAX_TEXT_CHARS };
 
 const DOC_EXTS = /\.(xlsx|xlsm|xls|docx|doc|md|markdown|txt|csv)$/i;
-
-/** 与 electron/ipc/documents 中正文字数上限一致 */
-const ATTACH_DOCUMENT_MAX_TEXT_CHARS = 600_000;
 
 function isDocumentAttachment(f: { type: string; name: string }): boolean {
   if (f.type.startsWith('image/')) return false;

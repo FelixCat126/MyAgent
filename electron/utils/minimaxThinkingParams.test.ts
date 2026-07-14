@@ -30,7 +30,22 @@ describe('MiniMax 思考参数', () => {
     expect(nonStream).toEqual(stream);
   });
 
-  it('非 MiniMax 仍用通用参数', () => {
+  it('智谱 / glm-* 使用 thinking 对象，不混传 enable_thinking', () => {
+    const byHost = buildThinkingParams({
+      apiUrl: 'https://open.bigmodel.cn/api/paas/v4',
+      modelName: 'glm-4.7',
+    });
+    const byName = buildThinkingParams({
+      apiUrl: 'https://example.com/v1',
+      modelName: 'glm-4.7',
+    });
+    expect(byHost).toEqual({ thinking: { type: 'enabled' } });
+    expect(byName).toEqual({ thinking: { type: 'enabled' } });
+    expect(byHost.enable_thinking).toBeUndefined();
+    expect(byHost.reasoning_effort).toBeUndefined();
+  });
+
+  it('非 MiniMax / 非智谱仍用通用启发式参数', () => {
     const p = buildThinkingParams({
       apiUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       modelName: 'qwen-plus',

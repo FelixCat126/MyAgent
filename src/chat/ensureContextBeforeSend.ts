@@ -1,56 +1,88 @@
 import type { Message, ModelConfig } from '../types';
-import { shouldCompressContext, estimateSessionChars } from '../utils/contextBudget';
+import {
+  canPerformCompressionSplit,
+  estimateSessionChars,
+  shouldCompressContext,
+} from '../utils/contextBudget';
 import { resolveContextSoftLimitChars } from '../utils/inferContextWindow';
 import { compressSessionContext, type CallModelFn } from '../utils/compressSessionContext';
 import { useChatStore } from '../store/chatStore';
 import { estimateInjectedPayloadOverheadChars } from './payloadBoundary';
+import type { InjectExtras } from './sendPipeline';
 
 export type EnsureContextBeforeSendResult = {
   priorMessages: Message[];
   didCompress: boolean;
 };
 
+export type EnsureContextStoreApi = {
+  setCompressingContext: (sessionId: string | null) => void;
+  clearCompressingForSession: (sessionId: string) => void;
+  getSessionMessages: (sessionId: string) => Message[] | undefined;
+  replaceMessagesPrefix: (
+    sessionId: string,
+    keepFromIndex: number,
+    summaryMessage: Message
+  ) => void;
+  replaceMessagesPrefixBeforeIndex: (
+    sessionId: string,
+    beforeIndex: number,
+    keepFromIndex: number,
+    summaryMessage: Message
+  ) => void;
+};
+
+function defaultStoreApi(): EnsureContextStoreApi {
+  return {
+    setCompressingContext: (id) => useChatStore.getState().setCompressingContext(id),
+    clearCompressingForSession: (id) => useChatStore.getState().clearCompressingForSession(id),
+    getSessionMessages: (id) =>
+      useChatStore.getState().sessions.find((s) => s.id === id)?.messages,
+    replaceMessagesPrefix: (...args) => useChatStore.getState().replaceMessagesPrefix(...args),
+    replaceMessagesPrefixBeforeIndex: (...args) =>
+      useChatStore.getState().replaceMessagesPrefixBeforeIndex(...args),
+  };
+}
+
 function needsCompression(
   priorMessages: Message[],
   draftInput: string,
   model: ModelConfig,
-  extras?: { webEnabled?: boolean; ragLikely?: boolean; workspaceLikely?: boolean }
+  extras?: InjectExtras
 ): boolean {
+  if (priorMessages.length < 4) return false;
   const soft = resolveContextSoftLimitChars(model);
   const overhead = estimateInjectedPayloadOverheadChars({
     webEnabled: extras?.webEnabled,
     ragLikely: extras?.ragLikely,
     workspaceLikely: extras?.workspaceLikely,
+    ragMaxChars: extras?.ragMaxChars,
+    workspaceMaxChars: extras?.workspaceMaxChars,
   });
-  /** 用「软上限 − 注入开销」作为有效预算，避免存储层安全但 payload 超限 */
   const effectiveLimit = Math.max(soft - overhead, Math.floor(soft * 0.5));
-  if (shouldCompressContext(priorMessages, draftInput, effectiveLimit, undefined, model)) {
-    return true;
-  }
-  /** 双重确认：含开销的总量 */
-  return estimateSessionChars(priorMessages, draftInput) + overhead >= soft * 0.95;
+  const overBudget =
+    shouldCompressContext(priorMessages, draftInput, effectiveLimit, undefined, model) ||
+    estimateSessionChars(priorMessages, draftInput) + overhead >= soft * 0.95;
+  if (!overBudget) return false;
+  /** 与 compressSessionContext 可行性对齐，避免空转压缩 UI */
+  return canPerformCompressionSplit(priorMessages, soft);
 }
 
 /**
  * 发送前统一上下文门禁：按 sessionId 压缩（若需要），写回 store，返回最新 prior。
- * 桌面发送 / 编辑重发 / 远端桥接共用，避免入口行为分叉。
+ * store 可注入以便单测；默认走 chatStore。
  */
 export async function ensureContextBeforeSend(opts: {
   sessionId: string;
-  /** 压缩判定与摘要所用的历史（不含本轮即将发送的用户消息） */
   priorMessages: Message[];
   draftInput: string;
   model: ModelConfig;
   locale?: 'zh' | 'en';
   summaryTitle?: string;
-  /**
-   * 编辑重发：只压缩 source 之前的前缀，写回时保留 source 及之后消息。
-   * 压缩后用该 id 在会话中定位，再切片得到 prior。
-   */
   editSourceMessageId?: string;
   callModel?: CallModelFn;
-  /** 发送时可能注入的额外上下文（联网/RAG/工作区），计入压缩门禁 */
-  injectExtras?: { webEnabled?: boolean; ragLikely?: boolean; workspaceLikely?: boolean };
+  injectExtras?: InjectExtras;
+  store?: EnsureContextStoreApi;
 }): Promise<EnsureContextBeforeSendResult> {
   const {
     sessionId,
@@ -62,28 +94,32 @@ export async function ensureContextBeforeSend(opts: {
     editSourceMessageId,
     callModel,
     injectExtras,
+    store: storeIn,
   } = opts;
 
   if (!needsCompression(priorMessages, draftInput, model, injectExtras)) {
     return { priorMessages, didCompress: false };
   }
 
-  const chat = useChatStore.getState();
-  chat.setCompressingContext(sessionId);
+  const store = storeIn ?? defaultStoreApi();
+  store.setCompressingContext(sessionId);
   try {
+    const msgs = store.getSessionMessages(sessionId) ?? priorMessages;
     const sourceIndex = editSourceMessageId
-      ? (chat.sessions.find((s) => s.id === sessionId)?.messages.findIndex((m) => m.id === editSourceMessageId) ??
-        -1)
+      ? msgs.findIndex((m) => m.id === editSourceMessageId)
       : -1;
 
     const replace =
       sourceIndex >= 0
         ? (sid: string, keepFromIndex: number, summaryMessage: Message) => {
-            useChatStore
-              .getState()
-              .replaceMessagesPrefixBeforeIndex(sid, sourceIndex, keepFromIndex, summaryMessage);
+            store.replaceMessagesPrefixBeforeIndex(
+              sid,
+              sourceIndex,
+              keepFromIndex,
+              summaryMessage
+            );
           }
-        : chat.replaceMessagesPrefix;
+        : store.replaceMessagesPrefix;
 
     const compressed = await compressSessionContext({
       sessionId,
@@ -99,7 +135,7 @@ export async function ensureContextBeforeSend(opts: {
       return { priorMessages, didCompress: false };
     }
 
-    const after = useChatStore.getState().sessions.find((s) => s.id === sessionId)?.messages;
+    const after = store.getSessionMessages(sessionId);
     if (editSourceMessageId && after) {
       const srcIdx = after.findIndex((m) => m.id === editSourceMessageId);
       if (srcIdx >= 0) {
@@ -112,6 +148,6 @@ export async function ensureContextBeforeSend(opts: {
       didCompress: true,
     };
   } finally {
-    useChatStore.getState().clearCompressingForSession(sessionId);
+    store.clearCompressingForSession(sessionId);
   }
 }

@@ -49,8 +49,9 @@ export async function withOpenAiCompatibleFallbacks<T>(opts: {
       try {
         onThinkingFallback?.(firstErr);
         return await request('multimodal', false);
-      } catch {
-        throw firstErr;
+      } catch (lastErr: unknown) {
+        /** 优先抛出最近一次失败，避免掩盖真实降级错误 */
+        throw lastErr instanceof Error ? lastErr : firstErr;
       }
     }
     throw firstErr;

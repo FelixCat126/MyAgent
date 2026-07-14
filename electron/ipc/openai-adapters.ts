@@ -4,6 +4,7 @@ import {
   looksLikeMiniMaxChat,
   resolveAnthropicMessagesUrl,
 } from '../../src/utils/chatApiMode';
+import { isContextSummaryMessage } from '../../src/chat/payloadBoundary';
 
 function normalizeTextContent(raw: unknown): string {
   if (typeof raw === 'string') return raw;
@@ -54,12 +55,6 @@ export function errorIndicatesImageUnsupported(err: unknown): boolean {
   );
 }
 
-function isContextSummary(msg: Message): boolean {
-  if (msg.meta?.kind === 'context-summary') return true;
-  const c = String(msg.content ?? '');
-  return c.startsWith('【上下文摘要】') || c.startsWith('[Context summary]');
-}
-
 export function formatOpenAITextOnly(messages: Message[]): Array<{ role: string; content: string }> {
   return messages.map((msg) => {
     const hadImage = msg.files?.some((f) => f.type.startsWith('image/'));
@@ -67,7 +62,7 @@ export function formatOpenAITextOnly(messages: Message[]): Array<{ role: string;
     if (hadImage && !content.trim()) {
       content = '（附件）';
     }
-    const role = isContextSummary(msg) ? 'system' : msg.role;
+    const role = isContextSummaryMessage(msg) ? 'system' : msg.role;
     return { role, content };
   });
 }
@@ -80,7 +75,7 @@ export function formatOpenAIMultimodal(
 > {
   return messages.map((msg) => {
     const text = normalizeTextContent((msg as { content?: unknown }).content);
-    if (isContextSummary(msg)) {
+    if (isContextSummaryMessage(msg)) {
       return { role: 'system', content: text };
     }
     if (msg.role === 'user' && msg.files && msg.files.some((f) => f.type.startsWith('image/'))) {
@@ -123,7 +118,7 @@ export function formatAnthropicMessages(messages: Message[]): {
   const out: Array<{ role: string; content: string | Array<Record<string, unknown>> }> = [];
   for (const msg of messages) {
     /** 上下文摘要并入 system，避免污染 assistant 多轮语义 */
-    if (msg.role === 'system' || isContextSummary(msg)) {
+    if (msg.role === 'system' || isContextSummaryMessage(msg)) {
       const t = normalizeTextContent((msg as { content?: unknown }).content);
       system = system ? `${system}\n${t}` : t;
       continue;
@@ -184,12 +179,24 @@ export function buildThinkingParams(opts?: {
   modelName?: string;
   stream?: boolean;
 }): Record<string, unknown> {
-  if (isMiniMaxChatEndpoint(opts?.apiUrl ?? '', opts?.modelName ?? '')) {
+  const apiUrl = opts?.apiUrl ?? '';
+  const modelName = opts?.modelName ?? '';
+
+  if (isMiniMaxChatEndpoint(apiUrl, modelName)) {
     return {
       thinking: { type: 'adaptive' },
       reasoning_split: true,
     };
   }
+
+  /** 智谱：官方为 thinking: { type: 'enabled' }；混传 enable_thinking / 字符串 thinking 会 400 */
+  if (isZhipuEndpoint(apiUrl, modelName)) {
+    return {
+      thinking: { type: 'enabled' },
+    };
+  }
+
+  /** 其它 OpenAI 兼容网关：保留启发式；不支持时由 400 降级去掉 */
   return {
     enable_thinking: true,
     thinking: 'enabled',

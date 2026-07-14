@@ -4,6 +4,7 @@ import {
   PRODUCT_CONTEXT_SOFT_LIMIT_CHARS,
   resolveContextSoftLimitChars,
 } from './inferContextWindow';
+import { ATTACH_DOCUMENT_MAX_TEXT_CHARS } from '../chat/payloadBoundary';
 
 /** @deprecated 请用 PRODUCT_CONTEXT_SOFT_LIMIT_CHARS；保留别名以免旧引用断裂 */
 export const CONTEXT_SOFT_LIMIT_CHARS = PRODUCT_CONTEXT_SOFT_LIMIT_CHARS;
@@ -14,8 +15,8 @@ export const CONTEXT_COMPRESS_RATIO = 0.95;
 export const CONTEXT_KEEP_RECENT_RATIO = 0.4;
 /** 摘要消息 content 前缀（可见） */
 export const CONTEXT_SUMMARY_PREFIX = '【上下文摘要】';
-/** 单附件计入预算的字符上限（避免按整文件 size 把进度条打满） */
-const ATTACHMENT_CHARS_CAP = 50_000;
+/** 图片附件计入预算的字符上限 */
+const ATTACHMENT_IMAGE_CHARS_CAP = 8_000;
 
 export type EstimableMessage = {
   content?: string;
@@ -24,15 +25,16 @@ export type EstimableMessage = {
   meta?: Message['meta'];
 };
 
-/** 单条消息对上下文压力的粗估（content + reasoning + 附件名/体积启发式） */
+/** 单条消息对上下文压力的粗估（content + reasoning + 附件；文档上限对齐 enrich） */
 export function estimateMessageChars(m: EstimableMessage): number {
   let n = String(m.content ?? '').length + String(m.reasoning ?? '').length;
   for (const f of m.files ?? []) {
     n += String(f.name ?? '').length;
     const size = typeof f.size === 'number' && Number.isFinite(f.size) ? Math.max(0, f.size) : 0;
     const isImage = String(f.type ?? '').startsWith('image/');
-    /** 图片按较小常数估；文本附件按 size 封顶累加 */
-    n += isImage ? Math.min(size, 8_000) : Math.min(size, ATTACHMENT_CHARS_CAP);
+    n += isImage
+      ? Math.min(size, ATTACHMENT_IMAGE_CHARS_CAP)
+      : Math.min(size, ATTACH_DOCUMENT_MAX_TEXT_CHARS);
   }
   return n;
 }
@@ -65,7 +67,10 @@ export function resolveContextProgressFullChars(
   return Math.floor(resolveContextSoftLimitChars(model ?? null) * ratio);
 }
 
-/** 从末尾保留消息，使总字符约不超过 targetChars，且至少 keepMin 条 */
+/**
+ * 从末尾保留消息，使总字符约不超过 targetChars，且至少 keepMin 条。
+ * 若按 target 无法拆出 older，但消息数 > keepMin，则强制丢掉较早段，避免「该压却压不动」。
+ */
 export function splitMessagesForCompression(
   messages: Message[],
   targetRecentChars?: number,
@@ -87,7 +92,9 @@ export function splitMessagesForCompression(
     recentChars += len;
     keepFrom = i;
   }
-  /** 至少丢掉一些才算压缩 */
+  if (keepFrom <= 0 && messages.length > keepMin) {
+    keepFrom = messages.length - keepMin;
+  }
   if (keepFrom <= 0) {
     return { older: [], recent: messages, keepFromIndex: 0 };
   }
@@ -96,6 +103,14 @@ export function splitMessagesForCompression(
     recent: messages.slice(keepFrom),
     keepFromIndex: keepFrom,
   };
+}
+
+/** 是否具备可执行的压缩切分（与 compressSessionContext 一致） */
+export function canPerformCompressionSplit(
+  messages: Message[],
+  softLimitChars?: number
+): boolean {
+  return splitMessagesForCompression(messages, undefined, 6, softLimitChars).older.length > 0;
 }
 
 export function buildCompressionPrompt(

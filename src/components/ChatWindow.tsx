@@ -59,15 +59,23 @@ import {
   documentArtifactBaseNameFromContent,
   documentExportFormatsFromHint,
   inferDocumentExportHint,
-  shouldBypassModelForFullTextDownload,
 } from '../utils/documentExportIntent';
 import { flushZustandFilePersist } from '../utils/zustandFileStorage';
 import {
   estimateSessionChars,
   resolveContextProgressFullChars,
 } from '../utils/contextBudget';
+import { resolveContextSoftLimitChars } from '../utils/inferContextWindow';
 import { ensureContextBeforeSend } from '../chat/ensureContextBeforeSend';
-import { FULL_TEXT_DOWNLOAD_BYPASS_REPLY } from '../chat/fullTextDownloadBypass';
+import {
+  estimateInjectedPayloadOverheadChars,
+  messagesExceedSanitizeLimit,
+} from '../chat/payloadBoundary';
+import {
+  addFullTextBypassIfNeeded,
+  resolveInjectExtras,
+  tryClaimSessionSend,
+} from '../chat/sendPipeline';
 
 function userQueryTextForRag(m: Message): string {
   const t = (m.content || '').trim();
@@ -760,7 +768,6 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     appendReasoningToMessage,
     loadingSessionId,
     loadingSessionIds,
-    setLoadingSession,
     clearLoadingForSession,
     updateSessionTitle,
     setSessionWebOverride,
@@ -2028,7 +2035,14 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     const bridge = {
       getSnapshot: async () => {
         const chat = useChatStore.getState();
-        const { sessions: ss, currentSessionId: cid, loadingSessionId, loadingSessionIds } = chat;
+        const {
+          sessions: ss,
+          currentSessionId: cid,
+          loadingSessionId,
+          loadingSessionIds,
+          compressingSessionIds,
+          compressingSessionId,
+        } = chat;
         return {
           sessions: ss.map((s) => ({
             id: s.id,
@@ -2041,6 +2055,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           currentSessionId: cid,
           loadingSessionId,
           loadingSessionIds,
+          compressingSessionId,
+          compressingSessionIds,
         };
       },
       getActiveModelLabel: async () => {
@@ -2137,9 +2153,6 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         if (!sess) throw new Error(tUi(locale, 'remoteGateway.sessionMissing'));
 
         chat.switchSession(sessionId);
-        if (chat.isLoadingSession(sessionId)) {
-          throw new Error(tUi(locale, 'remoteGateway.busySession'));
-        }
 
         const msgs = sess.messages;
         const sourceIndex = msgs.findIndex((m) => m.id === messageId);
@@ -2148,6 +2161,10 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         if (sourceMessage.role !== 'user') throw new Error('remote: only user messages can be resent');
 
         if (!textContent) throw new Error(tUi(locale, 'remoteGateway.emptySend'));
+
+        if (!tryClaimSessionSend(sessionId)) {
+          throw new Error(tUi(locale, 'remoteGateway.busySession'));
+        }
 
         let priorMessages = msgs.slice(0, sourceIndex);
         const userMessage: Message = {
@@ -2159,23 +2176,20 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         };
         const staleMessageIds = msgs.slice(sourceIndex + 1).map((m) => m.id);
 
-        if (chat.isCompressingSession(sessionId)) {
-          throw new Error(tUi(locale, 'remoteGateway.busySession'));
-        }
-
-        const ensured = await ensureContextBeforeSend({
-          sessionId,
-          priorMessages,
-          draftInput: textContent,
-          model: activeModel,
-          locale: locale === 'en' ? 'en' : 'zh',
-          summaryTitle: tUi(locale, 'chat.contextSummaryTitle'),
-          editSourceMessageId: messageId,
-        });
-        priorMessages = ensured.priorMessages;
-
-        chat.setLoadingSession(sessionId);
         try {
+          const webOn = effectiveWebEnabled(sess, useWebSearchStore.getState().enabled);
+          const ensured = await ensureContextBeforeSend({
+            sessionId,
+            priorMessages,
+            draftInput: textContent,
+            model: activeModel,
+            locale: locale === 'en' ? 'en' : 'zh',
+            summaryTitle: tUi(locale, 'chat.contextSummaryTitle'),
+            editSourceMessageId: messageId,
+            injectExtras: resolveInjectExtras({ webEnabled: webOn }),
+          });
+          priorMessages = ensured.priorMessages;
+
           chat.updateMessage(sessionId, messageId, {
             content: textContent,
             timestamp: userMessage.timestamp,
@@ -2183,17 +2197,14 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           });
           if (staleMessageIds.length > 0) chat.removeMessages(sessionId, staleMessageIds);
 
-          if (shouldBypassModelForFullTextDownload(textContent, Boolean(sourceMessage.files?.length))) {
-            chat.addMessage(sessionId, {
-              id: `${Date.now() + 1}-a`,
-              role: 'assistant',
-              content:
-                FULL_TEXT_DOWNLOAD_BYPASS_REPLY,
-              timestamp: Date.now(),
-              model: activeModel.name,
-            });
-            chat.clearLoadingForSession(sessionId);
-          } else {
+          if (
+            !addFullTextBypassIfNeeded({
+              sessionId,
+              modelName: activeModel.name,
+              textContent,
+              hasAttachments: Boolean(sourceMessage.files?.length),
+            })
+          ) {
             await runModelReplyRef.current(sessionId, priorMessages, userMessage, activeModel);
           }
           await flushZustandFilePersist();
@@ -2223,9 +2234,6 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           throw new Error(tUi(locale, 'remoteGateway.sessionMissing'));
         }
         chat.switchSession(sessionId);
-        if (chat.isLoadingSession(sessionId) || chat.isCompressingSession(sessionId)) {
-          throw new Error(tUi(locale, 'remoteGateway.busySession'));
-        }
         let priorMessages = sess.messages.slice();
         const att = tUi(locale, 'chat.attachment');
         const textContent = content.trim() || (attachments.length > 0 ? att : '');
@@ -2233,18 +2241,23 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           throw new Error(tUi(locale, 'remoteGateway.emptySend'));
         }
 
-        const ensured = await ensureContextBeforeSend({
-          sessionId,
-          priorMessages,
-          draftInput: textContent,
-          model: activeModel,
-          locale: locale === 'en' ? 'en' : 'zh',
-          summaryTitle: tUi(locale, 'chat.contextSummaryTitle'),
-        });
-        priorMessages = ensured.priorMessages;
+        if (!tryClaimSessionSend(sessionId)) {
+          throw new Error(tUi(locale, 'remoteGateway.busySession'));
+        }
 
-        chat.setLoadingSession(sessionId);
         try {
+          const webOn = effectiveWebEnabled(sess, useWebSearchStore.getState().enabled);
+          const ensured = await ensureContextBeforeSend({
+            sessionId,
+            priorMessages,
+            draftInput: textContent,
+            model: activeModel,
+            locale: locale === 'en' ? 'en' : 'zh',
+            summaryTitle: tUi(locale, 'chat.contextSummaryTitle'),
+            injectExtras: resolveInjectExtras({ webEnabled: webOn }),
+          });
+          priorMessages = ensured.priorMessages;
+
           if (priorMessages.length === 0) {
             const titleCandidate =
               (textContent === att ? tUi(locale, 'chat.attachmentTitle') : textContent) ||
@@ -2264,17 +2277,14 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           };
           chat.addMessage(sessionId, userMessage);
 
-          if (shouldBypassModelForFullTextDownload(textContent, attachments.length > 0)) {
-            chat.addMessage(sessionId, {
-              id: `${Date.now() + 1}-a`,
-              role: 'assistant',
-              content:
-                FULL_TEXT_DOWNLOAD_BYPASS_REPLY,
-              timestamp: Date.now(),
-              model: activeModel.name,
-            });
-            chat.clearLoadingForSession(sessionId);
-          } else {
+          if (
+            !addFullTextBypassIfNeeded({
+              sessionId,
+              modelName: activeModel.name,
+              textContent,
+              hasAttachments: attachments.length > 0,
+            })
+          ) {
             await runModelReplyRef.current(sessionId, priorMessages, userMessage, activeModel);
           }
           await flushZustandFilePersist();
@@ -2308,8 +2318,6 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
 
   const handleSend = async () => {
     if ((!input.trim() && attachments.length === 0) || !currentSessionId) return;
-    if (useChatStore.getState().loadingSessionIds.includes(currentSessionId)) return;
-    if (useChatStore.getState().isCompressingSession(currentSessionId)) return;
 
     cancelVoiceReply();
     if (!sendFromVoiceWakeRef.current) {
@@ -2325,112 +2333,113 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
 
     /** 全程固定会话 id，避免压缩异步期间切会话写串 */
     const sendSessionId = currentSessionId;
+    if (!tryClaimSessionSend(sendSessionId)) return;
+
     const uploadedFiles: FileInfo[] = [];
 
-    if (attachments.length > 0) {
-      let uploadFailed = 0;
-      for (const file of attachments) {
-        try {
-          const buffer = await file.arrayBuffer();
-          const info = await window.electron.uploadFile({
-            name: file.name,
-            buffer: Array.from(new Uint8Array(buffer)),
-            type: file.type,
-            size: file.size,
-          });
-          uploadedFiles.push(info);
-        } catch (e) {
-          console.error('上传附件失败', e);
-          uploadFailed += 1;
+    try {
+      if (attachments.length > 0) {
+        let uploadFailed = 0;
+        for (const file of attachments) {
+          try {
+            const buffer = await file.arrayBuffer();
+            const info = await window.electron.uploadFile({
+              name: file.name,
+              buffer: Array.from(new Uint8Array(buffer)),
+              type: file.type,
+              size: file.size,
+            });
+            uploadedFiles.push(info);
+          } catch (e) {
+            console.error('上传附件失败', e);
+            uploadFailed += 1;
+          }
+        }
+        if (uploadedFiles.length === 0) {
+          window.alert(uiLocale === 'en' ? 'Attachment upload failed. Please try again.' : '附件上传失败，请重试。');
+          clearLoadingForSession(sendSessionId);
+          return;
+        }
+        if (uploadFailed > 0) {
+          window.alert(
+            uiLocale === 'en'
+              ? `${uploadFailed} attachment(s) failed to upload and were skipped.`
+              : `有 ${uploadFailed} 个附件上传失败，已忽略失败项继续发送。`
+          );
         }
       }
-      if (uploadedFiles.length === 0) {
-        window.alert(uiLocale === 'en' ? 'Attachment upload failed. Please try again.' : '附件上传失败，请重试。');
-        return;
+
+      const att = t('chat.attachment');
+      const textContent = input.trim() || (uploadedFiles.length > 0 ? att : '');
+
+      let priorMessages =
+        useChatStore.getState().sessions.find((s) => s.id === sendSessionId)?.messages ?? messages;
+
+      stickToBottomRef.current = true;
+      const webOn = currentSession
+        ? effectiveWebEnabled(currentSession, webSearchEnabled)
+        : webSearchEnabled;
+      const ensured = await ensureContextBeforeSend({
+        sessionId: sendSessionId,
+        priorMessages,
+        draftInput: textContent,
+        model: activeModel,
+        locale: uiLocale === 'en' ? 'en' : 'zh',
+        summaryTitle: t('chat.contextSummaryTitle'),
+        injectExtras: resolveInjectExtras({ webEnabled: webOn }),
+      });
+      priorMessages = ensured.priorMessages;
+      if (ensured.didCompress) {
+        requestAnimationFrame(() => {
+          const el = scrollContainerRef.current;
+          if (el) el.scrollTop = el.scrollHeight;
+        });
       }
-      if (uploadFailed > 0) {
-        window.alert(
-          uiLocale === 'en'
-            ? `${uploadFailed} attachment(s) failed to upload and were skipped.`
-            : `有 ${uploadFailed} 个附件上传失败，已忽略失败项继续发送。`
+
+      if (priorMessages.length === 0) {
+        const title = (textContent === att ? t('chat.attachmentTitle') : textContent) || t('session.newTitle');
+        updateSessionTitle(
+          sendSessionId,
+          title.length > 15 ? title.substring(0, 15) + '...' : title
         );
       }
-    }
 
-    const att = t('chat.attachment');
-    const textContent = input.trim() || (uploadedFiles.length > 0 ? att : '');
-
-    let priorMessages =
-      useChatStore.getState().sessions.find((s) => s.id === sendSessionId)?.messages ?? messages;
-
-    stickToBottomRef.current = true;
-    const ensured = await ensureContextBeforeSend({
-      sessionId: sendSessionId,
-      priorMessages,
-      draftInput: textContent,
-      model: activeModel,
-      locale: uiLocale === 'en' ? 'en' : 'zh',
-      summaryTitle: t('chat.contextSummaryTitle'),
-      injectExtras: {
-        webEnabled: currentSession
-          ? effectiveWebEnabled(currentSession, webSearchEnabled)
-          : webSearchEnabled,
-      },
-    });
-    priorMessages = ensured.priorMessages;
-    if (ensured.didCompress) {
-      requestAnimationFrame(() => {
-        const el = scrollContainerRef.current;
-        if (el) el.scrollTop = el.scrollHeight;
-      });
-    }
-
-    setLoadingSession(sendSessionId);
-
-    if (priorMessages.length === 0) {
-      const title = (textContent === att ? t('chat.attachmentTitle') : textContent) || t('session.newTitle');
-      updateSessionTitle(
-        sendSessionId,
-        title.length > 15 ? title.substring(0, 15) + '...' : title
-      );
-    }
-
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      role: 'user',
-      content: textContent,
-      files: uploadedFiles.length > 0 ? uploadedFiles : undefined,
-      timestamp: Date.now(),
-      model: activeModel.name,
-    };
-
-    addMessage(sendSessionId, userMessage);
-    setInput('');
-    setAttachments([]);
-    setAttachmentPreviews({});
-    requestAnimationFrame(() => inputAreaRef.current?.focus());
-
-    if (shouldBypassModelForFullTextDownload(textContent, uploadedFiles.length > 0)) {
-      addMessage(sendSessionId, {
-        id: `${Date.now() + 1}-a`,
-        role: 'assistant',
-        content:
-          FULL_TEXT_DOWNLOAD_BYPASS_REPLY,
+      const userMessage: Message = {
+        id: Date.now().toString(),
+        role: 'user',
+        content: textContent,
+        files: uploadedFiles.length > 0 ? uploadedFiles : undefined,
         timestamp: Date.now(),
         model: activeModel.name,
-      });
-      clearLoadingForSession(sendSessionId);
-      return;
-    }
+      };
 
-    await runModelReply(sendSessionId, priorMessages, userMessage, activeModel);
+      addMessage(sendSessionId, userMessage);
+      setInput('');
+      setAttachments([]);
+      setAttachmentPreviews({});
+      requestAnimationFrame(() => inputAreaRef.current?.focus());
+
+      if (
+        addFullTextBypassIfNeeded({
+          sessionId: sendSessionId,
+          modelName: activeModel.name,
+          textContent,
+          hasAttachments: uploadedFiles.length > 0,
+        })
+      ) {
+        return;
+      }
+
+      await runModelReply(sendSessionId, priorMessages, userMessage, activeModel);
+    } catch (e) {
+      clearLoadingForSession(sendSessionId);
+      throw e;
+    }
   };
 
   const handleSubmitEditedMessage = async (sourceMessage: Message, nextContent: string) => {
     const textContent = nextContent.trim();
     if (!textContent || !currentSessionId) return;
-    if (useChatStore.getState().loadingSessionIds.includes(currentSessionId)) return;
-    if (useChatStore.getState().isCompressingSession(currentSessionId)) return;
 
     const activeModel = getActiveModel();
     if (!activeModel) {
@@ -2443,60 +2452,68 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     if (sourceIndex < 0) {
       return;
     }
+    if (!tryClaimSessionSend(sendSessionId)) return;
+
     let priorMessages = messages.slice(0, sourceIndex);
 
-    stickToBottomRef.current = true;
-    const ensured = await ensureContextBeforeSend({
-      sessionId: sendSessionId,
-      priorMessages,
-      draftInput: textContent,
-      model: activeModel,
-      locale: uiLocale === 'en' ? 'en' : 'zh',
-      summaryTitle: t('chat.contextSummaryTitle'),
-      editSourceMessageId: sourceMessage.id,
-    });
-    priorMessages = ensured.priorMessages;
+    try {
+      stickToBottomRef.current = true;
+      const webOn = currentSession
+        ? effectiveWebEnabled(currentSession, webSearchEnabled)
+        : webSearchEnabled;
+      const ensured = await ensureContextBeforeSend({
+        sessionId: sendSessionId,
+        priorMessages,
+        draftInput: textContent,
+        model: activeModel,
+        locale: uiLocale === 'en' ? 'en' : 'zh',
+        summaryTitle: t('chat.contextSummaryTitle'),
+        editSourceMessageId: sourceMessage.id,
+        injectExtras: resolveInjectExtras({ webEnabled: webOn }),
+      });
+      priorMessages = ensured.priorMessages;
 
-    setLoadingSession(sendSessionId);
-    const latest = useChatStore.getState().sessions.find((s) => s.id === sendSessionId)?.messages ?? messages;
-    const latestSourceIndex = latest.findIndex((m) => m.id === sourceMessage.id);
-    if (latestSourceIndex < 0) {
-      clearLoadingForSession(sendSessionId);
-      return;
-    }
-    priorMessages = latest.slice(0, latestSourceIndex);
+      const latest = useChatStore.getState().sessions.find((s) => s.id === sendSessionId)?.messages ?? messages;
+      const latestSourceIndex = latest.findIndex((m) => m.id === sourceMessage.id);
+      if (latestSourceIndex < 0) {
+        clearLoadingForSession(sendSessionId);
+        return;
+      }
+      priorMessages = latest.slice(0, latestSourceIndex);
 
-    const userMessage: Message = {
-      ...sourceMessage,
-      role: 'user',
-      content: textContent,
-      timestamp: Date.now(),
-      model: activeModel.name,
-    };
-
-    const staleMessageIds = latest.slice(latestSourceIndex + 1).map((m) => m.id);
-    updateMessage(sendSessionId, sourceMessage.id, {
-      content: textContent,
-      timestamp: userMessage.timestamp,
-      model: activeModel.name,
-    });
-    if (staleMessageIds.length > 0) removeMessages(sendSessionId, staleMessageIds);
-    setEditingMessageId(null);
-
-    if (shouldBypassModelForFullTextDownload(textContent, Boolean(sourceMessage.files?.length))) {
-      addMessage(sendSessionId, {
-        id: `${Date.now() + 1}-a`,
-        role: 'assistant',
-        content:
-          FULL_TEXT_DOWNLOAD_BYPASS_REPLY,
+      const userMessage: Message = {
+        ...sourceMessage,
+        role: 'user',
+        content: textContent,
         timestamp: Date.now(),
         model: activeModel.name,
-      });
-      clearLoadingForSession(sendSessionId);
-      return;
-    }
+      };
 
-    await runModelReply(sendSessionId, priorMessages, userMessage, activeModel);
+      const staleMessageIds = latest.slice(latestSourceIndex + 1).map((m) => m.id);
+      updateMessage(sendSessionId, sourceMessage.id, {
+        content: textContent,
+        timestamp: userMessage.timestamp,
+        model: activeModel.name,
+      });
+      if (staleMessageIds.length > 0) removeMessages(sendSessionId, staleMessageIds);
+      setEditingMessageId(null);
+
+      if (
+        addFullTextBypassIfNeeded({
+          sessionId: sendSessionId,
+          modelName: activeModel.name,
+          textContent,
+          hasAttachments: Boolean(sourceMessage.files?.length),
+        })
+      ) {
+        return;
+      }
+
+      await runModelReply(sendSessionId, priorMessages, userMessage, activeModel);
+    } catch (e) {
+      clearLoadingForSession(sendSessionId);
+      throw e;
+    }
   };
 
   /** 每次渲染同步最新 handleSend 到 ref */
@@ -2809,21 +2826,31 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           const active = getActiveModel();
           /** 满格 = 压缩触发线（soft×95%），与发送前门禁对齐 */
           const fullAt = resolveContextProgressFullChars(active);
-          const softLimit = Math.floor(fullAt / 0.95);
-          const totalLength = estimateSessionChars(messages, input);
+          const softLimit = resolveContextSoftLimitChars(active);
+          const webOn = currentSession
+            ? effectiveWebEnabled(currentSession, webSearchEnabled)
+            : webSearchEnabled;
+          const extras = resolveInjectExtras({ webEnabled: webOn });
+          const overhead = estimateInjectedPayloadOverheadChars(extras);
+          const stored = estimateSessionChars(messages, input);
+          const totalLength = stored + overhead;
           const fillPerc = Math.min((totalLength / Math.max(1, fullAt)) * 100, 100);
           const isNearLimit = fillPerc > 80;
+          const truncateRisk = messagesExceedSanitizeLimit(messages);
+          const softPct = Math.round(Math.min((totalLength / Math.max(1, softLimit)) * 100, 100));
+          const baseHint = t('chat.contextUsageHint', {
+            used: Math.round(totalLength / 1000),
+            limit: Math.round(softLimit / 1000),
+            pct: softPct,
+          });
+          const title = truncateRisk ? `${baseHint} · ${t('chat.contextSanitizeWarn')}` : baseHint;
           return totalLength > 0 ? (
             <div
                 className={`absolute top-0 left-0 h-[2px] transition-all duration-300 ${
-                  isNearLimit ? 'bg-orange-500' : 'bg-gradient-to-r from-primary-400 to-teal-500'
+                  isNearLimit || truncateRisk ? 'bg-orange-500' : 'bg-gradient-to-r from-primary-400 to-teal-500'
                 }`}
               style={{ width: `${fillPerc}%` }}
-              title={t('chat.contextUsageHint', {
-                used: Math.round(totalLength / 1000),
-                limit: Math.round(softLimit / 1000),
-                pct: Math.round(Math.min((totalLength / Math.max(1, softLimit)) * 100, 100)),
-              })}
+              title={title}
             />
           ) : null;
         })()}

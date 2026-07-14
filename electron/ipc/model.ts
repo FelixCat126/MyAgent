@@ -193,9 +193,7 @@ ipcMain.handle(
         'Content-Type': 'application/json',
       };
       
-      if (isZhipuAI && apiKey) {
-        headers['Authorization'] = `Bearer ${apiKey}`;
-      } else if (apiKey) {
+      if (apiKey) {
         headers['Authorization'] = `Bearer ${apiKey}`;
       }
 

@@ -1,7 +1,10 @@
 import type { Message, ModelConfig } from '../types';
 
-/** 单条消息送入模型前的硬截断（与预算层解耦；超出时静默截断） */
+/** 单条消息送入模型前的硬截断（与 sanitizeMessagesForModel 同源） */
 export const SANITIZE_MAX_CONTENT_CHARS = 80_000;
+
+/** 与 enrichMessagesForModel / documents IPC 正文字数上限一致 */
+export const ATTACH_DOCUMENT_MAX_TEXT_CHARS = 600_000;
 
 /**
  * 预算层可感知的「截断风险」：若任一消息 content 超过硬上限，
@@ -15,18 +18,20 @@ export function messagesExceedSanitizeLimit(
 }
 
 /**
- * 估算 enrich 后可能额外注入的字符（RAG/工作区等粗估上限），
+ * 估算 enrich 后可能额外注入的字符（RAG/工作区/联网），
  * 用于发送前二次护栏：存储消息看似安全，但真实 payload 可能超预算。
  */
 export function estimateInjectedPayloadOverheadChars(opts: {
   webEnabled?: boolean;
   ragLikely?: boolean;
   workspaceLikely?: boolean;
+  ragMaxChars?: number;
+  workspaceMaxChars?: number;
 }): number {
   let n = 0;
   if (opts.webEnabled) n += 12_000;
-  if (opts.ragLikely) n += 24_000;
-  if (opts.workspaceLikely) n += 40_000;
+  if (opts.ragLikely) n += Math.min(opts.ragMaxChars ?? 24_000, 80_000);
+  if (opts.workspaceLikely) n += Math.min(opts.workspaceMaxChars ?? 40_000, 200_000);
   return n;
 }
 

@@ -1,8 +1,8 @@
 import type { Message } from '../types';
+import { SANITIZE_MAX_CONTENT_CHARS } from '../chat/payloadBoundary';
 
 const DATA_IMAGE_RE = /data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=\r\n]+/gi;
 const LONG_BASE64_RE = /\b[A-Za-z0-9+/]{2000,}={0,2}\b/g;
-const MAX_MESSAGE_CHARS = 80_000;
 
 function normalizeContent(content: unknown): string {
   if (typeof content === 'string') {
@@ -30,8 +30,8 @@ function normalizeContent(content: unknown): string {
 export function sanitizeMessagesForModel(messages: Message[]): Message[] {
   return messages.map((msg) => {
     let content = normalizeContent((msg as { content?: unknown }).content).trim();
-    if (content.length > MAX_MESSAGE_CHARS) {
-      content = `${content.slice(0, MAX_MESSAGE_CHARS)}\n\n（历史消息过长，已截断）`;
+    if (content.length > SANITIZE_MAX_CONTENT_CHARS) {
+      content = `${content.slice(0, SANITIZE_MAX_CONTENT_CHARS)}\n\n（历史消息过长，已截断）`;
     }
     return {
       ...msg,

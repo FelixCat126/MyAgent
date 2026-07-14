@@ -304,7 +304,12 @@ function registerModelStreamIpc() {
           }
 
           if (provider !== 'openai' && provider !== 'custom' && provider !== 'ollama' && !isZhipu) {
-            sendErr(wc, '当前提供商不支持流式输出，请使用 OpenAI/兼容 或 Ollama，或关闭流式。');
+            sendErr(
+              wc,
+              provider === 'gemini'
+                ? 'Gemini 暂不支持流式输出，请关闭「流式输出」后重试，或改用 OpenAI 兼容 / Ollama / 智谱。'
+                : '当前提供商不支持流式输出，请使用 OpenAI/兼容 或 Ollama，或关闭流式。'
+            );
             sendEnd(wc);
             return;
           }
