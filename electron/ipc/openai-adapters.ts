@@ -1,5 +1,9 @@
 import fs from 'fs';
 import { Message } from '../../src/types';
+import {
+  looksLikeMiniMaxChat,
+  resolveAnthropicMessagesUrl,
+} from '../../src/utils/chatApiMode';
 
 function normalizeTextContent(raw: unknown): string {
   if (typeof raw === 'string') return raw;
@@ -50,6 +54,12 @@ export function errorIndicatesImageUnsupported(err: unknown): boolean {
   );
 }
 
+function isContextSummary(msg: Message): boolean {
+  if (msg.meta?.kind === 'context-summary') return true;
+  const c = String(msg.content ?? '');
+  return c.startsWith('【上下文摘要】') || c.startsWith('[Context summary]');
+}
+
 export function formatOpenAITextOnly(messages: Message[]): Array<{ role: string; content: string }> {
   return messages.map((msg) => {
     const hadImage = msg.files?.some((f) => f.type.startsWith('image/'));
@@ -57,7 +67,8 @@ export function formatOpenAITextOnly(messages: Message[]): Array<{ role: string;
     if (hadImage && !content.trim()) {
       content = '（附件）';
     }
-    return { role: msg.role, content };
+    const role = isContextSummary(msg) ? 'system' : msg.role;
+    return { role, content };
   });
 }
 
@@ -69,6 +80,9 @@ export function formatOpenAIMultimodal(
 > {
   return messages.map((msg) => {
     const text = normalizeTextContent((msg as { content?: unknown }).content);
+    if (isContextSummary(msg)) {
+      return { role: 'system', content: text };
+    }
     if (msg.role === 'user' && msg.files && msg.files.some((f) => f.type.startsWith('image/'))) {
       const imageFile = msg.files.find((f) => f.type.startsWith('image/'))!;
       const dataUrl = imageFileToDataUrl(imageFile);
@@ -87,11 +101,6 @@ export function formatOpenAIMultimodal(
 export function isZhipuEndpoint(apiUrl: string, modelName: string): boolean {
   return apiUrl.includes('bigmodel.cn') || modelName.toLowerCase().startsWith('glm-');
 }
-
-import {
-  looksLikeMiniMaxChat,
-  resolveAnthropicMessagesUrl,
-} from '../../src/utils/chatApiMode';
 
 /** @deprecated 使用 looksLikeMiniMaxChat；保留别名兼容旧调用 */
 export function isMiniMaxChatEndpoint(apiUrl: string, modelName: string): boolean {
@@ -113,7 +122,8 @@ export function formatAnthropicMessages(messages: Message[]): {
   let system = '';
   const out: Array<{ role: string; content: string | Array<Record<string, unknown>> }> = [];
   for (const msg of messages) {
-    if (msg.role === 'system') {
+    /** 上下文摘要并入 system，避免污染 assistant 多轮语义 */
+    if (msg.role === 'system' || isContextSummary(msg)) {
       const t = normalizeTextContent((msg as { content?: unknown }).content);
       system = system ? `${system}\n${t}` : t;
       continue;

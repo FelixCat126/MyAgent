@@ -19,6 +19,10 @@ import {
   resolveOpenAiCompatibleBaseUrl,
   buildThinkingParams,
 } from './openai-adapters';
+import {
+  canFallbackAnthropicToOpenAi,
+  withOpenAiCompatibleFallbacks,
+} from './openai-chat-retry';
 
 /** Gemini 需单独处理 system；OpenAI 兼容接口一般可直接带 system 消息 */
 function splitSystemMessages(messages: Message[]): { systemText: string; convo: Message[] } {
@@ -176,9 +180,7 @@ ipcMain.handle(
       try {
         return await callAnthropicMessages({ messages, config, temperature });
       } catch (anthropicErr: unknown) {
-        const canFallback =
-          provider !== 'claude' && (config.chatApiMode ?? 'auto') === 'auto';
-        if (!canFallback) throw anthropicErr;
+        if (!canFallbackAnthropicToOpenAi(config)) throw anthropicErr;
         console.warn('[call-model] Anthropic 失败，回退 OpenAI 兼容', {
           message: anthropicErr instanceof Error ? anthropicErr.message : String(anthropicErr),
         });
@@ -198,14 +200,15 @@ ipcMain.handle(
       }
 
       const apiBase = resolveOpenAiCompatibleBaseUrl(apiUrl, provider);
-      let formattedMessages = formatOpenAIMultimodal(messages);
+      const multimodal = formatOpenAIMultimodal(messages);
+      const textOnly = formatOpenAITextOnly(messages);
 
-      const postChat = (withThinking = true) =>
+      const postChat = (mode: 'multimodal' | 'text', withThinking: boolean) =>
         axios.post(
           `${apiBase}/chat/completions`,
           {
             model: modelName,
-            messages: formattedMessages,
+            messages: mode === 'multimodal' ? multimodal : textOnly,
             max_tokens: maxTokens,
             ...(temperature !== undefined ? { temperature } : {}),
             ...(withThinking ? buildThinkingParams({ apiUrl, modelName, stream: false }) : {}),
@@ -216,46 +219,19 @@ ipcMain.handle(
           }
         );
 
-      const isBadRequest = (e: unknown): boolean => {
-        const ax = e as { response?: { status?: number } };
-        return ax?.response?.status === 400;
-      };
-
-      try {
-        const response = await postChat(true);
-        return parseOpenAIChatResponse(response.data);
-      } catch (firstErr: unknown) {
-        if (
-          messagesHaveImageFiles(messages) &&
-          errorIndicatesImageUnsupported(firstErr)
-        ) {
+      const response = await withOpenAiCompatibleFallbacks({
+        messages,
+        messagesHaveImages: messagesHaveImageFiles(messages),
+        errorIndicatesImageUnsupported,
+        request: async (mode, withThinking) => postChat(mode, withThinking),
+        onImageFallback: (err) => {
           console.warn(
             '[call-model] 接口拒绝图像输入，已自动改为纯文字重试一次:',
-            (firstErr as Error).message
+            (err as Error).message
           );
-          formattedMessages = formatOpenAITextOnly(messages);
-          try {
-            const response = await postChat(true);
-            return parseOpenAIChatResponse(response.data);
-          } catch (secondErr: unknown) {
-            if (isBadRequest(secondErr)) {
-              const response = await postChat(false);
-              return parseOpenAIChatResponse(response.data);
-            }
-            throw secondErr;
-          }
-        }
-        /** 首次即 400（无图片场景）：可能是思考参数不被该模型支持，去掉重试 */
-        if (isBadRequest(firstErr)) {
-          try {
-            const response = await postChat(false);
-            return parseOpenAIChatResponse(response.data);
-          } catch {
-            throw firstErr;
-          }
-        }
-        throw firstErr;
-      }
+        },
+      });
+      return parseOpenAIChatResponse(response.data);
     }
 
     // Gemini API

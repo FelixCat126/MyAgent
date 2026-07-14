@@ -12,7 +12,11 @@ interface ChatStore {
   loadingSessionId: string | null;
   /** 正在执行/等待回复的会话 id 集合（支持多会话并发转圈） */
   loadingSessionIds: string[];
-  /** 正在自动压缩上下文的会话（对话区展示「压缩中」） */
+  /**
+   * 正在自动压缩上下文的会话集合（对齐 loadingSessionIds，支持多会话）。
+   * compressingSessionId 为派生：取集合第一个，兼容旧 UI。
+   */
+  compressingSessionIds: string[];
   compressingSessionId: string | null;
 
   // Actions
@@ -36,13 +40,26 @@ interface ChatStore {
   clearLoadingForSession: (sessionId: string) => void;
   /** 判断指定会话是否正在加载 */
   isLoadingSession: (sessionId: string) => boolean;
+  /** null = 清空全部压缩态；非 null = 将该会话加入压缩集合 */
   setCompressingContext: (sessionId: string | null) => void;
+  clearCompressingForSession: (sessionId: string) => void;
+  isCompressingSession: (sessionId: string) => boolean;
   /**
    * 删除 keepFromIndex 之前的消息，并在保留段前插入摘要消息。
    * keepFromIndex 为压缩前的下标（相对于替换前的 messages）。
    */
   replaceMessagesPrefix: (
     sessionId: string,
+    keepFromIndex: number,
+    summaryMessage: Message
+  ) => void;
+  /**
+   * 编辑重发专用：只改写 [0, beforeIndex) 前缀，保留 beforeIndex 及之后消息。
+   * keepFromIndex 相对于 beforeIndex 之前的 head 切片。
+   */
+  replaceMessagesPrefixBeforeIndex: (
+    sessionId: string,
+    beforeIndex: number,
     keepFromIndex: number,
     summaryMessage: Message
   ) => void;
@@ -55,6 +72,7 @@ export const useChatStore = create<ChatStore>()(
       currentSessionId: null,
       loadingSessionId: null,
       loadingSessionIds: [],
+      compressingSessionIds: [],
       compressingSessionId: null,
 
       createSession: () => {
@@ -87,11 +105,17 @@ export const useChatStore = create<ChatStore>()(
       deleteSession: (sessionId: string) => {
         set((state: ChatStore) => {
           const newSessions = state.sessions.filter((s: ChatSession) => s.id !== sessionId);
+          const nextLoading = state.loadingSessionIds.filter((id) => id !== sessionId);
+          const nextCompressing = state.compressingSessionIds.filter((id) => id !== sessionId);
           return {
             sessions: newSessions,
             currentSessionId: state.currentSessionId === sessionId 
               ? (newSessions.length > 0 ? newSessions[0].id : null)
               : state.currentSessionId,
+            loadingSessionIds: nextLoading,
+            loadingSessionId: nextLoading[0] ?? null,
+            compressingSessionIds: nextCompressing,
+            compressingSessionId: nextCompressing[0] ?? null,
           };
         });
       },
@@ -270,7 +294,32 @@ export const useChatStore = create<ChatStore>()(
       },
 
       setCompressingContext: (sessionId: string | null) => {
-        set({ compressingSessionId: sessionId });
+        if (sessionId === null) {
+          set({ compressingSessionId: null, compressingSessionIds: [] });
+          return;
+        }
+        set((state: ChatStore) => {
+          if (state.compressingSessionIds.includes(sessionId)) {
+            return { compressingSessionId: state.compressingSessionIds[0] ?? null };
+          }
+          const next = [...state.compressingSessionIds, sessionId];
+          return { compressingSessionId: next[0] ?? null, compressingSessionIds: next };
+        });
+      },
+
+      clearCompressingForSession: (sessionId: string) => {
+        set((state: ChatStore) => {
+          if (!state.compressingSessionIds.includes(sessionId)) return {};
+          const next = state.compressingSessionIds.filter((id) => id !== sessionId);
+          return {
+            compressingSessionId: next[0] ?? null,
+            compressingSessionIds: next,
+          };
+        });
+      },
+
+      isCompressingSession: (sessionId: string): boolean => {
+        return get().compressingSessionIds.includes(sessionId);
       },
 
       replaceMessagesPrefix: (sessionId, keepFromIndex, summaryMessage) => {
@@ -283,6 +332,24 @@ export const useChatStore = create<ChatStore>()(
               ...session,
               updatedAt: Date.now(),
               messages: [summaryMessage, ...recent],
+            };
+          }),
+        }));
+      },
+
+      replaceMessagesPrefixBeforeIndex: (sessionId, beforeIndex, keepFromIndex, summaryMessage) => {
+        set((state: ChatStore) => ({
+          sessions: state.sessions.map((session: ChatSession) => {
+            if (session.id !== sessionId) return session;
+            const end = Math.max(0, Math.min(beforeIndex, session.messages.length));
+            const head = session.messages.slice(0, end);
+            const tail = session.messages.slice(end);
+            const idx = Math.max(0, Math.min(keepFromIndex, head.length));
+            const recentPrior = head.slice(idx);
+            return {
+              ...session,
+              updatedAt: Date.now(),
+              messages: [summaryMessage, ...recentPrior, ...tail],
             };
           }),
         }));

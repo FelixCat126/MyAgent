@@ -3,6 +3,7 @@ import {
   CONTEXT_SUMMARY_PREFIX,
   buildCompressionPrompt,
   compressMessagesLocally,
+  createContextSummaryMessage,
   parseCompressionSummary,
   splitMessagesForCompression,
 } from './contextBudget';
@@ -13,8 +14,15 @@ export type CompressSessionResult = {
   messages: Message[];
 };
 
+export type CallModelFn = (
+  messages: Message[],
+  config: ModelConfig,
+  options?: { locale?: 'zh' | 'en'; temperature?: number }
+) => Promise<{ content?: string }>;
+
 /**
  * 用当前模型摘要较早消息并写回会话；失败则本地降级压缩。
+ * callModel 可注入（默认 window.electron.callModel），便于测试与解耦。
  * 调用方负责 compressing UI 状态；本函数负责改写 messages。
  */
 export async function compressSessionContext(opts: {
@@ -28,6 +36,7 @@ export async function compressSessionContext(opts: {
     keepFromIndex: number,
     summaryMessage: Message
   ) => void;
+  callModel?: CallModelFn;
 }): Promise<CompressSessionResult> {
   const {
     sessionId,
@@ -36,6 +45,7 @@ export async function compressSessionContext(opts: {
     locale = 'zh',
     summaryTitle = CONTEXT_SUMMARY_PREFIX,
     replaceMessagesPrefix,
+    callModel,
   } = opts;
 
   const softLimit = resolveContextSoftLimitChars(model);
@@ -51,8 +61,11 @@ export async function compressSessionContext(opts: {
 
   let summaryBody = '';
   try {
-    const promptMessages = buildCompressionPrompt(older);
-    const response = await window.electron.callModel(
+    const promptMessages = buildCompressionPrompt(older, locale);
+    const invoke: CallModelFn =
+      callModel ??
+      ((msgs, cfg, options) => window.electron.callModel(msgs, cfg, options));
+    const response = await invoke(
       promptMessages,
       {
         ...model,
@@ -72,13 +85,10 @@ export async function compressSessionContext(opts: {
     return { didCompress: true, messages: local.messages };
   }
 
-  const summaryMessage: Message = {
-    id: `ctx-summary-${Date.now()}`,
-    role: 'assistant',
-    content: parseCompressionSummary(summaryBody, summaryTitle),
-    timestamp: Date.now(),
-    model: model.name || 'context-compress',
-  };
+  const summaryMessage = createContextSummaryMessage(
+    parseCompressionSummary(summaryBody, summaryTitle),
+    model.name || 'context-compress'
+  );
   replaceMessagesPrefix(sessionId, keepFromIndex, summaryMessage);
   return {
     didCompress: true,

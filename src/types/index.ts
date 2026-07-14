@@ -365,6 +365,13 @@ export interface Message {
   };
   /** 生图进行时供远端快照展示占位格；不写盘（见 chatStore.partialize） */
   imageGenProgress?: { current: number; total: number };
+  /**
+   * 消息元数据：与正文展示解耦。
+   * kind=context-summary 表示自动/本地上下文压缩产生的摘要轮次。
+   */
+  meta?: {
+    kind?: 'context-summary';
+  };
   files?: FileInfo[];
   timestamp: number;
   model: string;

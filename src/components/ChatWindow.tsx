@@ -64,10 +64,10 @@ import {
 import { flushZustandFilePersist } from '../utils/zustandFileStorage';
 import {
   estimateSessionChars,
-  shouldCompressContext,
+  resolveContextProgressFullChars,
 } from '../utils/contextBudget';
-import { resolveContextSoftLimitChars } from '../utils/inferContextWindow';
-import { compressSessionContext } from '../utils/compressSessionContext';
+import { ensureContextBeforeSend } from '../chat/ensureContextBeforeSend';
+import { FULL_TEXT_DOWNLOAD_BYPASS_REPLY } from '../chat/fullTextDownloadBypass';
 
 function userQueryTextForRag(m: Message): string {
   const t = (m.content || '').trim();
@@ -764,9 +764,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     clearLoadingForSession,
     updateSessionTitle,
     setSessionWebOverride,
-    compressingSessionId,
-    setCompressingContext,
-    replaceMessagesPrefix,
+    compressingSessionIds,
   } = useChatStore();
 
   const webSearchEnabled = useWebSearchStore((s) => s.enabled);
@@ -780,7 +778,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   const isCurrentSessionLoading =
     loadingSessionId !== null && loadingSessionIds.includes(currentSessionId ?? '');
   const isCompressingCurrent =
-    !!currentSessionId && compressingSessionId === currentSessionId;
+    !!currentSessionId && compressingSessionIds.includes(currentSessionId);
   const isSessionBusy = isCurrentSessionLoading || isCompressingCurrent;
   const { getActiveModel } = useModelStore();
   const [input, setInput] = useState('');
@@ -2151,7 +2149,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
 
         if (!textContent) throw new Error(tUi(locale, 'remoteGateway.emptySend'));
 
-        const priorMessages = msgs.slice(0, sourceIndex);
+        let priorMessages = msgs.slice(0, sourceIndex);
         const userMessage: Message = {
           ...sourceMessage,
           role: 'user',
@@ -2160,6 +2158,21 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           model: activeModel.name,
         };
         const staleMessageIds = msgs.slice(sourceIndex + 1).map((m) => m.id);
+
+        if (chat.isCompressingSession(sessionId)) {
+          throw new Error(tUi(locale, 'remoteGateway.busySession'));
+        }
+
+        const ensured = await ensureContextBeforeSend({
+          sessionId,
+          priorMessages,
+          draftInput: textContent,
+          model: activeModel,
+          locale: locale === 'en' ? 'en' : 'zh',
+          summaryTitle: tUi(locale, 'chat.contextSummaryTitle'),
+          editSourceMessageId: messageId,
+        });
+        priorMessages = ensured.priorMessages;
 
         chat.setLoadingSession(sessionId);
         try {
@@ -2175,8 +2188,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
               id: `${Date.now() + 1}-a`,
               role: 'assistant',
               content:
-                '这个请求属于“既有作品全文下载”。我不会让模型在聊天里逐字打印全文，因为这会非常慢、容易超时，也容易生成不完整或混入错误文本。\n\n' +
-                '请把原文文件作为附件上传，或提供一个可读取的原文来源后再让我整理成 Word/Markdown。拿到源文本后，我会只把正文写入下载文档，不把聊天说明混进去。',
+                FULL_TEXT_DOWNLOAD_BYPASS_REPLY,
               timestamp: Date.now(),
               model: activeModel.name,
             });
@@ -2211,15 +2223,26 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           throw new Error(tUi(locale, 'remoteGateway.sessionMissing'));
         }
         chat.switchSession(sessionId);
-        if (chat.isLoadingSession(sessionId)) {
+        if (chat.isLoadingSession(sessionId) || chat.isCompressingSession(sessionId)) {
           throw new Error(tUi(locale, 'remoteGateway.busySession'));
         }
-        const priorMessages = sess.messages.slice();
+        let priorMessages = sess.messages.slice();
         const att = tUi(locale, 'chat.attachment');
         const textContent = content.trim() || (attachments.length > 0 ? att : '');
         if (!textContent.trim() && attachments.length === 0) {
           throw new Error(tUi(locale, 'remoteGateway.emptySend'));
         }
+
+        const ensured = await ensureContextBeforeSend({
+          sessionId,
+          priorMessages,
+          draftInput: textContent,
+          model: activeModel,
+          locale: locale === 'en' ? 'en' : 'zh',
+          summaryTitle: tUi(locale, 'chat.contextSummaryTitle'),
+        });
+        priorMessages = ensured.priorMessages;
+
         chat.setLoadingSession(sessionId);
         try {
           if (priorMessages.length === 0) {
@@ -2246,8 +2269,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
               id: `${Date.now() + 1}-a`,
               role: 'assistant',
               content:
-                '这个请求属于“既有作品全文下载”。我不会让模型在聊天里逐字打印全文，因为这会非常慢、容易超时，也容易生成不完整或混入错误文本。\n\n' +
-                '请把原文文件作为附件上传，或提供一个可读取的原文来源后再让我整理成 Word/Markdown。拿到源文本后，我会只把正文写入下载文档，不把聊天说明混进去。',
+                FULL_TEXT_DOWNLOAD_BYPASS_REPLY,
               timestamp: Date.now(),
               model: activeModel.name,
             });
@@ -2287,7 +2309,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   const handleSend = async () => {
     if ((!input.trim() && attachments.length === 0) || !currentSessionId) return;
     if (useChatStore.getState().loadingSessionIds.includes(currentSessionId)) return;
-    if (useChatStore.getState().compressingSessionId) return;
+    if (useChatStore.getState().isCompressingSession(currentSessionId)) return;
 
     cancelVoiceReply();
     if (!sendFromVoiceWakeRef.current) {
@@ -2301,6 +2323,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
       return;
     }
 
+    /** 全程固定会话 id，避免压缩异步期间切会话写串 */
     const sendSessionId = currentSessionId;
     const uploadedFiles: FileInfo[] = [];
 
@@ -2337,29 +2360,29 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     const att = t('chat.attachment');
     const textContent = input.trim() || (uploadedFiles.length > 0 ? att : '');
 
-    /** 发送前：必要时压缩上下文（进度条同源阈值） */
-    let priorMessages = useChatStore.getState().sessions.find((s) => s.id === sendSessionId)?.messages ?? messages;
-    if (shouldCompressContext(priorMessages, textContent, undefined, undefined, activeModel)) {
-      setCompressingContext(sendSessionId);
-      stickToBottomRef.current = true;
+    let priorMessages =
+      useChatStore.getState().sessions.find((s) => s.id === sendSessionId)?.messages ?? messages;
+
+    stickToBottomRef.current = true;
+    const ensured = await ensureContextBeforeSend({
+      sessionId: sendSessionId,
+      priorMessages,
+      draftInput: textContent,
+      model: activeModel,
+      locale: uiLocale === 'en' ? 'en' : 'zh',
+      summaryTitle: t('chat.contextSummaryTitle'),
+      injectExtras: {
+        webEnabled: currentSession
+          ? effectiveWebEnabled(currentSession, webSearchEnabled)
+          : webSearchEnabled,
+      },
+    });
+    priorMessages = ensured.priorMessages;
+    if (ensured.didCompress) {
       requestAnimationFrame(() => {
         const el = scrollContainerRef.current;
         if (el) el.scrollTop = el.scrollHeight;
       });
-      try {
-        await compressSessionContext({
-          sessionId: sendSessionId,
-          messages: priorMessages,
-          model: activeModel,
-          locale: uiLocale === 'en' ? 'en' : 'zh',
-          summaryTitle: t('chat.contextSummaryTitle'),
-          replaceMessagesPrefix,
-        });
-        priorMessages =
-          useChatStore.getState().sessions.find((s) => s.id === sendSessionId)?.messages ?? priorMessages;
-      } finally {
-        setCompressingContext(null);
-      }
     }
 
     setLoadingSession(sendSessionId);
@@ -2367,7 +2390,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     if (priorMessages.length === 0) {
       const title = (textContent === att ? t('chat.attachmentTitle') : textContent) || t('session.newTitle');
       updateSessionTitle(
-        currentSessionId,
+        sendSessionId,
         title.length > 15 ? title.substring(0, 15) + '...' : title
       );
     }
@@ -2381,7 +2404,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
       model: activeModel.name,
     };
 
-    addMessage(currentSessionId, userMessage);
+    addMessage(sendSessionId, userMessage);
     setInput('');
     setAttachments([]);
     setAttachmentPreviews({});
@@ -2392,8 +2415,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         id: `${Date.now() + 1}-a`,
         role: 'assistant',
         content:
-          '这个请求属于“既有作品全文下载”。我不会让模型在聊天里逐字打印全文，因为这会非常慢、容易超时，也容易生成不完整或混入错误文本。\n\n' +
-          '请把原文文件作为附件上传，或提供一个可读取的原文来源后再让我整理成 Word/Markdown。拿到源文本后，我会只把正文写入下载文档，不把聊天说明混进去。',
+          FULL_TEXT_DOWNLOAD_BYPASS_REPLY,
         timestamp: Date.now(),
         model: activeModel.name,
       });
@@ -2408,7 +2430,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     const textContent = nextContent.trim();
     if (!textContent || !currentSessionId) return;
     if (useChatStore.getState().loadingSessionIds.includes(currentSessionId)) return;
-    if (useChatStore.getState().compressingSessionId) return;
+    if (useChatStore.getState().isCompressingSession(currentSessionId)) return;
 
     const activeModel = getActiveModel();
     if (!activeModel) {
@@ -2423,46 +2445,17 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     }
     let priorMessages = messages.slice(0, sourceIndex);
 
-    if (shouldCompressContext(priorMessages, textContent, undefined, undefined, activeModel)) {
-      setCompressingContext(sendSessionId);
-      stickToBottomRef.current = true;
-      try {
-        const compressed = await compressSessionContext({
-          sessionId: sendSessionId,
-          messages: priorMessages,
-          model: activeModel,
-          locale: uiLocale === 'en' ? 'en' : 'zh',
-          summaryTitle: t('chat.contextSummaryTitle'),
-          replaceMessagesPrefix: (sid, keepFrom, summary) => {
-            /** 编辑重发：只压缩 source 之前的 prior，保留 source 及之后消息 */
-            const sess = useChatStore.getState().sessions.find((s) => s.id === sid);
-            if (!sess) return;
-            const head = sess.messages.slice(0, sourceIndex);
-            const recentPrior = head.slice(keepFrom);
-            const tail = sess.messages.slice(sourceIndex);
-            useChatStore.setState((state) => ({
-              sessions: state.sessions.map((session) =>
-                session.id === sid
-                  ? {
-                      ...session,
-                      updatedAt: Date.now(),
-                      messages: [summary, ...recentPrior, ...tail],
-                    }
-                  : session
-              ),
-            }));
-          },
-        });
-        if (compressed.didCompress) {
-          const sess = useChatStore.getState().sessions.find((s) => s.id === sendSessionId);
-          const newSourceIndex = sess?.messages.findIndex((m) => m.id === sourceMessage.id) ?? -1;
-          priorMessages =
-            newSourceIndex >= 0 ? (sess?.messages.slice(0, newSourceIndex) ?? compressed.messages) : compressed.messages;
-        }
-      } finally {
-        setCompressingContext(null);
-      }
-    }
+    stickToBottomRef.current = true;
+    const ensured = await ensureContextBeforeSend({
+      sessionId: sendSessionId,
+      priorMessages,
+      draftInput: textContent,
+      model: activeModel,
+      locale: uiLocale === 'en' ? 'en' : 'zh',
+      summaryTitle: t('chat.contextSummaryTitle'),
+      editSourceMessageId: sourceMessage.id,
+    });
+    priorMessages = ensured.priorMessages;
 
     setLoadingSession(sendSessionId);
     const latest = useChatStore.getState().sessions.find((s) => s.id === sendSessionId)?.messages ?? messages;
@@ -2482,12 +2475,12 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     };
 
     const staleMessageIds = latest.slice(latestSourceIndex + 1).map((m) => m.id);
-    updateMessage(currentSessionId, sourceMessage.id, {
+    updateMessage(sendSessionId, sourceMessage.id, {
       content: textContent,
       timestamp: userMessage.timestamp,
       model: activeModel.name,
     });
-    if (staleMessageIds.length > 0) removeMessages(currentSessionId, staleMessageIds);
+    if (staleMessageIds.length > 0) removeMessages(sendSessionId, staleMessageIds);
     setEditingMessageId(null);
 
     if (shouldBypassModelForFullTextDownload(textContent, Boolean(sourceMessage.files?.length))) {
@@ -2495,8 +2488,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         id: `${Date.now() + 1}-a`,
         role: 'assistant',
         content:
-          '这个请求属于“既有作品全文下载”。我不会让模型在聊天里逐字打印全文，因为这会非常慢、容易超时，也容易生成不完整或混入错误文本。\n\n' +
-          '请把原文文件作为附件上传，或提供一个可读取的原文来源后再让我整理成 Word/Markdown。拿到源文本后，我会只把正文写入下载文档，不把聊天说明混进去。',
+          FULL_TEXT_DOWNLOAD_BYPASS_REPLY,
         timestamp: Date.now(),
         model: activeModel.name,
       });
@@ -2815,9 +2807,11 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           ) : null}
         {(() => {
           const active = getActiveModel();
-          const limit = resolveContextSoftLimitChars(active);
+          /** 满格 = 压缩触发线（soft×95%），与发送前门禁对齐 */
+          const fullAt = resolveContextProgressFullChars(active);
+          const softLimit = Math.floor(fullAt / 0.95);
           const totalLength = estimateSessionChars(messages, input);
-          const fillPerc = Math.min((totalLength / limit) * 100, 100);
+          const fillPerc = Math.min((totalLength / Math.max(1, fullAt)) * 100, 100);
           const isNearLimit = fillPerc > 80;
           return totalLength > 0 ? (
             <div
@@ -2827,8 +2821,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
               style={{ width: `${fillPerc}%` }}
               title={t('chat.contextUsageHint', {
                 used: Math.round(totalLength / 1000),
-                limit: Math.round(limit / 1000),
-                pct: Math.round(fillPerc),
+                limit: Math.round(softLimit / 1000),
+                pct: Math.round(Math.min((totalLength / Math.max(1, softLimit)) * 100, 100)),
               })}
             />
           ) : null;

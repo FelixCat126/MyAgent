@@ -18,6 +18,10 @@ import {
   resolveOpenAiCompatibleBaseUrl,
   buildThinkingParams,
 } from './openai-adapters';
+import {
+  canFallbackAnthropicToOpenAi,
+  withOpenAiCompatibleFallbacks,
+} from './openai-chat-retry';
 import { StreamingDeltaSplitter } from '../utils/streamChatCompletionDelta';
 
 const abortByStream = new Map<number, AbortController>();
@@ -38,11 +42,6 @@ function sendEnd(wc: WebContents) {
 
 function sendErr(wc: WebContents, message: string) {
   wc.send('model-stream-error', message);
-}
-
-function isBadRequest(e: unknown): boolean {
-  const ax = e as AxiosError;
-  return ax?.response?.status === 400;
 }
 
 /** 通用 Anthropic Messages 流式（Claude / MiniMax / 兼容网关） */
@@ -178,10 +177,20 @@ async function streamOpenAiCompatible(opts: {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
-  let formattedMessages = formatOpenAIMultimodal(messages) as Array<{ role: string; content: unknown }>;
+  let formattedMultimodal = formatOpenAIMultimodal(messages) as Array<{
+    role: string;
+    content: unknown;
+  }>;
+  const formattedText = formatOpenAITextOnly(messages) as Array<{
+    role: string;
+    content: unknown;
+  }>;
   const thinkingParams = buildThinkingParams({ apiUrl, modelName, stream: true });
 
-  const doStream = async (msgs: typeof formattedMessages, withThinking = true) => {
+  const doStream = async (
+    msgs: Array<{ role: string; content: unknown }>,
+    withThinking = true
+  ) => {
     const body: Record<string, unknown> = {
       model: modelName,
       messages: msgs,
@@ -199,39 +208,21 @@ async function streamOpenAiCompatible(opts: {
     });
   };
 
-  const tryRequest = async () => {
-    try {
-      return await doStream(formattedMessages, true);
-    } catch (firstErr: unknown) {
-      if (messagesHaveImageFiles(messages) && errorIndicatesImageUnsupported(firstErr)) {
-        formattedMessages = formatOpenAITextOnly(messages) as Array<{
-          role: string;
-          content: unknown;
-        }>;
-        try {
-          return await doStream(formattedMessages, true);
-        } catch (secondErr: unknown) {
-          if (isBadRequest(secondErr)) {
-            console.warn('[model-stream] 思考参数 400，降级为无思考参数重试');
-            return await doStream(formattedMessages, false);
-          }
-          throw secondErr;
-        }
-      }
-      if (isBadRequest(firstErr)) {
-        try {
-          console.warn('[model-stream] 思考参数 400，降级为无思考参数重试', { modelName });
-          return await doStream(formattedMessages, false);
-        } catch {
-          throw firstErr;
-        }
-      }
-      throw firstErr;
-    }
-  };
+  const response = await withOpenAiCompatibleFallbacks({
+    messages,
+    messagesHaveImages: messagesHaveImageFiles(messages),
+    errorIndicatesImageUnsupported,
+    request: (mode, withThinking) =>
+      doStream(mode === 'multimodal' ? formattedMultimodal : formattedText, withThinking),
+    onImageFallback: () => {
+      formattedMultimodal = formattedText;
+    },
+    onThinkingFallback: () => {
+      console.warn('[model-stream] 思考参数 400，降级为无思考参数重试', { modelName });
+    },
+  });
 
   let buffer = '';
-  const response = await tryRequest();
   const stream = response.data as NodeJS.ReadableStream & {
     on: (ev: 'data' | 'end' | 'error', fn: (x?: string | Buffer | Error) => void) => void;
   };
@@ -304,10 +295,7 @@ function registerModelStreamIpc() {
               return;
             } catch (anthropicErr: unknown) {
               const status = (anthropicErr as AxiosError)?.response?.status;
-              /** 仅 auto 推断时允许回退 OpenAI；用户显式选 anthropic / claude 则直接报错 */
-              const canFallback =
-                provider !== 'claude' && (config.chatApiMode ?? 'auto') === 'auto';
-              if (!canFallback) throw anthropicErr;
+              if (!canFallbackAnthropicToOpenAi(config)) throw anthropicErr;
               console.warn('[model-stream] Anthropic 失败，回退 OpenAI 兼容', {
                 status,
                 message: anthropicErr instanceof Error ? anthropicErr.message : String(anthropicErr),
