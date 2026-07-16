@@ -35,10 +35,10 @@ describe('sendPipeline', () => {
         },
       ],
       currentSessionId: 's1',
-      loadingSessionId: null,
-      loadingSessionIds: [],
-      compressingSessionId: null,
-      compressingSessionIds: [],
+      loadingSessionIds: new Set<string>(),
+      loadingSessionIds: new Set<string>(),
+      compressingSessionIds: new Set<string>(),
+      compressingSessionIds: new Set<string>(),
     });
   });
 
@@ -91,10 +91,10 @@ describe('resubmitEditedUserMessage', () => {
         },
       ],
       currentSessionId: 's1',
-      loadingSessionId: null,
-      loadingSessionIds: [],
-      compressingSessionId: null,
-      compressingSessionIds: [],
+      loadingSessionIds: new Set<string>(),
+      loadingSessionIds: new Set<string>(),
+      compressingSessionIds: new Set<string>(),
+      compressingSessionIds: new Set<string>(),
     });
   });
 

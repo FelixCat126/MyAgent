@@ -72,6 +72,56 @@ export function mergeAssistantFiles(
  */
 const TICK_MS = 25;
 
+export interface StreamLifecycleOptions {
+  /** 流式开始前调用；通常用于 setIsStreaming(true) + setStreamingTargetAssistantId(id) */
+  onBegin?: (assistantId: string) => void;
+  /** 成功后调用；通常用于清空 streaming 状态（保留 loading 集合清理由 onFinalize 决定） */
+  onClearStreamingUi?: () => void;
+  /** 最终清理：清 loading、ref 重置；通常 finally 调用 */
+  onFinalize: (assistantId: string) => void;
+  /** 错误回调：拿到错误后通常插入"流式中断"提示消息 */
+  onError?: (err: unknown) => void;
+  /** 是否在被 catch 后还调用 onClearStreamingUi（默认 true） */
+  clearUiOnError?: boolean;
+}
+
+/**
+ * 流式状态生命周期模板：把 try/finally 收尾统一抽到此处。
+ *
+ * 行为契约：
+ * - 调用 work()
+ * - 不抛错：opts.onClearStreamingUi?.() → opts.onFinalize(assistantId) → 返回结果
+ * - 抛错：opts.onClearStreamingUi?.()（当 clearUiOnError !== false） → opts.onFinalize(assistantId) → 重新抛错
+ * - 不抛错时若 work 返回 undefined 同样返回 undefined
+ *
+ * 顺序严格按原 try/finally 现场复刻；调用方应把所有副作用（setIsStreaming、clearLoadingForSession、
+ * setStreamingTargetAssistantId、streamingAssistantIdRef.current = null 等）按原顺序写入 onFinalize。
+ */
+export async function withStreamLifecycle<T>(
+  assistantId: string,
+  opts: StreamLifecycleOptions,
+  work: () => Promise<T>
+): Promise<T | undefined> {
+  let result: T | undefined;
+  let threw: unknown;
+  try {
+    result = await work();
+  } catch (err) {
+    threw = err;
+  }
+  if (threw === undefined) {
+    opts.onClearStreamingUi?.();
+    opts.onFinalize(assistantId);
+    return result;
+  }
+  if (opts.clearUiOnError !== false) {
+    opts.onClearStreamingUi?.();
+  }
+  opts.onError?.(threw);
+  opts.onFinalize(assistantId);
+  throw threw;
+}
+
 export function createAnimStream(
   sendSessionId: string,
   assistantId: string,

@@ -170,7 +170,7 @@ const SessionList: React.FC = () => {
                 return <div className="flex flex-shrink-0" />;
               }
               const isCurrent = currentSessionId === session.id;
-              const isLoading = loadingSessionIds.includes(session.id);
+              const isLoading = loadingSessionIds.has(session.id);
               /** 完成亮点：非选中 + 未读才显示；选中不显示 */
               const showDot = !isCurrent && !isLoading && session.unreadAssistantReply;
               /** 统一槽位：固定 28px 方块，内含 13px 图标，间距统一 gap-0.5(2px) */

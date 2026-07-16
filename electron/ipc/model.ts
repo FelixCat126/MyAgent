@@ -149,7 +149,13 @@ function parseOpenAIChatResponse(responseData: {
       usage: (responseData as { usage?: unknown }).usage,
     };
   }
-  console.error('Unexpected response format:', responseData);
+  console.error(
+    'Unexpected response format:',
+    responseData && typeof responseData === 'object'
+      ? { topKeys: Object.keys(responseData).slice(0, 10) }
+      : typeof responseData
+  );
+  /** 不打印完整响应体，避免模型输出/敏感内容泄漏到 stdout。 */
   return {
     content: '收到未能正确解析的响应，请检查模型配置。',
     usage: (responseData as { usage?: unknown }).usage,
@@ -225,7 +231,7 @@ ipcMain.handle(
         onImageFallback: (err) => {
           console.warn(
             '[call-model] 接口拒绝图像输入，已自动改为纯文字重试一次:',
-            (err as Error).message
+            err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200)
           );
         },
       });
@@ -314,7 +320,15 @@ ipcMain.handle(
 
     throw new Error(`Unsupported model provider: ${provider}`);
   } catch (error: any) {
-    console.error('Model call error:', error);
+    /** 脱敏：只打印错误分类，避免完整 error 对象（含 URL/key/响应内容）泄漏 */
+    const ax = error as { response?: { status?: number }; code?: string; message?: string };
+    console.error('Model call error:', {
+      provider: config?.provider,
+      model: config?.modelName,
+      status: ax?.response?.status,
+      code: ax?.code,
+      message: typeof ax?.message === 'string' ? ax.message.slice(0, 200) : undefined,
+    });
     const msg = mapModelCallError(error, locale);
     throw new Error(msg);
   }

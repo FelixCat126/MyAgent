@@ -4,7 +4,7 @@ import type { ModelConfig } from '../types';
 
 function resetModelStore() {
   localStorage.removeItem('model-storage');
-  useModelStore.setState({ models: [], activeModelId: null, isInitialized: false });
+  useModelStore.setState({ models: [], activeModelId: null });
 }
 
 const oneModel = (id: string): ModelConfig => ({
@@ -27,12 +27,11 @@ describe('modelStore', () => {
     useModelStore.getState().initializeDefaultModels();
     const st = useModelStore.getState();
     expect(st.models.length).toBe(3);
-    expect(st.isInitialized).toBe(true);
     expect(st.activeModelId).toBe(st.models[0].id);
   });
 
-  it('列表已空即使 isInitialized 为 true 也会重新注入默认', () => {
-    useModelStore.setState({ models: [], activeModelId: null, isInitialized: true });
+  it('列表为空时重新注入默认', () => {
+    useModelStore.setState({ models: [], activeModelId: null });
     useModelStore.getState().initializeDefaultModels();
     expect(useModelStore.getState().models.length).toBe(3);
   });
@@ -69,7 +68,7 @@ describe('modelStore', () => {
   });
 
   it('getActiveModel 无匹配返回 null', () => {
-    useModelStore.setState({ models: [], activeModelId: 'nope', isInitialized: true });
+    useModelStore.setState({ models: [], activeModelId: 'nope' });
     expect(useModelStore.getState().getActiveModel()).toBeNull();
   });
 });

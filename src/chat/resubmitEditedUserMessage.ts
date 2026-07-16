@@ -88,14 +88,16 @@ export async function resubmitEditedUserMessage(opts: {
         ? latest.slice(latestSourceIndex + 1).map((m) => m.id)
         : [];
 
-    useChatStore.getState().updateMessage(opts.sessionId, opts.messageId, {
-      content: textContent,
-      timestamp: userMessage.timestamp,
-      model: opts.model.name,
-    });
-    if (staleIds.length > 0) {
-      useChatStore.getState().removeMessages(opts.sessionId, staleIds);
-    }
+    useChatStore.getState().resubmitUserMessageAtomically(
+      opts.sessionId,
+      opts.messageId,
+      {
+        content: textContent,
+        timestamp: userMessage.timestamp,
+        model: opts.model.name,
+      },
+      staleIds
+    );
 
     if (
       !addFullTextBypassIfNeeded({

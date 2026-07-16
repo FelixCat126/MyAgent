@@ -1,9 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import React, { useEffect, useMemo, useState } from 'react';
 import { pathToFileURL } from 'url';
 import { FileInfo, Message } from '../types';
-import { FiMessageSquare, FiCopy, FiDownload, FiChevronDown, FiChevronRight, FiChevronLeft, FiX, FiFileText, FiLoader, FiTrash2, FiImage, FiEdit2, FiCheckSquare, FiSquare, FiCheck } from 'react-icons/fi';
+import { FiMessageSquare, FiCopy, FiDownload, FiEdit2, FiCheckSquare, FiSquare, FiCheck } from 'react-icons/fi';
 import { useI18n } from '../hooks/useI18n';
+import { showError } from '../store/errorStore';
 import MarkdownContent from './MarkdownContent';
 import { markdownContainsPipeTable } from '../utils/markdownTableDetect';
 import { looksLikeStandaloneCodeSnippet } from '../utils/standaloneCodeDetect';
@@ -16,46 +16,14 @@ import { attachmentImageDisplaySrc } from '@/utils/attachmentDisplaySrc';
 import {
   DownloadLocalFileError,
   downloadDisplayImage,
-  hasDesktopLocalSaveCapability,
 } from '@/utils/imageDownload';
 import {
-  setGestureUiPhase,
-} from '@/utils/gestureUiContext';
-import { galleryCarouselCardMetricsSmooth } from '@/utils/galleryCarouselLayout';
-import { useGallerySwipeMomentum } from '@/hooks/useGallerySwipeMomentum';
-
-const MAX_MARKDOWN_RENDER_CHARS = 24_000;
-const MAX_ASSISTANT_PREPROCESS_CHARS = 28_000;
-
-/** 多图附件与生图占位共用：每行 4 张，不足一行从左排，超过 4 自动换行；缩略尺寸一致避免生成前后跳动 */
-const MULTI_IMAGE_ATTACHMENT_GRID =
-  'grid w-max max-w-full grid-cols-[repeat(4,max-content)] gap-2 justify-items-start overflow-x-auto';
-
-const ASSISTANT_IMAGE_THUMB_FRAME =
-  'h-[90px] w-[120px] shrink-0 sm:h-[112px] sm:w-[150px]';
-
-const ASSISTANT_IMAGE_THUMB_IMG =
-  `${ASSISTANT_IMAGE_THUMB_FRAME} cursor-zoom-in rounded-md object-contain border border-stone-300/60 shadow-sm transition-transform hover:scale-[1.02] dark:border-white/10`;
-
-const ASSISTANT_IMAGE_THUMB_META_ROW =
-  'flex min-h-[calc(15px+0.125rem)] w-[120px] items-center gap-1 sm:w-[150px]';
-
-/** 对应 App.tsx 顶栏拖拽区 TITLEBAR_H(44)，避免按钮落在 Electron drag 带上被吞点击 */
-const MODAL_CLEAR_TITLEBAR_PT = 'pt-[52px]';
-
-const MODAL_PORTAL_LAYER_CLASS =
-  'fixed inset-0 z-[10010] flex items-center justify-center bg-black transition-opacity';
-
-const modalPortalShellStyle: React.CSSProperties & { WebkitAppRegion?: string } = {
-  WebkitAppRegion: 'no-drag',
-};
-
-/** 预览大图：启用系统长按菜单（存储图像等）；WebKit 专有属性 */
-const previewImgTouchMenuStyle: React.CSSProperties = {
-  WebkitTouchCallout: 'default',
-  WebkitUserSelect: 'none',
-  userSelect: 'none',
-};
+  MAX_MARKDOWN_RENDER_CHARS,
+  MAX_ASSISTANT_PREPROCESS_CHARS,
+  MULTI_IMAGE_ATTACHMENT_GRID,
+  ASSISTANT_IMAGE_THUMB_IMG,
+  ASSISTANT_IMAGE_THUMB_META_ROW,
+} from './MessageItem/styleConstants';
 
 interface MessageItemProps {
   message: Message;
@@ -80,147 +48,11 @@ interface MessageItemProps {
   imageGenProgress?: { current: number; total: number } | null;
 }
 
-function InlineStreamDots() {
-  return (
-    <div className="flex gap-1 text-stone-500 dark:text-slate-500 text-sm" aria-hidden>
-      <span className="animate-bounce" style={{ animationDelay: '0ms' }}>
-        ·
-      </span>
-      <span className="animate-bounce" style={{ animationDelay: '150ms' }}>
-        ·
-      </span>
-      <span className="animate-bounce" style={{ animationDelay: '300ms' }}>
-        ·
-      </span>
-    </div>
-  );
-}
+/** 三个占位组件已抽离到 ./MessageItem/*Placeholder.tsx */
+import InlineStreamDots from './MessageItem/InlineStreamDots';
+import DocumentGeneratingPlaceholder from './MessageItem/DocumentGeneratingPlaceholder';
+import ImageGeneratingPlaceholder from './MessageItem/ImageGeneratingPlaceholder';
 
-function DocumentGeneratingPlaceholder({ t }: { t: (key: string) => string }) {
-  return (
-    <div className="font-mono text-[11px] leading-relaxed text-emerald-100/88" role="status" aria-live="polite">
-      <div className="flex items-start gap-2 text-emerald-400/90">
-        <span aria-hidden className="select-none shrink-0">
-          ▸
-        </span>
-        <div className="min-w-0 flex-1 space-y-1">
-          <div className="text-emerald-200/95">{t('chat.documentGenWorking')}</div>
-          <div className="text-emerald-600/85 dark:text-emerald-500/80">{t('chat.documentGenWorkingSub')}</div>
-          <div className="myagent-image-gen-loading-shimmer relative mt-1 flex h-6 items-center overflow-hidden rounded border border-emerald-800/40 bg-gradient-to-r from-emerald-950/85 via-slate-950/50 to-emerald-900/35 px-2">
-            <FiFileText size={13} className="relative z-10 text-emerald-500/88" aria-hidden />
-            <div className="relative z-10 ml-2 h-1 flex-1 overflow-hidden rounded-full bg-black/45">
-              <div className="h-full w-2/5 animate-pulse rounded-full bg-emerald-400/42" />
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ImageGeneratingPlaceholder({
-  progress,
-  files,
-  openAttachmentPreview,
-  downloadAttachmentCopy,
-  t,
-}: {
-  progress: { current: number; total: number };
-  files?: FileInfo[];
-  openAttachmentPreview?: (name: string, src: string, path: string, index: number) => void;
-  downloadAttachmentCopy?: (
-    e: React.MouseEvent,
-    path: string,
-    name: string,
-    displaySrc?: string
-  ) => void | Promise<void>;
-  t: (key: string, params?: Record<string, string | number>) => string;
-}) {
-  const imageFiles = (files ?? []).filter((f) => f.type.startsWith('image/'));
-  const slotCount = Math.min(Math.max(progress.total, 1), 24);
-
-  return (
-    <div
-      className="rounded-lg border border-stone-300/55 bg-white/85 p-2.5 text-stone-800 shadow-sm dark:border-slate-600/60 dark:bg-slate-800/75 dark:text-slate-100"
-      role="status"
-      aria-live="polite"
-    >
-      <div className="mb-2 flex flex-wrap items-center gap-2 border-b border-stone-200/90 pb-2 text-[11px] text-stone-600 dark:border-slate-600/65 dark:text-slate-400">
-        <FiLoader size={13} className="shrink-0 animate-spin text-primary-600 dark:text-primary-300" aria-hidden />
-        <span>
-          {t('chat.imageGenWorking')}
-          {progress.total > 1 ? (
-            <span className="ml-1.5 tabular-nums text-stone-500 dark:text-slate-500">
-              {t('chat.imageGenWorkingTotal', { total: progress.total })}
-            </span>
-          ) : null}
-        </span>
-      </div>
-      <div className={MULTI_IMAGE_ATTACHMENT_GRID}>
-        {Array.from({ length: slotCount }).map((_, idx) => {
-          const file = imageFiles[idx];
-          if (file) {
-            const displaySrc = attachmentImageDisplaySrc(file);
-            return (
-              <div key={file.path || `img-${idx}`} className="relative min-w-0 transition-all" title={file.name}>
-                <div className="flex w-max flex-col gap-1">
-                  <img
-                    src={displaySrc}
-                    alt={file.name}
-                    onClick={() => displaySrc && openAttachmentPreview?.(file.name, displaySrc, file.path, idx)}
-                    className={`${ASSISTANT_IMAGE_THUMB_IMG} bg-stone-50 dark:bg-slate-900/35`}
-                  />
-                  <div className={ASSISTANT_IMAGE_THUMB_META_ROW}>
-                    <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-stone-700 dark:text-slate-300">
-                      {file.name}
-                    </span>
-                    {downloadAttachmentCopy ? (
-                      <button
-                        type="button"
-                        className="shrink-0 rounded p-0.5 text-stone-500 hover:bg-stone-100 dark:text-slate-400 dark:hover:bg-slate-700/80"
-                        title={t('message.imagePreviewDownload')}
-                        aria-label={t('message.imagePreviewDownload')}
-                        onClick={(e) =>
-                          void downloadAttachmentCopy(e, file.path, file.name, displaySrc)
-                        }
-                      >
-                        <FiDownload size={12} aria-hidden />
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-            );
-          }
-          const active = idx === imageFiles.length;
-          return (
-            <div key={`slot-${idx}`} className="flex w-max flex-col gap-1">
-              <div
-                className={`relative myagent-image-gen-loading-shimmer flex ${ASSISTANT_IMAGE_THUMB_FRAME} flex-col items-center justify-center overflow-hidden rounded-md border bg-stone-100/95 dark:bg-slate-700/35 ${
-                  active
-                    ? 'border-primary-400/65 ring-2 ring-primary-400/35 dark:border-primary-500/50 dark:ring-primary-500/28'
-                    : 'border-stone-300/60 dark:border-slate-600/55'
-                }`}
-              >
-                {active ? (
-                  <FiLoader size={20} className="relative z-10 animate-spin text-primary-600 dark:text-primary-300" aria-hidden />
-                ) : (
-                  <FiImage size={21} className="relative z-10 text-stone-400 dark:text-slate-500" aria-hidden />
-                )}
-                <span className="absolute bottom-1 right-1 rounded bg-stone-800/78 px-1 py-0.5 text-[9px] font-medium tabular-nums text-stone-100 dark:bg-slate-950/82 dark:text-slate-100">
-                  {idx + 1}/{progress.total}
-                </span>
-              </div>
-              <div className={`${ASSISTANT_IMAGE_THUMB_META_ROW} pointer-events-none`} aria-hidden>
-                <span className="invisible select-none text-[11px]">.</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 function extractDocumentExportBody(raw: string): string {
   const text = String(raw || '').replace(/\r\n/g, '\n').trim();
@@ -238,81 +70,11 @@ function extractDocumentExportBody(raw: string): string {
   return text;
 }
 
-function AssistantReasoningCollapsible(props: {
-  reasoning: string;
-  isThoughtStreaming: boolean;
-  t: (key: string) => string;
-}) {
-  const { reasoning, isThoughtStreaming, t } = props;
-  /** 流式输出时展开；结束后自动折叠，仍可手动展开查看 */
-  const [expanded, setExpanded] = useState(isThoughtStreaming);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const scrollFollowRaf = useRef(0);
-
-  useEffect(() => {
-    setExpanded(isThoughtStreaming);
-  }, [isThoughtStreaming]);
-
-  const showBody = isThoughtStreaming || expanded;
-
-  const handleToggle = () => {
-    if (isThoughtStreaming) return;
-    setExpanded((v) => !v);
-  };
-
-  useEffect(() => {
-    if (!showBody) return;
-    if (scrollFollowRaf.current !== 0) window.cancelAnimationFrame(scrollFollowRaf.current);
-    scrollFollowRaf.current = window.requestAnimationFrame(() => {
-      scrollFollowRaf.current = 0;
-      const el = scrollRef.current;
-      if (!el) return;
-      el.scrollTop = el.scrollHeight;
-    });
-    return () => {
-      if (scrollFollowRaf.current !== 0) window.cancelAnimationFrame(scrollFollowRaf.current);
-    };
-  }, [reasoning, showBody]);
-
-  return (
-    <div
-      className={
-        (showBody ? 'mb-2 border-b border-stone-200/80 pb-2.5 ' : 'mb-1.5 ') +
-        'dark:border-slate-600/45 text-stone-700 dark:text-slate-300'
-      }
-    >
-      <button
-        type="button"
-        disabled={isThoughtStreaming}
-        onClick={handleToggle}
-        className={`flex w-full items-center gap-1.5 -mx-0.5 px-0.5 py-1 text-left text-[11px] font-medium text-stone-600 dark:text-slate-400 ${
-          isThoughtStreaming ? 'cursor-default' : 'cursor-pointer hover:text-stone-800 dark:hover:text-slate-200'
-        }`}
-        aria-expanded={showBody}
-      >
-        {showBody ? (
-          <FiChevronDown size={14} className="shrink-0 opacity-80" aria-hidden />
-        ) : (
-          <FiChevronRight size={14} className="shrink-0 opacity-80" aria-hidden />
-        )}
-        <span className="min-w-0 flex-1">{t('chat.reasoningSection')}</span>
-        <span className="shrink-0 text-[10px] font-normal opacity-75 tabular-nums">
-          {isThoughtStreaming ? t('chat.reasoningStreaming') : showBody ? t('chat.reasoningCollapse') : t('chat.reasoningExpand')}
-        </span>
-      </button>
-      {showBody ? (
-        <div
-          ref={scrollRef}
-          className="mt-1 max-h-[min(22vh,140px)] overflow-y-auto overflow-x-hidden rounded-md bg-stone-200/35 px-2 py-1.5 dark:bg-slate-900/50"
-        >
-          <pre className="m-0 whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-stone-800 dark:text-slate-200">
-            {reasoning}
-          </pre>
-        </div>
-      ) : null}
-    </div>
-  );
-}
+// AssistantReasoningCollapsible 已抽离到 ./MessageItem/AssistantReasoningCollapsible
+// 既要重新导出保留外部 import 兼容，也要让本地 JSX 通过别名可见
+import { AssistantReasoningCollapsible as AssistantReasoningCollapsibleImpl } from './MessageItem/AssistantReasoningCollapsible';
+const AssistantReasoningCollapsible = AssistantReasoningCollapsibleImpl;
+export { AssistantReasoningCollapsible };
 
 /**
  * 3D 卡片轮播视觉常量：
@@ -321,429 +83,19 @@ function AssistantReasoningCollapsible(props: {
  * - 倾斜角度递增（45°/58°/65°），缩放递减（0.78/0.62/0.5），远 z 递增；
  * - 透明度大幅压低（0.4/0.22/0.12），强化"主图无干扰"。
  */
-const GALLERY_CAROUSEL_TRANSITION =
-  'transform 520ms cubic-bezier(0.32, 0.72, 0, 1), opacity 520ms ease';
-const GALLERY_MODAL_ENTER_MS = 240;
-const GALLERY_IMG_FRAME =
-  'flex max-h-[min(72vh,880px)] max-w-[min(72vw,920px)] items-center justify-center overflow-hidden rounded-lg bg-white shadow-2xl dark:bg-zinc-900';
-const GALLERY_IMG =
-  'block max-h-[min(72vh,880px)] max-w-[min(72vw,920px)] object-contain';
 
-export const ImagePreviewModal: React.FC<{
-  src: string;
-  onClose: () => void;
-  alt: string;
-  /** 桌面壳另存拷贝用；移动端壳无 Electron 时使用长按菜单 */
-  localPath?: string;
-  defaultFileName?: string;
-}> = ({ src, onClose, alt, localPath, defaultFileName }) => {
-  const { t } = useI18n();
-  const desktopShell = hasDesktopLocalSaveCapability();
-  const [shown, setShown] = useState(false);
-  const closingRef = useRef(false);
+// ImagePreviewModal 已抽离到 ./MessageItem/ImagePreviewModal.tsx
+import { ImagePreviewModal } from './MessageItem/ImagePreviewModal';
+// 重新导出保留外部 `import { ImagePreviewModal } from './MessageItem'` 兼容
+export type { ImagePreviewModalProps } from './MessageItem/ImagePreviewModal';
+export { ImagePreviewModal };
 
-  useEffect(() => {
-    const id = window.requestAnimationFrame(() => setShown(true));
-    return () => window.cancelAnimationFrame(id);
-  }, []);
+// ConversationImageGalleryModal 已抽离到 ./MessageItem/ConversationImageGalleryModal.tsx
+// 重新导出保留外部 `import { ConversationImageGalleryModal } from './MessageItem'` 兼容
+import { ConversationImageGalleryModal } from './MessageItem/ConversationImageGalleryModal';
+export type { ConversationImageGalleryModalProps } from './MessageItem/ConversationImageGalleryModal';
+export { ConversationImageGalleryModal };
 
-  const requestClose = useCallback(() => {
-    if (closingRef.current) return;
-    closingRef.current = true;
-    setShown(false);
-    window.setTimeout(onClose, GALLERY_MODAL_ENTER_MS);
-  }, [onClose]);
-
-  const handleSaveCopy = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    try {
-      await downloadDisplayImage({
-        src: src.trim(),
-        sourceLocalPath: (localPath || '').trim(),
-        defaultFileName: defaultFileName || 'image.png',
-      });
-    } catch (err) {
-      if (err instanceof DownloadLocalFileError) {
-        window.alert(
-          t(
-            err.code === 'path_empty' ? 'message.downloadPathEmpty' : 'message.downloadSourceMissing'
-          )
-        );
-        return;
-      }
-      console.warn('[image-download] preview save failed');
-      window.alert(t('message.imageDownloadFailed'));
-    }
-  };
-
-  const node = (
-    <div
-      className={MODAL_PORTAL_LAYER_CLASS}
-      style={{
-        ...modalPortalShellStyle,
-        opacity: shown ? 1 : 0,
-        transitionDuration: `${GALLERY_MODAL_ENTER_MS}ms`,
-      }}
-      onClick={requestClose}
-    >
-      <div
-        className="relative isolate flex max-h-[85vh] w-full max-w-[90vw] flex-col gap-4"
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          transform: shown ? 'scale(1) translateY(0)' : 'scale(0.94) translateY(14px)',
-          transition: `transform ${GALLERY_MODAL_ENTER_MS}ms cubic-bezier(0.32, 0.72, 0, 1)`,
-        }}
-      >
-        <div className="pointer-events-auto relative z-[210] flex shrink-0 justify-end gap-3 [&_svg]:pointer-events-none">
-          {desktopShell ? (
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2.5 py-1 text-sm text-white backdrop-blur-sm transition-colors hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
-              title={t('message.imagePreviewDownload')}
-              aria-label={t('message.imagePreviewDownload')}
-              onClick={(e) => void handleSaveCopy(e)}
-            >
-              <FiDownload size={14} aria-hidden />
-              <span>{t('message.imagePreviewDownload')}</span>
-            </button>
-          ) : null}
-        <button
-            type="button"
-            onClick={requestClose}
-            className="inline-flex items-center justify-center rounded-md bg-white/10 px-2 py-1 text-white backdrop-blur-sm transition-colors hover:bg-white/20 hover:text-primary-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
-            title={t('message.closePreview')}
-            aria-label={t('message.closePreview')}
-          >
-            <FiX size={18} aria-hidden />
-          </button>
-        </div>
-        <div className={`mx-auto ${GALLERY_IMG_FRAME}`}>
-          <img
-            src={src}
-            alt={alt}
-            style={desktopShell ? undefined : previewImgTouchMenuStyle}
-            className={GALLERY_IMG}
-          />
-        </div>
-        {!desktopShell ? (
-          <p className="mx-auto max-w-[min(90vw,24rem)] text-center text-[11px] leading-snug text-white/55 px-2">
-            {t('message.imageLongPressGalleryHint')}
-          </p>
-        ) : null}
-      </div>
-    </div>
-  );
-
-  return typeof document !== 'undefined' ? createPortal(node, document.body) : null;
-};
-
-const GalleryCarouselStage: React.FC<{
-  slides: ConversationImageGalleryItem[];
-  scrollPos: number;
-  isDragging: boolean;
-  onSelect: (index: number) => void;
-  altFallback: string;
-  touchMenuStyle?: React.CSSProperties;
-  stageRef?: React.Ref<HTMLDivElement>;
-}> = ({ slides, scrollPos, isDragging, onSelect, altFallback, touchMenuStyle, stageRef }) => {
-  const cardTransitionStyle: React.CSSProperties = {
-    transition: isDragging ? 'none' : GALLERY_CAROUSEL_TRANSITION,
-    transformStyle: 'preserve-3d',
-  };
-
-  const minI = Math.max(0, Math.floor(scrollPos) - 3);
-  const maxI = Math.min(slides.length - 1, Math.ceil(scrollPos) + 3);
-
-  return (
-    <div
-      ref={stageRef}
-      className="relative mx-auto h-[min(72vh,880px)] w-full min-w-0 max-w-[min(78vw,1080px)]"
-      style={{ perspective: '1500px', perspectiveOrigin: '50% 45%' }}
-    >
-      <div className="relative h-full w-full" style={{ transformStyle: 'preserve-3d' }}>
-        {Array.from({ length: maxI - minI + 1 }, (_, k) => minI + k).map((slideIndex) => {
-          const slide = slides[slideIndex]!;
-          const offset = slideIndex - scrollPos;
-          const metrics = galleryCarouselCardMetricsSmooth(offset);
-          const isCenter = Math.abs(offset) < 0.45;
-          const img = (
-            <div className={GALLERY_IMG_FRAME}>
-              <img
-                src={slide.src}
-                alt={isCenter ? slide.defaultFileName || altFallback : ''}
-                aria-hidden={!isCenter}
-                draggable={false}
-                style={touchMenuStyle}
-                className={GALLERY_IMG}
-              />
-            </div>
-          );
-
-          if (isCenter) {
-            return (
-              <div
-                key={`${slide.messageId}-${slide.fileIndex}-${slideIndex}`}
-                className="absolute left-1/2 top-1/2 origin-center"
-                style={{
-                  ...cardTransitionStyle,
-                  transform: metrics.transform,
-                  opacity: metrics.opacity,
-                  zIndex: metrics.zIndex,
-                  pointerEvents: metrics.pointerEvents,
-                }}
-              >
-                {img}
-              </div>
-            );
-          }
-
-          return (
-            <button
-              key={`${slide.messageId}-${slide.fileIndex}-${slideIndex}`}
-              type="button"
-              aria-label={slide.defaultFileName || altFallback}
-              onClick={(e) => {
-                e.stopPropagation();
-                onSelect(slideIndex);
-              }}
-              className="absolute left-1/2 top-1/2 origin-center cursor-pointer rounded-lg border-0 bg-transparent p-0 outline-none transition-[filter] hover:brightness-105 focus-visible:ring-2 focus-visible:ring-white/50"
-              style={{
-                ...cardTransitionStyle,
-                transform: metrics.transform,
-                opacity: metrics.opacity,
-                zIndex: metrics.zIndex,
-                pointerEvents: metrics.pointerEvents,
-              }}
-            >
-              {img}
-        </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-};
-
-export const ConversationImageGalleryModal: React.FC<{
-  slides: ConversationImageGalleryItem[];
-  startIndex: number;
-  onClose: () => void;
-  onDeleteCurrent?: (slide: ConversationImageGalleryItem) => void | Promise<void>;
-}> = ({ slides, startIndex, onClose, onDeleteCurrent }) => {
-  const { t } = useI18n();
-  const desktopShell = hasDesktopLocalSaveCapability();
-  const stageRef = useRef<HTMLDivElement>(null);
-  const { scrollPos, settledIndex, setIndex, isDragging } = useGallerySwipeMomentum(
-    slides.length,
-    startIndex,
-  );
-  const [shown, setShown] = useState(false);
-  const closingRef = useRef(false);
-  const displayIndex = Math.min(
-    slides.length - 1,
-    Math.max(0, Math.round(scrollPos)),
-  );
-
-  useEffect(() => {
-    const id = window.requestAnimationFrame(() => setShown(true));
-    return () => window.cancelAnimationFrame(id);
-  }, []);
-
-  const requestClose = useCallback(() => {
-    if (closingRef.current) return;
-    closingRef.current = true;
-    setShown(false);
-    window.setTimeout(onClose, GALLERY_MODAL_ENTER_MS);
-  }, [onClose]);
-
-  useEffect(() => {
-    setGestureUiPhase('gallery-preview');
-    return () => {
-      setGestureUiPhase('idle');
-    };
-  }, []);
-
-  useEffect(() => {
-    const el = stageRef.current;
-    if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-      if (delta === 0) return;
-      if (delta > 0) {
-        setIndex(Math.min(slides.length - 1, settledIndex + 1));
-      } else {
-        setIndex(Math.max(0, settledIndex - 1));
-      }
-    };
-    el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
-  }, [slides.length, settledIndex, setIndex]);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') requestClose();
-      if (e.key === 'ArrowLeft') {
-        e.preventDefault();
-        setIndex(Math.max(0, settledIndex - 1));
-      }
-      if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        setIndex(Math.min(slides.length - 1, settledIndex + 1));
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [slides.length, requestClose, settledIndex, setIndex]);
-
-  if (!slides.length) return null;
-
-  const slide = slides[displayIndex]!;
-  const canPrev = scrollPos > 0.02;
-  const canNext = scrollPos < slides.length - 1.02;
-
-  const handleGallerySaveCopy = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    try {
-      await downloadDisplayImage({
-        src: slide.src.trim(),
-        sourceLocalPath: slide.localPath.trim(),
-        defaultFileName: slide.defaultFileName || 'image.png',
-      });
-    } catch (err) {
-      if (err instanceof DownloadLocalFileError) {
-        window.alert(
-          t(
-            err.code === 'path_empty' ? 'message.downloadPathEmpty' : 'message.downloadSourceMissing'
-          )
-        );
-        return;
-      }
-      console.warn('[image-download] gallery save failed');
-      window.alert(t('message.imageDownloadFailed'));
-    }
-  };
-
-  const node = (
-    <div
-      className={MODAL_PORTAL_LAYER_CLASS}
-      style={{
-        ...modalPortalShellStyle,
-        opacity: shown ? 1 : 0,
-        transitionDuration: `${GALLERY_MODAL_ENTER_MS}ms`,
-      }}
-      onClick={requestClose}
-      role="dialog"
-      aria-modal="true"
-      aria-label={t('message.imageAlt')}
-    >
-      <div
-        className="relative isolate flex h-full max-h-screen min-h-0 w-full max-w-[100vw] flex-col px-12 sm:px-16"
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          transform: shown ? 'scale(1) translateY(0)' : 'scale(0.94) translateY(14px)',
-          transition: `transform ${GALLERY_MODAL_ENTER_MS}ms cubic-bezier(0.32, 0.72, 0, 1)`,
-        }}
-      >
-        <div
-          className={`pointer-events-auto relative z-[210] flex w-full shrink-0 flex-wrap justify-end gap-3 pb-4 [&_svg]:pointer-events-none sm:pb-5 ${MODAL_CLEAR_TITLEBAR_PT}`}
-        >
-          {desktopShell ? (
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2.5 py-1 text-sm text-white backdrop-blur-sm transition-colors hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
-              title={t('message.imagePreviewDownload')}
-              aria-label={t('message.imagePreviewDownload')}
-              onClick={(e) => void handleGallerySaveCopy(e)}
-            >
-              <FiDownload size={14} aria-hidden />
-              <span>{t('message.imagePreviewDownload')}</span>
-            </button>
-          ) : null}
-          {onDeleteCurrent ? (
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 rounded-md bg-red-500/20 px-2.5 py-1 text-sm text-white backdrop-blur-sm transition-colors hover:bg-red-500/35 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
-              title={t('imageLibrary.delete')}
-              onClick={(e) => {
-                e.stopPropagation();
-                void onDeleteCurrent(slide);
-              }}
-            >
-              <FiTrash2 size={14} aria-hidden />
-              <span>{t('imageLibrary.delete')}</span>
-            </button>
-          ) : null}
-          <button
-            type="button"
-            onClick={requestClose}
-            className="inline-flex items-center justify-center rounded-md bg-white/10 px-2 py-1 text-white backdrop-blur-sm transition-colors hover:bg-white/20 hover:text-primary-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
-            title={t('message.closePreview')}
-            aria-label={t('message.closePreview')}
-          >
-            <FiX size={18} aria-hidden />
-          </button>
-        </div>
-
-        <div className="pointer-events-none relative z-0 flex min-h-0 w-full max-w-[min(96vw,1400px)] flex-1 items-center justify-center gap-1 self-center sm:gap-2">
-          <button
-            type="button"
-            disabled={!canPrev}
-            onClick={(e) => {
-              e.stopPropagation();
-              setIndex(Math.max(0, settledIndex - 1));
-            }}
-            className={`pointer-events-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/25 bg-white/10 text-white transition-colors sm:h-12 sm:w-12 [&_svg]:pointer-events-none ${
-              canPrev ? 'hover:bg-white/20' : 'cursor-not-allowed opacity-35'
-            }`}
-            title={t('message.imageGalleryPrev')}
-            aria-label={t('message.imageGalleryPrev')}
-          >
-            <FiChevronLeft size={22} aria-hidden />
-          </button>
-
-          <div className="pointer-events-auto flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-3">
-            <GalleryCarouselStage
-              slides={slides}
-              scrollPos={scrollPos}
-              isDragging={isDragging}
-              onSelect={setIndex}
-              altFallback={t('message.imageAlt')}
-              touchMenuStyle={desktopShell ? undefined : previewImgTouchMenuStyle}
-              stageRef={stageRef}
-            />
-            <p className="text-center text-sm text-white/90 tabular-nums">
-              {t('message.imageGalleryPosition', { current: displayIndex + 1, total: slides.length })}
-            </p>
-            {!desktopShell ? (
-              <p className="mx-auto max-w-[min(90vw,24rem)] text-center text-[11px] leading-snug text-white/55 px-2">
-                {t('message.imageLongPressGalleryHint')}
-              </p>
-            ) : null}
-          </div>
-
-          <button
-            type="button"
-            disabled={!canNext}
-            onClick={(e) => {
-              e.stopPropagation();
-              setIndex(Math.min(slides.length - 1, settledIndex + 1));
-            }}
-            className={`pointer-events-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/25 bg-white/10 text-white transition-colors sm:h-12 sm:w-12 [&_svg]:pointer-events-none ${
-              canNext ? 'hover:bg-white/20' : 'cursor-not-allowed opacity-35'
-            }`}
-            title={t('message.imageGalleryNext')}
-            aria-label={t('message.imageGalleryNext')}
-          >
-            <FiChevronRight size={22} aria-hidden />
-        </button>
-        </div>
-      </div>
-    </div>
-  );
-
-  return typeof document !== 'undefined' ? createPortal(node, document.body) : null;
-};
 
 function formatMessageTime(ts: number) {
   const d = new Date(ts);
@@ -827,17 +179,15 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
       });
     } catch (err) {
       if (err instanceof DownloadLocalFileError) {
-        window.alert(
-          t(
-            err.code === 'path_empty'
-              ? 'message.downloadPathEmpty'
-              : 'message.downloadSourceMissing'
-          )
+        showError(
+          err.code === 'path_empty'
+            ? 'message.downloadPathEmpty'
+            : 'message.downloadSourceMissing'
         );
         return;
       }
       console.warn('[image-download] failed', fileName);
-      window.alert(t('message.imageDownloadFailed'));
+      showError('message.imageDownloadFailed');
     }
   };
 

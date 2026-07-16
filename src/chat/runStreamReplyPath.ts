@@ -21,6 +21,7 @@ import {
   appendGeneratedImageToAssistant,
   mergeAssistantFiles,
   createAnimStream,
+  withStreamLifecycle,
 } from './runModelReplyShared';
 import type { RunModelReplyUi } from './runModelReplyTypes';
 
@@ -121,41 +122,47 @@ function runDocumentStreamReply(args: RunStreamReplyPathArgs): void {
         ui.streamUnsubRef.current = null;
         const aborted = ui.streamCancelledByUserRef.current;
         ui.streamCancelledByUserRef.current = false;
-        try {
-          if (ui.streamHadErrorRef.current) return;
-          if (aborted) {
+        await withStreamLifecycle(
+          assistantId,
+          {
+            onFinalize: () => {
+              ui.setIsStreaming(false);
+              ui.clearLoadingForSession(sendSessionId);
+              ui.streamingAssistantIdRef.current = null;
+              ui.streamingSessionIdRef.current = null;
+              ui.setStreamingTargetAssistantId(null);
+            },
+          },
+          async () => {
+            if (ui.streamHadErrorRef.current) return;
+            if (aborted) {
+              ui.updateMessage(sendSessionId, assistantId, {
+                content: ui.t('chat.stoppedBanner'),
+                exportHint,
+              });
+              return;
+            }
+            const artifactBody = stripGenerateImageArtifactsForDisplay(artifactBuffer).trim();
             ui.updateMessage(sendSessionId, assistantId, {
-              content: ui.t('chat.stoppedBanner'),
-              exportHint,
+              exportHint: { ...exportHint, status: 'generating' },
             });
-            return;
-          }
-          const artifactBody = stripGenerateImageArtifactsForDisplay(artifactBuffer).trim();
-          ui.updateMessage(sendSessionId, assistantId, {
-            exportHint: { ...exportHint, status: 'generating' },
-          });
-          const artifactFiles = await createDocumentArtifactsFromMarkdown(
-            artifactBody,
-            documentExportFormatsFromHint(exportHint),
-            documentArtifactBaseNameFromContent(
+            const artifactFiles = await createDocumentArtifactsFromMarkdown(
               artifactBody,
-              documentArtifactBaseName(userMessage.content)
-            )
-          );
-          ui.updateMessage(sendSessionId, assistantId, {
-            content: artifactFiles.length
-              ? '文档已生成，点击下方文件即可查看或另存。'
-              : '文档内容已生成，但写入本地文件失败。请重试或检查文档目录权限。',
-            exportHint,
-            files: artifactFiles.length ? artifactFiles : undefined,
-          });
-        } finally {
-          ui.setIsStreaming(false);
-          ui.clearLoadingForSession(sendSessionId);
-          ui.streamingAssistantIdRef.current = null;
-          ui.streamingSessionIdRef.current = null;
-          ui.setStreamingTargetAssistantId(null);
-        }
+              documentExportFormatsFromHint(exportHint),
+              documentArtifactBaseNameFromContent(
+                artifactBody,
+                documentArtifactBaseName(userMessage.content)
+              )
+            );
+            ui.updateMessage(sendSessionId, assistantId, {
+              content: artifactFiles.length
+                ? '文档已生成，点击下方文件即可查看或另存。'
+                : '文档内容已生成，但写入本地文件失败。请重试或检查文档目录权限。',
+              exportHint,
+              files: artifactFiles.length ? artifactFiles : undefined,
+            });
+          }
+        );
       })();
     },
   });

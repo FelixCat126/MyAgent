@@ -32,7 +32,6 @@ interface ModelStore {
   activeModelId: string | null;
   /** 独立生图模型 ID；null = 自动选择第一个可用的生图模型（向后兼容） */
   imageGenModelId: string | null;
-  isInitialized: boolean;
 
   // Actions
   addModel: (config: ModelConfig) => void;
@@ -89,7 +88,6 @@ export const useModelStore = create<ModelStore>()(
       models: [],
       activeModelId: null,
       imageGenModelId: null,
-      isInitialized: false,
 
       initializeDefaultModels: () => {
         const { models } = get();
@@ -99,7 +97,6 @@ export const useModelStore = create<ModelStore>()(
         set({
           models: defaultOllamaModels,
           activeModelId: defaultOllamaModels[0]?.id || null,
-          isInitialized: true,
         });
       },
 
@@ -159,13 +156,12 @@ export const useModelStore = create<ModelStore>()(
     {
       name: 'model-storage',
       storage: zustandPersistJson,
-      version: 1,
+      version: 2,
       migrate: (persistedState, fromVersion) => {
         const state = persistedState as {
           models?: ModelConfig[];
           activeModelId?: string | null;
           imageGenModelId?: string | null;
-          isInitialized?: boolean;
         };
         if (!state || !Array.isArray(state.models)) return persistedState as typeof state;
         if (fromVersion < 1) {

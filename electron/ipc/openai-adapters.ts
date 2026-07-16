@@ -197,6 +197,21 @@ export function buildThinkingParams(opts?: {
   }
 
   /** 其它 OpenAI 兼容网关：保留启发式；不支持时由 400 降级去掉 */
+  /** 预判：模型名含 lite/flash/mini/tiny 等通常不支持思考模式，跳过传参避免无谓的 400 重试 */
+  const lowerModel = modelName.toLowerCase();
+  const noThinkingPatterns = [
+    'lite',
+    'flash',
+    'mini',
+    'tiny',
+    'small',
+    'nano',
+    'turbo',
+  ];
+  if (noThinkingPatterns.some((p) => lowerModel.includes(p))) {
+    return {};
+  }
+
   return {
     enable_thinking: true,
     thinking: 'enabled',

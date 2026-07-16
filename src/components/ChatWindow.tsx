@@ -3,7 +3,6 @@ import React, {
   useRef,
   useEffect,
   useCallback,
-  useLayoutEffect,
   useMemo,
 } from 'react';
 import { useChatStore } from '../store/chatStore';
@@ -12,15 +11,8 @@ import { useWebSearchStore } from '../store/webSearchStore';
 import { useSettingStore } from '../store/settingStore';
 import { useParticleStore } from '../store/particleStore';
 import { useI18n } from '../hooks/useI18n';
-import { Message, ChatSession, FileInfo, ModelConfig } from '../types';
-import { FiPaperclip, FiFile, FiImage, FiSquare, FiDownload, FiGlobe, FiLoader, FiMic, FiTrash2, FiCheckSquare, FiX } from 'react-icons/fi';
-import MessageItem, { ConversationImageGalleryModal } from './MessageItem';
-import {
-  buildConversationImageGallery,
-  findConversationGalleryIndex,
-} from '@/utils/conversationImageGallery';
-import ModelSelector from './ModelSelector';
-import { IosSwitch } from './IosSwitch';
+import { showError, showWarning } from '../store/errorStore';
+import { ChatSession, FileInfo, Message } from '../types';
 import { useWebSpeechDictation, type SpeechApiTranscribeConfig } from '@/hooks/useWebSpeechDictation';
 import { useVoiceWake } from '@/hooks/useVoiceWake';
 import { useMainWindowFocused } from '@/hooks/useMainWindowFocused';
@@ -35,7 +27,6 @@ import {
   agentBrowserOpen,
   agentBrowserRead,
 } from '@/agent/browser/agentBrowserController';
-import AgentBrowserPanel from './AgentBrowserPanel';
 import {
   estimateSessionChars,
   resolveContextProgressFullChars,
@@ -52,21 +43,30 @@ import {
   tryClaimSessionSend,
 } from '../chat/sendPipeline';
 import { resubmitEditedUserMessage } from '../chat/resubmitEditedUserMessage';
-import { runModelReply as executeModelReply, type RunModelReplyUi } from '../chat/runModelReply';
 import { installRemoteChatBridge } from '../chat/remoteBridge';
 
+import { ChatToolbar } from './ChatWindow/ChatToolbar';
+import { MessageStream } from './ChatWindow/MessageStream';
+import { ChatComposer } from './ChatWindow/ChatComposer';
+import { GalleryModal } from './ChatWindow/GalleryModal';
+import { useChatScrollStick } from './ChatWindow/hooks/useChatScrollStick';
+import { useMessageSelection } from './ChatWindow/hooks/useMessageSelection';
+import { useChatAttachments } from './ChatWindow/hooks/useChatAttachments';
+import { useChatLifecycleCleanup } from './ChatWindow/hooks/useChatLifecycle';
+import { useChatRunModelReply } from './ChatWindow/hooks/useChatRunModelReply';
+import {
+  buildConversationImageGallery,
+  findConversationGalleryIndex,
+  type ConversationImageGalleryItem,
+} from '../utils/conversationImageGallery';
 
 const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   const {
     currentSessionId,
     sessions,
     addMessage,
-    removeMessage,
     removeMessages,
     updateMessage,
-    appendToMessage,
-    appendReasoningToMessage,
-    loadingSessionId,
     loadingSessionIds,
     clearLoadingForSession,
     updateSessionTitle,
@@ -82,30 +82,19 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   const systemTtsAvailable = useSystemTtsAvailable(uiLocale);
   const ttsPlaybackReady = systemTtsAvailable === true;
 
-  const isCurrentSessionLoading =
-    loadingSessionId !== null && loadingSessionIds.includes(currentSessionId ?? '');
+  const isCurrentSessionLoading = loadingSessionIds.has(currentSessionId ?? '');
   const isCompressingCurrent =
-    !!currentSessionId && compressingSessionIds.includes(currentSessionId);
+    !!currentSessionId && compressingSessionIds.has(currentSessionId);
   const isSessionBusy = isCurrentSessionLoading || isCompressingCurrent;
   const { getActiveModel } = useModelStore();
+
+  // ===== 局部 state（保持原顺序） =====
   const [input, setInput] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
-  const [selectionMode, setSelectionMode] = useState(false);
-  const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(() => new Set());
-  const [attachments, setAttachments] = useState<File[]>([]);
-  const [attachmentPreviews, setAttachmentPreviews] = useState<Record<string, string>>({});
-  const [isDragging, setIsDragging] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const inputAreaRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  /** 距底部小于该值视为「在底部」，流式输出时可自动跟随滚动 */
-  const SCROLL_STICK_BOTTOM_PX = 120;
-  const stickToBottomRef = useRef(true);
-  const [inlineImageIndex, setInlineImageIndex] = useState(0);
-  const [streamingTargetAssistantId, setStreamingTargetAssistantId] = useState<string | null>(null);
-  const inlineImageIndexRef = useRef(0);
-  inlineImageIndexRef.current = inlineImageIndex;
+  const [vectorRagStatus, setVectorRagStatus] = useState<{
+    text: string;
+    tone: 'success' | 'info' | 'error';
+  } | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   /** 本地/HTTP 生图进行中：对话区占位，避免长耗时无反馈 */
   const [imageGenProgress, setImageGenProgress] = useState<{
@@ -113,10 +102,18 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     total: number;
     messageId: string;
   } | null>(null);
-  const [vectorRagStatus, setVectorRagStatus] = useState<{
-    text: string;
-    tone: 'success' | 'info' | 'error';
-  } | null>(null);
+  const [streamingTargetAssistantId, setStreamingTargetAssistantId] = useState<string | null>(null);
+  const [inlineImageIndex, setInlineImageIndex] = useState(0);
+  const inlineImageIndexRef = useRef(0);
+  inlineImageIndexRef.current = inlineImageIndex;
+  const [voiceReplySpeaking, setVoiceReplySpeaking] = useState(false);
+  /** 唤醒态：唤醒词命中到发送/超时之间；驱动粒子呼吸 */
+  const [voiceAwake, setVoiceAwake] = useState(false);
+  const [conversationGalleryIdx, setConversationGalleryIdx] = useState<number | null>(null);
+  const [conversationGalleryNonce, setConversationGalleryNonce] = useState(0);
+
+  // ===== refs =====
+  const inputAreaRef = useRef<HTMLTextAreaElement>(null);
   const streamUnsubRef = useRef<(() => void) | null>(null);
   const streamHadErrorRef = useRef(false);
   const imageGenCancelledRef = useRef(false);
@@ -127,22 +124,26 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   const streamingSessionIdRef = useRef<string | null>(null);
   /** 中文/日文等 IME 组字中为 true，避免 Enter 上屏时被当成发送 */
   const imeComposingRef = useRef(false);
-
   /** 与本机 UI 同步：把生图进度写入消息，便于远端壳页快照显示占位格 */
   const imageGenSyncRef = useRef<{ sessionId: string; messageId: string } | null>(null);
-
   /** 语音识别：与 input 同步，避免 onresult 闭包陈旧 */
   const inputSyncRef = useRef('');
   inputSyncRef.current = input;
   const handleSendRef = useRef<() => void>(() => {});
   const sendFromVoiceWakeRef = useRef(false);
   const speechReaderRef = useRef<StreamingSpeechReader | null>(null);
-  const [voiceReplySpeaking, setVoiceReplySpeaking] = useState(false);
   /** 本轮回复是否来自语音唤醒闭环（唤醒听写自动发送） */
   const voiceWakeLoopRef = useRef(false);
-  /** 唤醒态：唤醒词命中到发送/超时之间；驱动粒子呼吸 */
-  const [voiceAwake, setVoiceAwake] = useState(false);
 
+  // ===== 业务派生 =====
+  const currentSession = sessions.find((s: ChatSession) => s.id === currentSessionId);
+  const messages = currentSession?.messages || [];
+  const conversationGallery: ConversationImageGalleryItem[] = useMemo(
+    () => buildConversationImageGallery(messages),
+    [messages]
+  );
+
+  // ===== 业务逻辑 =====
   const cancelVoiceReply = useCallback(() => {
     speechReaderRef.current?.cancel();
     speechReaderRef.current = null;
@@ -248,6 +249,42 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     },
   });
 
+  // ===== Hooks（5 个抽出的 hook） =====
+  const selection = useMessageSelection();
+  const attachments = useChatAttachments();
+  const { scrollContainerRef, stickToBottomRef } = useChatScrollStick({
+    currentSessionId: currentSessionId ?? null,
+    showTypingDots: false, // 占位：useChatScrollStick 不会因为 showTypingDots 变化触发贴底以外的副作用，调用方在末尾 useLayoutEffect 中处理
+    vectorRagStatus,
+    footerH,
+    attachmentsLength: attachments.attachments.length,
+    isCompressingCurrent,
+    imageGenProgress,
+    messages,
+  });
+  useChatLifecycleCleanup({ cancelVoiceReply, streamUnsubRef });
+  const { runModelReply, runModelReplyRef } = useChatRunModelReply({
+    uiLocale,
+    t,
+    consumeVoiceWakeReply,
+    setVoiceReplySpeaking,
+    setVectorRagStatus,
+    setImageGenProgress,
+    setIsStreaming,
+    setStreamingTargetAssistantId,
+    setInlineImageIndex,
+    inlineImageIndexRef,
+    streamingAssistantIdRef,
+    streamingSessionIdRef,
+    streamUnsubRef,
+    streamHadErrorRef,
+    streamCancelledByUserRef,
+    imageGenCancelledRef,
+    imageGenSyncRef,
+    speechReaderRef,
+  });
+
+  // ===== 业务 effect（不抽到 hook 的部分） =====
   /** 流式开始即清掉唤醒态；同时唤醒态自动 30 秒超时 */
   useEffect(() => {
     if (isStreaming && voiceAwake) setVoiceAwake(false);
@@ -259,12 +296,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   }, [voiceAwake]);
 
   /**
-   * 业务态 → ParticleStore.agentActivity 派生：
-   * - isStreaming + 当前流消息内容为空 → thinking（思考中，旋转）
-   * - isStreaming + 已有内容 → replying（回复中，呼吸）
-   * - 非流式 + voiceAwake → awake（唤醒等待，呼吸）
-   * - 其余 → idle
-   * 手势期间由 store.gestureOverride 接管，ParticleField 会自动让 activity 派生静默。
+   * 业务态 → ParticleStore.agentActivity 派生。
    */
   useEffect(() => {
     const setAct = useParticleStore.getState().setAgentActivity;
@@ -311,49 +343,10 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   }, [speechInputEnabled, speechDictation.abort]);
 
   useEffect(() => {
-    return () => {
-      streamUnsubRef.current?.();
-      streamUnsubRef.current = null;
-      cancelVoiceReply();
-      try {
-        window.electron?.closeModelStream?.();
-      } catch {
-        /* ignore */
-      }
-    };
-  }, [cancelVoiceReply]);
-
-  useEffect(() => {
     if (systemTtsAvailable !== false) return;
     const s = useSettingStore.getState();
     if (s.voiceReplyEnabled) s.setVoiceReplyEnabled(false);
   }, [systemTtsAvailable]);
-
-  const currentSession = sessions.find((s: ChatSession) => s.id === currentSessionId);
-  const messages = currentSession?.messages || [];
-  const conversationGallery = useMemo(() => buildConversationImageGallery(messages), [messages]);
-  /**
-   * 新对话分隔线：同一会话内，若最后两条消息间隔超过阈值，在间隔处显示一条"以下为新对话内容"。
-   * 只保留最近一条断点（从后往前找第一个满足条件的）。阈值 15 分钟，参考同类软件普遍设计。
-   */
-  const newConversationDividerIndex = useMemo(() => {
-    const GAP_MS = 15 * 60 * 1000; // 15 分钟
-    if (messages.length < 2) return -1;
-    for (let i = messages.length - 1; i >= 1; i--) {
-      const prev = messages[i - 1];
-      const curr = messages[i];
-      if (
-        typeof prev?.timestamp === 'number' &&
-        typeof curr?.timestamp === 'number' &&
-        curr.timestamp - prev.timestamp >= GAP_MS
-      ) {
-        return i;
-      }
-    }
-    return -1;
-  }, [messages]);
-  const [conversationGalleryIdx, setConversationGalleryIdx] = useState<number | null>(null);
-  const [conversationGalleryNonce, setConversationGalleryNonce] = useState(0);
 
   useEffect(() => {
     setConversationGalleryIdx(null);
@@ -370,52 +363,24 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     return () => window.clearTimeout(tid);
   }, [vectorRagStatus]);
 
-  const runModelReply = useCallback(
-    (sid: string, hist: Message[], user: Message, model: ModelConfig) => {
-      const ui: RunModelReplyUi = {
-        locale: uiLocale,
-        t,
-        consumeVoiceWakeReply,
-        setVoiceReplySpeaking,
-        setVectorRagStatus,
-        setImageGenProgress,
-        setIsStreaming,
-        setStreamingTargetAssistantId,
-        setInlineImageIndex,
-        inlineImageIndexRef,
-        streamingAssistantIdRef,
-        streamingSessionIdRef,
-        streamUnsubRef,
-        streamHadErrorRef,
-        streamCancelledByUserRef,
-        imageGenCancelledRef,
-        imageGenSyncRef,
-        speechReaderRef,
-        addMessage,
-        updateMessage,
-        appendToMessage,
-        appendReasoningToMessage,
-        removeMessage,
-        clearLoadingForSession,
-      };
-      return executeModelReply(ui, sid, hist, user, model);
-    },
-    [
-      addMessage,
-      appendReasoningToMessage,
-      appendToMessage,
-      clearLoadingForSession,
-      removeMessage,
-      updateMessage,
-      t,
-      uiLocale,
-      consumeVoiceWakeReply,
-    ]
-  );
+  useEffect(() => {
+    const api = typeof window !== 'undefined' ? window.electron : undefined;
+    if (!api?.onMessage) return;
+    const off = api.onMessage('myagent-clipboard-paste', (clip: string) => {
+      const c = String(clip ?? '');
+      if (!c) return;
+      setInput((prev) => (prev ? `${prev}\n${c}` : c));
+    });
+    return off;
+  }, []);
 
-  const runModelReplyRef = useRef(runModelReply);
-  runModelReplyRef.current = runModelReply;
+  useEffect(() => {
+    return installRemoteChatBridge({
+      runModelReply: (...a) => runModelReplyRef.current(...a),
+    });
+  }, []);
 
+  // ===== 编辑 / 选择 / 导出 / 拖拽 / 输入 / 发送 / 停止 =====
   const handleStop = () => {
     streamCancelledByUserRef.current = true;
     imageGenCancelledRef.current = true;
@@ -444,144 +409,16 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     setEditingMessageId(null);
   };
 
-  const startSelection = (messageId?: string) => {
-    setSelectionMode(true);
-    setSelectedMessageIds(messageId ? new Set([messageId]) : new Set());
-  };
-
-  const toggleMessageSelection = (messageId: string) => {
-    setSelectedMessageIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(messageId)) next.delete(messageId);
-      else next.add(messageId);
-      return next;
+  const handleDeleteSelected = () => {
+    selection.deleteSelectedMessages({
+      currentSessionId: currentSessionId ?? null,
+      editingMessageId,
+      setEditingMessageId,
+      confirm: (msg) => window.confirm(msg),
+      removeMessages,
+      label: t('chat.confirmDeleteMessages', { count: selection.selectedMessageIds.size }),
     });
   };
-
-  const cancelSelection = () => {
-    setSelectionMode(false);
-    setSelectedMessageIds(new Set());
-  };
-
-  const deleteSelectedMessages = () => {
-    if (!currentSessionId || selectedMessageIds.size === 0) return;
-    if (!window.confirm(t('chat.confirmDeleteMessages', { count: selectedMessageIds.size }))) return;
-    if (editingMessageId && selectedMessageIds.has(editingMessageId)) setEditingMessageId(null);
-    removeMessages(currentSessionId, [...selectedMessageIds]);
-    cancelSelection();
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-      setIsDragging(false);
-    }
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    if (e.dataTransfer.files) {
-      const files = Array.from(e.dataTransfer.files);
-      setAttachments((prev) => [...prev, ...files]);
-      for (const f of files) {
-        if (f.type.startsWith('image/')) {
-          const url = URL.createObjectURL(f);
-          setAttachmentPreviews((p) => ({ ...p, [f.name]: url }));
-        }
-      }
-    }
-  };
-
-  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
-      const files = Array.from(e.target.files as FileList);
-      setAttachments((prev) => [...prev, ...files]);
-      for (const f of files) {
-        if (f.type.startsWith('image/')) {
-          const url = URL.createObjectURL(f);
-          setAttachmentPreviews((p) => ({ ...p, [f.name]: url }));
-        }
-      }
-    }
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  };
-
-  const removeAttachment = (index: number) => {
-    const removed = attachments[index];
-    setAttachments((prev) => prev.filter((_, i) => i !== index));
-    if (removed && removed.name in attachmentPreviews) {
-      URL.revokeObjectURL(attachmentPreviews[removed.name]);
-      setAttachmentPreviews((p) => {
-        const np = { ...p };
-        delete np[removed.name];
-        return np;
-      });
-    }
-  };
-
-  useEffect(() => {
-    stickToBottomRef.current = true;
-  }, [currentSessionId]);
-
-  /** 出现生图占位时贴底，减少「卡住」体感 */
-  useLayoutEffect(() => {
-    if (!imageGenProgress || !stickToBottomRef.current) return;
-    const el = scrollContainerRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [imageGenProgress]);
-
-  useEffect(() => {
-    const el = scrollContainerRef.current;
-    if (!el) return;
-    const syncStickToBottom = () => {
-      stickToBottomRef.current =
-        el.scrollHeight - el.scrollTop - el.clientHeight <= SCROLL_STICK_BOTTOM_PX;
-    };
-    el.addEventListener('scroll', syncStickToBottom, { passive: true });
-    syncStickToBottom();
-    return () => el.removeEventListener('scroll', syncStickToBottom);
-  }, [currentSessionId]);
-
-  useEffect(() => {
-    const el = scrollContainerRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => {
-      if (!stickToBottomRef.current) return;
-      el.scrollTop = el.scrollHeight;
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [currentSessionId]);
-
-  useEffect(() => {
-    return () => {
-      Object.values(attachmentPreviews).forEach((url) => URL.revokeObjectURL(url));
-    };
-  }, [attachmentPreviews]);
-
-  useEffect(() => {
-    const api = typeof window !== 'undefined' ? window.electron : undefined;
-    if (!api?.onMessage) return;
-    const off = api.onMessage('myagent-clipboard-paste', (clip: string) => {
-      const c = String(clip ?? '');
-      if (!c) return;
-      setInput((prev) => (prev ? `${prev}\n${c}` : c));
-    });
-    return off;
-  }, []);
-
-  useEffect(() => {
-    return installRemoteChatBridge({
-      runModelReply: (...a) => runModelReplyRef.current(...a),
-    });
-  }, []);
 
   const handleExport = async (kind: 'md' | 'html') => {
     if (!currentSession) return;
@@ -599,7 +436,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   };
 
   const handleSend = async () => {
-    if ((!input.trim() && attachments.length === 0) || !currentSessionId) return;
+    if ((!input.trim() && attachments.attachments.length === 0) || !currentSessionId) return;
 
     cancelVoiceReply();
     if (!sendFromVoiceWakeRef.current) {
@@ -620,9 +457,9 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     const uploadedFiles: FileInfo[] = [];
 
     try {
-      if (attachments.length > 0) {
+      if (attachments.attachments.length > 0) {
         let uploadFailed = 0;
-        for (const file of attachments) {
+        for (const file of attachments.attachments) {
           try {
             const buffer = await file.arrayBuffer();
             const info = await window.electron.uploadFile({
@@ -638,16 +475,12 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           }
         }
         if (uploadedFiles.length === 0) {
-          window.alert(uiLocale === 'en' ? 'Attachment upload failed. Please try again.' : '附件上传失败，请重试。');
+          showError('chat.attachmentUploadFailed');
           clearLoadingForSession(sendSessionId);
           return;
         }
         if (uploadFailed > 0) {
-          window.alert(
-            uiLocale === 'en'
-              ? `${uploadFailed} attachment(s) failed to upload and were skipped.`
-              : `有 ${uploadFailed} 个附件上传失败，已忽略失败项继续发送。`
-          );
+          showWarning('chat.attachmentsUploadPartial', { count: uploadFailed });
         }
       }
 
@@ -697,8 +530,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
 
       addMessage(sendSessionId, userMessage);
       setInput('');
-      setAttachments([]);
-      setAttachmentPreviews({});
+      attachments.clearAttachments();
       requestAnimationFrame(() => inputAreaRef.current?.focus());
 
       if (
@@ -717,7 +549,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
       clearLoadingForSession(sendSessionId);
       console.error('[handleSend]', e);
       const detail = e instanceof Error ? e.message : String(e);
-      window.alert(t('chat.sendFailed') + detail);
+      showError('chat.sendFailed', { detail });
     }
   };
 
@@ -727,7 +559,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
 
     const activeModel = getActiveModel();
     if (!activeModel) {
-      alert(t('chat.configureModel'));
+      showWarning('chat.configureModel');
       return;
     }
 
@@ -759,7 +591,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
       clearLoadingForSession(sendSessionId);
       console.error('[handleSubmitEditedMessage]', e);
       const detail = e instanceof Error ? e.message : String(e);
-      window.alert(t('chat.sendFailed') + detail);
+      showError('chat.sendFailed', { detail });
     }
   };
 
@@ -778,13 +610,13 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     void handleSend();
   };
 
+  // ===== 派生（显示用） =====
   const webEffective =
     currentSession != null
       ? effectiveWebEnabled(currentSession, webSearchEnabled)
       : false;
 
   const attachmentStripH = 80;
-
   const lastMsg = messages.length > 0 ? messages[messages.length - 1] : undefined;
 
   /** 流式：最后是助手且无正文时需要「···」，但若已有思考内容则在主气泡内显示，避免双重气泡 */
@@ -797,88 +629,26 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     isCurrentSessionLoading &&
     (lastMsg?.role === 'user' || (assistantNeedsDots && !thinkingVisibleWhileWaiting));
 
-  useLayoutEffect(() => {
-    if (!stickToBottomRef.current) return;
-    const el = scrollContainerRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [messages, currentSessionId, showTypingDots, vectorRagStatus, footerH, attachments.length, isCompressingCurrent]);
+  // ===== 上下文进度（computed） =====
+  const activeModel = getActiveModel();
+  const fullAt = resolveContextProgressFullChars(activeModel ?? null);
+  const softLimit = resolveContextSoftLimitChars(activeModel ?? null);
+  const webOnForCtx = currentSession
+    ? effectiveWebEnabled(currentSession, webSearchEnabled)
+    : webSearchEnabled;
+  const extras = resolveInjectExtras({ webEnabled: webOnForCtx });
+  const overhead = estimateInjectedPayloadOverheadChars(extras);
+  const stored = estimateSessionChars(messages, input);
+  const truncateRisk = messagesExceedSanitizeLimit(messages);
 
+  // ===== 渲染 =====
   return (
     <div
       className="flex flex-col h-full min-h-0"
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
+      onDragOver={attachments.handleDragOver}
+      onDragLeave={attachments.handleDragLeave}
+      onDrop={attachments.handleDrop}
     >
-      {currentSessionId && currentSession && (
-        <div className="shrink-0 flex flex-wrap items-center gap-2 border-b border-stone-600/20 px-6 py-2 dark:border-white/10 bg-stone-100/50 dark:bg-slate-900/40">
-          <div className="flex items-center gap-2.5 text-xs text-stone-600 dark:text-slate-400">
-            <div className="flex items-center gap-1.5">
-              <FiGlobe size={14} className="shrink-0" aria-hidden />
-              <span>{t('chat.web')}</span>
-            </div>
-            <IosSwitch
-              checked={webEffective}
-              aria-label={t('chat.webSwitch')}
-              onChange={(v) => setSessionWebOverride(currentSessionId, v ? 'on' : 'off')}
-            />
-          </div>
-          <div className="ml-auto flex items-center gap-1">
-            {selectionMode ? (
-              <>
-                <span className="mr-1 text-xs text-stone-500 dark:text-slate-400">
-                  {t('chat.selectedCount', { count: selectedMessageIds.size })}
-                </span>
-                <button
-                  type="button"
-                  onClick={deleteSelectedMessages}
-                  disabled={selectedMessageIds.size === 0 || isCurrentSessionLoading}
-                  className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-red-600 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-45 dark:text-red-300 dark:hover:bg-red-950/45"
-                  title={t('chat.deleteSelected')}
-                >
-                  <FiTrash2 size={14} /> {t('chat.deleteSelected')}
-                </button>
-                <button
-                  type="button"
-                  onClick={cancelSelection}
-                  className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-stone-600 hover:bg-stone-200/80 dark:text-slate-300 dark:hover:bg-slate-800"
-                  title={t('chat.cancelSelect')}
-                >
-                  <FiX size={14} /> {t('chat.cancelSelect')}
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={() => startSelection()}
-                disabled={messages.length === 0 || isCurrentSessionLoading}
-                className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-stone-600 hover:bg-stone-200/80 disabled:cursor-not-allowed disabled:opacity-45 dark:text-slate-300 dark:hover:bg-slate-800"
-                title={t('chat.selectMessages')}
-              >
-                <FiCheckSquare size={14} /> {t('chat.selectMessages')}
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => void handleExport('md')}
-              className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-stone-600 hover:bg-stone-200/80 dark:text-slate-300 dark:hover:bg-slate-800"
-              title={t('chat.export.md')}
-            >
-              <FiDownload size={14} /> MD
-            </button>
-            <button
-              type="button"
-              onClick={() => void handleExport('html')}
-              className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-stone-600 hover:bg-stone-200/80 dark:text-slate-300 dark:hover:bg-slate-800"
-              title={t('chat.export.html')}
-            >
-              <FiDownload size={14} /> HTML
-            </button>
-          </div>
-        </div>
-      )}
-
       {vectorRagStatus?.tone === 'error' ? (
         <div
           className={
@@ -891,353 +661,134 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         </div>
       ) : null}
 
-      <div className="flex min-h-0 flex-1 flex-col">
-      <div
-        ref={scrollContainerRef}
-        data-gesture-scroll-target="chat"
-        className="min-h-0 flex-1 overflow-y-auto px-8 py-4 space-y-4"
-        style={{
-          paddingBottom: `calc(${footerH + (attachments.length > 0 ? attachmentStripH : 0)}px + env(safe-area-inset-bottom, 0px))`,
+      <ChatToolbar
+        visible={!!currentSessionId && !!currentSession}
+        webEffective={webEffective}
+        onWebChange={(v) => currentSessionId && setSessionWebOverride(currentSessionId, v ? 'on' : 'off')}
+        webSwitchLabel={t('chat.webSwitch')}
+        webLabel={t('chat.web')}
+        selectionMode={selection.selectionMode}
+        selectedCount={selection.selectedMessageIds.size}
+        isCurrentSessionLoading={isCurrentSessionLoading}
+        messagesEmpty={messages.length === 0}
+        onDeleteSelected={handleDeleteSelected}
+        onCancelSelection={selection.cancelSelection}
+        onStartSelection={() => selection.startSelection()}
+        onExport={handleExport}
+        selectedCountLabel={t('chat.selectedCount', { count: selection.selectedMessageIds.size })}
+        deleteSelectedLabel={t('chat.deleteSelected')}
+        cancelSelectLabel={t('chat.cancelSelect')}
+        selectMessagesLabel={t('chat.selectMessages')}
+        exportMdTitle={t('chat.export.md')}
+        exportHtmlTitle={t('chat.export.html')}
+      />
+
+      <MessageStream
+        scrollContainerRef={scrollContainerRef}
+        messages={messages}
+        isStreaming={isStreaming}
+        streamingTargetAssistantId={streamingTargetAssistantId}
+        selectionMode={selection.selectionMode}
+        selectedMessageIds={selection.selectedMessageIds}
+        onToggleSelect={selection.toggleMessageSelection}
+        onStartSelect={selection.startSelection}
+        onEdit={handleEditMessage}
+        editingMessageId={editingMessageId}
+        onSubmitEdit={handleSubmitEditedMessage}
+        onCancelEdit={cancelEdit}
+        imageGenProgress={imageGenProgress}
+        onOpenConversationGallery={(messageId, fileIndex) => {
+          const idx = findConversationGalleryIndex(conversationGallery, messageId, fileIndex);
+          if (idx >= 0) {
+            setConversationGalleryIdx(idx);
+            setConversationGalleryNonce((n) => n + 1);
+          }
         }}
-      >
-        {messages.length === 0 && (
-          <div className="flex items-center justify-center h-64 text-stone-400 dark:text-slate-500">
-            <p className="text-lg">{t('chat.emptyChat')}</p>
-          </div>
-        )}
+        showTypingDots={showTypingDots}
+        isCompressingCurrent={isCompressingCurrent}
+        footerH={footerH}
+        attachmentStripH={attachmentStripH}
+        attachmentsLength={attachments.attachments.length}
+        emptyLabel={t('chat.emptyChat')}
+        newConversationDividerLabel={t('chat.newConversationDivider')}
+        compressingLabel={t('chat.compressingContext')}
+      />
 
-        {messages.map((message, index) => {
-          const reasoningTrim = (message.reasoning ?? '').trim();
-          const hideEmptyStreamBubble =
-            isStreaming &&
-            message.role === 'assistant' &&
-            message.id === streamingTargetAssistantId &&
-            !(message.content ?? '').trim().length &&
-            !reasoningTrim.length;
-          if (hideEmptyStreamBubble) return <React.Fragment key={message.id} />;
-          return (
-          <React.Fragment key={message.id}>
-            {index === newConversationDividerIndex && (
-              <div className="flex items-center gap-3 py-1" role="separator" aria-label={t('chat.newConversationDivider')}>
-                <div className="h-px flex-1 bg-stone-300/60 dark:bg-slate-600/50" />
-                <span className="text-[10px] font-medium text-stone-400 dark:text-slate-500 whitespace-nowrap">
-                  {t('chat.newConversationDivider')}
-                </span>
-                <div className="h-px flex-1 bg-stone-300/60 dark:bg-slate-600/50" />
-              </div>
-            )}
-          <MessageItem
-            key={message.id}
-            message={message}
-              onEdit={message.role === 'user' ? handleEditMessage : undefined}
-              editing={editingMessageId === message.id}
-              onSubmitEdit={handleSubmitEditedMessage}
-              onCancelEdit={cancelEdit}
-              selectionMode={selectionMode}
-              selected={selectedMessageIds.has(message.id)}
-              onToggleSelect={toggleMessageSelection}
-              onStartSelect={startSelection}
-              conversationStreaming={isStreaming}
-              streamingAssistantId={streamingTargetAssistantId}
-              showInlineStreamPlaceholder={
-                !!isStreaming &&
-                message.role === 'assistant' &&
-                message.id === streamingTargetAssistantId &&
-                !(message.content ?? '').trim().length &&
-                !!(message.reasoning ?? '').trim().length
-              }
-              conversationGallery={conversationGallery}
-              onOpenConversationGallery={(messageId, fileIndex) => {
-                const idx = findConversationGalleryIndex(conversationGallery, messageId, fileIndex);
-                if (idx >= 0) {
-                  setConversationGalleryIdx(idx);
-                  setConversationGalleryNonce((n) => n + 1);
-                }
-              }}
-              imageGenProgress={
-                imageGenProgress?.messageId === message.id
-                  ? { current: imageGenProgress.current, total: imageGenProgress.total }
-                  : message.imageGenProgress
-              }
-            />
-          </React.Fragment>
-          );
-        })}
-
-        {showTypingDots && (
-          <div className="flex justify-start">
-            <div className="flex items-center gap-2 text-stone-500 dark:text-slate-500 text-sm px-5 py-3.5 bg-stone-100 dark:bg-slate-800 rounded-2xl rounded-tl-sm border border-stone-300/45 dark:border-white/5">
-              <div className="flex gap-1">
-                <span className="animate-bounce" style={{ animationDelay: '0ms' }}>
-                  ·
-                </span>
-                <span className="animate-bounce" style={{ animationDelay: '150ms' }}>
-                  ·
-                </span>
-                <span className="animate-bounce" style={{ animationDelay: '300ms' }}>
-                  ·
-                </span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {isCompressingCurrent ? (
-          <div
-            className="flex items-center gap-3 py-2"
-            role="status"
-            aria-live="polite"
-            aria-label={t('chat.compressingContext')}
-          >
-            <div className="h-px flex-1 bg-stone-300/60 dark:bg-slate-600/50" />
-            <span className="inline-flex items-center gap-1.5 text-[10px] font-medium text-stone-500 dark:text-slate-400 whitespace-nowrap">
-              <FiLoader size={12} className="animate-spin shrink-0 opacity-80" aria-hidden />
-              {t('chat.compressingContext')}
-            </span>
-            <div className="h-px flex-1 bg-stone-300/60 dark:bg-slate-600/50" />
-          </div>
-        ) : null}
-
-        <div ref={messagesEndRef} />
-      </div>
-      <AgentBrowserPanel />
-      </div>
-
-      {isDragging && (
+      {attachments.isDragging && (
         <div className="fixed inset-0 z-50 bg-primary-500/10 backdrop-blur-sm flex items-center justify-center border-4 border-dashed border-primary-400 m-4 rounded-2xl">
           <p className="text-2xl font-bold text-primary-600 dark:text-primary-400">{t('chat.dropHint')}</p>
         </div>
       )}
 
-      <div
-        className="fixed bottom-0 right-0 z-30 flex w-[calc(100%-256px)] min-w-0 flex-col border-t border-stone-600/38 bg-stone-200/92 backdrop-blur-xl dark:border-white/10 dark:bg-[#0B1120]/80"
-        style={{ left: 256, paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
-      >
-        {attachments.length > 0 && (
-          <div
-            className="flex shrink-0 flex-wrap justify-start gap-2 border-b border-stone-600/25 bg-transparent px-6 py-1.5 dark:border-white/10"
-            aria-label={t('chat.attachments')}
-          >
-            {attachments.map((file, index) => {
-              const preview = attachmentPreviews[file.name];
-              const isImage = file.type.startsWith('image/');
-              const showThumb = isImage && !!preview;
-              return (
-                <div
-                  key={`${file.name}-${index}`}
-                  className="relative flex w-[92px] shrink-0 flex-col items-center gap-1 rounded-lg border border-primary-400/55 bg-transparent px-1 pb-1.5 pt-1 dark:border-primary-500/45"
-                >
-                  <button
-                    type="button"
-                    onClick={() => removeAttachment(index)}
-                    className="absolute -right-1 -top-1 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-stone-400/50 bg-stone-100 text-[11px] leading-none text-stone-600 shadow-sm hover:bg-stone-200 dark:border-white/20 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
-                    title={t('chat.removeFile')}
-                  >
-                    ×
-                  </button>
-                  <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-md border-2 border-primary-500/70 bg-stone-100/80 shadow-sm dark:border-primary-400/60 dark:bg-slate-900/40">
-                    {showThumb ? (
-                      <img src={preview} alt="" className="h-full w-full object-cover" />
-                    ) : isImage ? (
-                      <FiImage className="text-stone-400 dark:text-slate-500" size={22} aria-hidden />
-                    ) : (
-                      <FiFile className="text-stone-600 dark:text-slate-300" size={22} aria-hidden />
-                    )}
-                  </div>
-                  <span className="w-full truncate px-0.5 text-center text-[10px] font-medium leading-tight text-stone-800 dark:text-slate-100">
-                    {file.name}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        )}
+      <ChatComposer
+        attachments={attachments.attachments}
+        attachmentPreviews={attachments.attachmentPreviews}
+        fileInputRef={attachments.fileInputRef}
+        onFileInputClick={() => attachments.fileInputRef.current?.click()}
+        onFileInputChange={attachments.handleFileInput}
+        onRemoveAttachment={attachments.removeAttachment}
+        input={input}
+        setInput={setInput}
+        inputAreaRef={inputAreaRef}
+        onInputKeyDown={handleInputKeyDown}
+        onCompositionStart={() => {
+          imeComposingRef.current = true;
+        }}
+        onCompositionEnd={() => {
+          imeComposingRef.current = false;
+        }}
+        isSessionBusy={isSessionBusy}
+        inputPlaceholder={t('chat.inputPlaceholder')}
+        speechInputEnabled={speechInputEnabled}
+        speechSupported={speechDictation.supported}
+        speechListening={speechDictation.listening}
+        speechStarting={speechDictation.starting}
+        speechBanner={speechDictation.banner ?? null}
+        onSpeechToggle={() => speechDictation.toggle()}
+        onSpeechClearBanner={() => speechDictation.clearBanner()}
+        voiceWakeListening={voiceWake.listening}
+        voiceWakeStarting={voiceWake.starting}
+        voiceWakePhrase={voiceWakePhrase}
+        setVoiceWakeLoop={(v) => {
+          voiceWakeLoopRef.current = v;
+        }}
+        voiceStopTitle={t('chat.voiceStopTitle')}
+        voiceStartingLabel={t('chat.voiceStarting')}
+        voiceInputLabel={t('chat.voiceInput')}
+        voiceListeningTitle={t('chat.voiceListening')}
+        speechNotSupportedLabel={t('chat.speechNotSupported')}
+        voiceWakeListeningHint={t('chat.voiceWakeListening', {
+          phrase: voiceWakePhrase.trim() || voiceWakePhrase,
+        })}
+        voiceWakeStartingLabel={t('chat.voiceWakeStarting')}
+        closeLabel={t('app.close')}
+        stored={stored}
+        overhead={overhead}
+        softLimit={softLimit}
+        fullAt={fullAt}
+        truncateRisk={truncateRisk}
+        contextUsageHintTemplate={t('chat.contextUsageHint')}
+        contextSanitizeWarn={t('chat.contextSanitizeWarn')}
+        onSend={() => void handleSend()}
+        onStop={handleStop}
+        showStop={isCurrentSessionLoading && (isStreaming || !!imageGenProgress)}
+        sendLabel={t('chat.send')}
+        sendTitle={t('chat.sendTitle')}
+        stopLabel={t('chat.stop')}
+        stopTitle={t('chat.stopTitle')}
+        removeFileLabel={t('chat.removeFile')}
+        attachmentsAriaLabel={t('chat.attachments')}
+        uploadFileLabel={t('chat.uploadFile')}
+        footerH={footerH}
+      />
 
-        <div
-          className="relative box-border flex min-h-0 w-full min-w-0 flex-col gap-2 px-6 py-1.5 sm:py-2"
-          style={{ minHeight: footerH }}
-        >
-          {speechInputEnabled && speechDictation.banner ? (
-            <div className="flex shrink-0 items-center justify-between gap-2 rounded-lg border border-amber-400/35 bg-amber-50/90 px-3 py-1.5 text-xs text-amber-950 dark:border-amber-600/35 dark:bg-amber-950/45 dark:text-amber-50">
-              <span className="min-w-0 leading-snug">{speechDictation.banner}</span>
-              <button
-                type="button"
-                className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium opacity-80 hover:opacity-100"
-                onClick={() => speechDictation.clearBanner()}
-              >
-                {t('app.close')}
-              </button>
-            </div>
-          ) : null}
-        {(() => {
-          const active = getActiveModel();
-          /** 满格 = 压缩触发线（soft×95%），与发送前门禁对齐 */
-          const fullAt = resolveContextProgressFullChars(active);
-          const softLimit = resolveContextSoftLimitChars(active);
-          const webOn = currentSession
-            ? effectiveWebEnabled(currentSession, webSearchEnabled)
-            : webSearchEnabled;
-          const extras = resolveInjectExtras({ webEnabled: webOn });
-          const overhead = estimateInjectedPayloadOverheadChars(extras);
-          const stored = estimateSessionChars(messages, input);
-          const totalLength = stored + overhead;
-          const fillPerc = Math.min((totalLength / Math.max(1, fullAt)) * 100, 100);
-          const isNearLimit = fillPerc > 80;
-          const truncateRisk = messagesExceedSanitizeLimit(messages);
-          const softPct = Math.round(Math.min((totalLength / Math.max(1, softLimit)) * 100, 100));
-          const baseHint = t('chat.contextUsageHint', {
-            used: Math.round(totalLength / 1000),
-            limit: Math.round(softLimit / 1000),
-            pct: softPct,
-          });
-          const title = truncateRisk ? `${baseHint} · ${t('chat.contextSanitizeWarn')}` : baseHint;
-          return totalLength > 0 ? (
-            <div
-                className={`absolute top-0 left-0 h-[2px] transition-all duration-300 ${
-                  isNearLimit || truncateRisk ? 'bg-orange-500' : 'bg-gradient-to-r from-primary-400 to-teal-500'
-                }`}
-              style={{ width: `${fillPerc}%` }}
-              title={title}
-            />
-          ) : null;
-        })()}
-
-          <input
-            type="file"
-            multiple
-            ref={fileInputRef}
-            onChange={handleFileInput}
-            className="hidden"
-            accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.xlsm,.md,.markdown,.txt,.csv,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
-          />
-
-          <div className="flex min-h-[2.5rem] w-full min-w-0 flex-1 items-center gap-2">
-          <div className="flex min-h-10 min-w-0 flex-1 items-center gap-1 rounded-2xl border border-stone-400/28 bg-stone-100/95 py-0 pl-1.5 pr-1 shadow-sm transition-all focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-500/50 dark:border-slate-700 dark:bg-slate-800/80">
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-                className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-all ${
-                  attachments.length > 0
-                    ? 'bg-primary-100/80 text-primary-600 dark:bg-primary-900/30'
-                    : 'text-stone-500 hover:bg-stone-300/45 dark:text-slate-500 dark:hover:bg-slate-700'
-                }`}
-                title={t('chat.uploadFile')}
-            >
-              <FiPaperclip size={14} />
-            </button>
-              {speechInputEnabled ? (
-                <button
-                  type="button"
-                  aria-pressed={speechDictation.listening}
-                  aria-busy={speechDictation.starting}
-                  aria-label={
-                    speechDictation.listening
-                      ? t('chat.voiceStopTitle')
-                      : speechDictation.starting
-                        ? t('chat.voiceStarting')
-                        : voiceWake.listening
-                          ? t('chat.voiceWakeListening', { phrase: voiceWakePhrase.trim() || voiceWakePhrase })
-                          : t('chat.voiceInput')
-                  }
-                  disabled={
-                    isSessionBusy || !speechDictation.supported || speechDictation.starting
-                  }
-                  onClick={() => {
-                    if (!speechDictation.listening) {
-                      voiceWakeLoopRef.current = false;
-                    }
-                    speechDictation.toggle();
-                  }}
-                  title={
-                    speechDictation.listening
-                      ? t('chat.voiceListening')
-                      : speechDictation.starting
-                        ? t('chat.voiceStarting')
-                        : !speechDictation.supported
-                          ? t('chat.speechNotSupported')
-                          : voiceWake.listening
-                          ? t('chat.voiceWakeListeningHint', { phrase: voiceWakePhrase.trim() || voiceWakePhrase })
-                          : voiceWake.starting
-                            ? t('chat.voiceWakeStarting')
-                            : t('chat.voiceInput')
-                  }
-                  className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-all [&_svg]:pointer-events-none ${
-                    speechDictation.listening
-                      ? 'bg-red-600 text-white shadow-sm shadow-red-500/25 animate-pulse'
-                      : speechDictation.starting
-                        ? 'cursor-wait text-primary-600 dark:text-primary-400'
-                        : isSessionBusy || !speechDictation.supported
-                          ? 'cursor-not-allowed text-stone-400 dark:text-slate-600'
-                          : voiceWake.listening
-                            ? 'text-primary-600 ring-1 ring-primary-400/60 dark:text-primary-400 dark:ring-primary-500/50'
-                            : voiceWake.starting
-                              ? 'cursor-wait text-primary-600 dark:text-primary-400'
-                              : 'text-stone-600 hover:bg-stone-300/55 dark:text-slate-400 dark:hover:bg-slate-700'
-                  }`}
-                >
-                  {speechDictation.starting || voiceWake.starting ? (
-                    <FiLoader size={15} className="animate-spin" aria-hidden />
-                  ) : (
-                    <FiMic size={15} aria-hidden />
-                  )}
-                </button>
-              ) : null}
-            <textarea
-                ref={inputAreaRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-                onCompositionStart={() => {
-                  imeComposingRef.current = true;
-                }}
-                onCompositionEnd={() => {
-                  imeComposingRef.current = false;
-                }}
-              onKeyDown={handleInputKeyDown}
-                placeholder={t('chat.inputPlaceholder')}
-                className="box-border min-h-10 w-full min-w-0 flex-1 resize-none bg-transparent py-2.5 pl-1 pr-0.5 leading-5 text-stone-800 placeholder-stone-500/70 focus:outline-none dark:text-slate-100 text-[clamp(0.8125rem,0.55vw+0.68rem,0.9375rem)]"
-              rows={1}
-                style={{ maxHeight: 'min(28vh, 9rem)' }}
-              disabled={isSessionBusy}
-            />
-            <div className="ml-0.5 flex shrink-0 items-center self-stretch border-l border-stone-400/25 pl-1 dark:border-slate-600">
-              <ModelSelector compact />
-            </div>
-          </div>
-            {isCurrentSessionLoading && (isStreaming || imageGenProgress) ? (
-          <button
-            type="button"
-                onClick={handleStop}
-                className="inline-flex h-10 shrink-0 items-center justify-center gap-1 rounded-xl border border-stone-400/50 bg-stone-100 px-4 text-sm font-medium text-stone-800 hover:bg-stone-200 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
-                title={t('chat.stopTitle')}
-              >
-                <FiSquare size={12} className="shrink-0" />
-                {t('chat.stop')}
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={() => void handleSend()}
-            disabled={!input.trim() && attachments.length === 0}
-            className={`inline-flex h-10 shrink-0 items-center justify-center rounded-xl px-5 text-sm font-medium transition-all ${
-              input.trim() || attachments.length > 0
-                ? 'bg-primary-600 text-white shadow-md shadow-primary-500/20 hover:bg-primary-700'
-                : 'cursor-not-allowed bg-stone-300 text-stone-500 dark:bg-slate-700 dark:text-slate-500'
-            }`}
-              title={t('chat.sendTitle')}
-          >
-              {t('chat.send')}
-          </button>
-        </div>
-        </div>
-      </div>
-      {conversationGalleryIdx !== null && conversationGallery.length > 0 ? (
-        <ConversationImageGalleryModal
-          key={`${currentSessionId ?? 'sess'}-${conversationGalleryNonce}`}
-          slides={conversationGallery}
-          startIndex={conversationGalleryIdx}
-          onClose={() => setConversationGalleryIdx(null)}
-        />
-      ) : null}
+      <GalleryModal
+        slides={conversationGallery}
+        startIndex={conversationGalleryIdx}
+        nonce={conversationGalleryNonce}
+        resetKey={currentSessionId ?? 'sess'}
+        onClose={() => setConversationGalleryIdx(null)}
+      />
     </div>
   );
 };

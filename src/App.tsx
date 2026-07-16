@@ -6,6 +6,7 @@ import ChatWindow from './components/ChatWindow';
 import SessionList from './components/SessionList';
 import SettingsPanel from './components/SettingsPanel';
 import OnboardingSteps from './components/OnboardingSteps';
+import ErrorToast from './components/ErrorToast';
 import ImageLibraryDrawer from './components/ImageLibraryDrawer';
 import GazeIndicator from './components/GazeIndicator';
 import { FiSettings, FiPlus, FiMoon, FiSun, FiMessageSquare, FiX, FiMonitor } from 'react-icons/fi';
@@ -371,6 +372,7 @@ const App: React.FC = () => {
         windowFocused={windowFocused}
         themeMode={resolved}
       />
+      <ErrorToast />
     </div>
     </ImageLibraryContext.Provider>
   );

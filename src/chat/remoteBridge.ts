@@ -37,14 +37,9 @@ export function installRemoteChatBridge(opts: {
   const bridge = {
     getSnapshot: async () => {
       const chat = useChatStore.getState();
-      const {
-        sessions: ss,
-        currentSessionId: cid,
-        loadingSessionId,
-        loadingSessionIds,
-        compressingSessionIds,
-        compressingSessionId,
-      } = chat;
+      const { sessions: ss, currentSessionId: cid } = chat;
+      const loadingArr = Array.from(chat.loadingSessionIds);
+      const compressingArr = Array.from(chat.compressingSessionIds);
       return {
         sessions: ss.map((s) => ({
           id: s.id,
@@ -55,10 +50,11 @@ export function installRemoteChatBridge(opts: {
           messages: s.messages.map(snapshotMessage),
         })),
         currentSessionId: cid,
-        loadingSessionId,
-        loadingSessionIds,
-        compressingSessionId,
-        compressingSessionIds,
+        /** 兼容旧远端 shell：单值（集合首个）+ 数组 */
+        loadingSessionId: loadingArr[0] ?? null,
+        loadingSessionIds: loadingArr,
+        compressingSessionId: compressingArr[0] ?? null,
+        compressingSessionIds: compressingArr,
       };
     },
     getActiveModelLabel: async () => {

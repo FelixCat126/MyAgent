@@ -81,7 +81,8 @@ async function streamAnthropicMessages(opts: {
       chatApiMode: config.chatApiMode ?? 'auto',
       messageCount: anthropicMessages.length,
       hasSystem: Boolean(system),
-      thinking: thinkingParams.thinking,
+      /** 脱敏：去掉 thinking 参数对象打印（避免配置细节泄漏），保留布尔指示 */
+      thinkingEnabled: Boolean(thinkingParams.thinking),
     });
     return axios.post(url, body, {
       headers,
@@ -218,7 +219,9 @@ async function streamOpenAiCompatible(opts: {
       formattedMultimodal = formattedText;
     },
     onThinkingFallback: () => {
-      console.warn('[model-stream] 思考参数 400，降级为无思考参数重试', { modelName });
+      if (process.env.MYAGENT_DEBUG) {
+        console.warn('[model-stream] 思考参数 400，降级为无思考参数重试', { modelName });
+      }
     },
   });
 
@@ -298,7 +301,11 @@ function registerModelStreamIpc() {
               if (!canFallbackAnthropicToOpenAi(config)) throw anthropicErr;
               console.warn('[model-stream] Anthropic 失败，回退 OpenAI 兼容', {
                 status,
-                message: anthropicErr instanceof Error ? anthropicErr.message : String(anthropicErr),
+                /** 脱敏：截断消息并仅保留错误类型，避免远端 URL/响应内容泄漏 */
+                messagePrefix:
+                  anthropicErr instanceof Error
+                    ? anthropicErr.message.slice(0, 200)
+                    : String(anthropicErr).slice(0, 200),
               });
             }
           }
