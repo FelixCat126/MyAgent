@@ -74,16 +74,6 @@ async function streamAnthropicMessages(opts: {
       ...(system ? { system } : {}),
       ...(temperature !== undefined ? { temperature } : {}),
     };
-    console.warn('[model-stream] Anthropic Messages 请求', {
-      url: url.slice(0, 160),
-      modelName,
-      provider,
-      chatApiMode: config.chatApiMode ?? 'auto',
-      messageCount: anthropicMessages.length,
-      hasSystem: Boolean(system),
-      /** 脱敏：去掉 thinking 参数对象打印（避免配置细节泄漏），保留布尔指示 */
-      thinkingEnabled: Boolean(thinkingParams.thinking),
-    });
     return axios.post(url, body, {
       headers,
       responseType: 'stream',
@@ -100,9 +90,6 @@ async function streamAnthropicMessages(opts: {
   };
 
   let buffer = '';
-  let diagLeft = 16;
-  let thinkingChars = 0;
-  let textChars = 0;
 
   const handleSseLine = (line: string) => {
     const trimmed = line.replace(/\r$/, '').trim();
@@ -111,7 +98,6 @@ async function streamAnthropicMessages(opts: {
     if (!raw || raw === '[DONE]') return;
     let j: {
       type?: string;
-      content_block?: { type?: string };
       delta?: { type?: string; thinking?: string; text?: string };
     };
     try {
@@ -119,28 +105,11 @@ async function streamAnthropicMessages(opts: {
     } catch {
       return;
     }
-    if (j.type === 'content_block_start' && diagLeft > 0) {
-      diagLeft -= 1;
-      console.warn('[model-stream] Anthropic block_start', {
-        blockType: j.content_block?.type,
-      });
-      return;
-    }
     if (j.type !== 'content_block_delta' || !j.delta) return;
     const dt = j.delta.type;
-    if (diagLeft > 0) {
-      diagLeft -= 1;
-      console.warn('[model-stream] Anthropic delta', {
-        deltaType: dt,
-        thinkingLen: typeof j.delta.thinking === 'string' ? j.delta.thinking.length : 0,
-        textLen: typeof j.delta.text === 'string' ? j.delta.text.length : 0,
-      });
-    }
     if (dt === 'thinking_delta' && typeof j.delta.thinking === 'string' && j.delta.thinking) {
-      thinkingChars += j.delta.thinking.length;
       sendThinkingDelta(wc, j.delta.thinking);
     } else if (dt === 'text_delta' && typeof j.delta.text === 'string' && j.delta.text) {
-      textChars += j.delta.text.length;
       sendDelta(wc, j.delta.text);
     }
   };
@@ -157,7 +126,6 @@ async function streamAnthropicMessages(opts: {
       if (buffer.trim()) {
         for (const ln of buffer.split('\n')) handleSseLine(ln);
       }
-      console.warn('[model-stream] Anthropic 流结束', { thinkingChars, textChars });
       resolve();
     });
     stream.on('error', (e) => reject(e));
