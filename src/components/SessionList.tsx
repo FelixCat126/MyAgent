@@ -8,6 +8,19 @@ import { useResolvedTheme } from '../hooks/useResolvedTheme';
 import { useSettingStore } from '../store/settingStore';
 import { useImageLibraryOpener } from '../context/ImageLibraryContext';
 import FloatingParticleWindow from './FloatingParticleWindow';
+import type { Locale } from '../i18n/types';
+
+/** 会话列表时间：统一 24 小时制，避免英文 AM/PM 在窄栏折行 */
+function formatSessionUpdatedAt(ts: number, locale: Locale): string {
+  return new Date(ts).toLocaleString(locale === 'en' ? 'en-US' : 'zh-CN', {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
 
 const SessionList: React.FC = () => {
   const { t, locale } = useI18n();
@@ -155,12 +168,11 @@ const SessionList: React.FC = () => {
                   </h3>
                 </div>
               )}
-              <p className="text-xs text-stone-500 dark:text-slate-500 mt-1.5 font-medium">
-                {new Date(session.updatedAt).toLocaleDateString(locale === 'en' ? 'en-US' : 'zh-CN')}{' '}
-                {new Date(session.updatedAt).toLocaleTimeString(locale === 'en' ? 'en-US' : 'zh-CN', {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
+              <p
+                className="mt-1.5 truncate whitespace-nowrap text-xs font-medium text-stone-500 dark:text-slate-500"
+                title={formatSessionUpdatedAt(session.updatedAt, locale)}
+              >
+                {formatSessionUpdatedAt(session.updatedAt, locale)}
               </p>
             </div>
             
