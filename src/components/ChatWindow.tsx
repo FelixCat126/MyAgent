@@ -446,7 +446,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
 
     const activeModel = getActiveModel();
     if (!activeModel) {
-      alert(t('chat.configureModel'));
+      showWarning('chat.configureModel');
       return;
     }
 

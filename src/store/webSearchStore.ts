@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { WebSearchProvider } from '../types';
+import { PERSIST_KEYS } from '../utils/persistKeys';
 import { zustandPersistJson } from '../utils/zustandFileStorage';
 
 interface WebSearchStore {
@@ -24,7 +25,7 @@ export const useWebSearchStore = create<WebSearchStore>()(
       setApiKey: (apiKey) => set({ apiKey }),
     }),
     {
-      name: 'web-search-storage',
+      name: PERSIST_KEYS.webSearch,
       version: 1,
       storage: zustandPersistJson,
       migrate: (persistedState: unknown) => {

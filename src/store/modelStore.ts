@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { ModelConfig, type ChatApiMode } from '../types';
 import { resolveChatApiMode } from '../utils/chatApiMode';
+import { PERSIST_KEYS } from '../utils/persistKeys';
 import { zustandPersistJson } from '../utils/zustandFileStorage';
 
 /**
@@ -154,7 +155,7 @@ export const useModelStore = create<ModelStore>()(
       },
     }),
     {
-      name: 'model-storage',
+      name: PERSIST_KEYS.model,
       storage: zustandPersistJson,
       version: 2,
       migrate: (persistedState, fromVersion) => {

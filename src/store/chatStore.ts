@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { ChatSession, Message } from '../types';
 import { zustandPersistJson } from '../utils/zustandFileStorage';
+import { PERSIST_KEYS } from '../utils/persistKeys';
 import { t } from '../i18n/ui';
 import { useSettingStore } from './settingStore';
 
@@ -404,51 +405,41 @@ export const useChatStore = create<ChatStore>()(
       },
     }),
     {
-      name: 'chat-storage',
+      name: PERSIST_KEYS.chat,
       storage: zustandPersistJson,
-      version: 2,
+      version: 3,
       partialize: (state) => ({
         sessions: state.sessions.map((s) => ({
           ...s,
           messages: s.messages.map(({ imageGenProgress: _skip, ...rest }) => rest),
         })),
         currentSessionId: state.currentSessionId,
-        /** Set 序列化为数组持久化（避免 zustand 默认转 {}） */
-        loadingSessionIds: Array.from(state.loadingSessionIds),
-        compressingSessionIds: Array.from(state.compressingSessionIds),
+        /** loading / compressing 为运行时忙态，故意不落盘，避免异常退出后重启一直转圈 */
       }),
       merge: (persistedState, currentState) => {
         const p = (persistedState ?? {}) as Record<string, unknown>;
-        /** 老 v1 数据合并到 Set（兼容旧字段名 loadingSessionId / compressingSessionId） */
-        const legacyLoading = p.loadingSessionIds;
-        const legacyLoadingSingle = p.loadingSessionId;
-        const legacyCompressing = p.compressingSessionIds;
-        const legacyCompressingSingle = p.compressingSessionId;
+        const { loadingSessionIds: _l, compressingSessionIds: _c, loadingSessionId: _ls, compressingSessionId: _cs, ...rest } = p;
         return {
           ...currentState,
-          ...p,
-          loadingSessionIds: new Set<string>(
-            Array.isArray(legacyLoading)
-              ? legacyLoading.filter((x): x is string => typeof x === 'string')
-              : typeof legacyLoadingSingle === 'string'
-                ? [legacyLoadingSingle]
-                : []
-          ),
-          compressingSessionIds: new Set<string>(
-            Array.isArray(legacyCompressing)
-              ? legacyCompressing.filter((x): x is string => typeof x === 'string')
-              : typeof legacyCompressingSingle === 'string'
-                ? [legacyCompressingSingle]
-                : []
-          ),
+          ...rest,
+          loadingSessionIds: new Set<string>(),
+          compressingSessionIds: new Set<string>(),
         };
       },
       migrate: (state, fromVersion) => {
         if (!state || typeof state !== 'object') return state;
+        const s = state as Record<string, unknown>;
         /** v1 → v2: 清除已删除的派生字段 */
         if (fromVersion < 2) {
-          delete (state as Record<string, unknown>).loadingSessionId;
-          delete (state as Record<string, unknown>).compressingSessionId;
+          delete s.loadingSessionId;
+          delete s.compressingSessionId;
+        }
+        /** v2 → v3: 忙态不再持久化 */
+        if (fromVersion < 3) {
+          delete s.loadingSessionIds;
+          delete s.compressingSessionIds;
+          delete s.loadingSessionId;
+          delete s.compressingSessionId;
         }
         return state;
       },

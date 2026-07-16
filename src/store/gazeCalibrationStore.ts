@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { PERSIST_KEYS } from '../utils/persistKeys';
 import { zustandPersistJson } from '../utils/zustandFileStorage';
 
 /**
@@ -34,7 +35,7 @@ export const useGazeCalibrationStore = create<GazeCalibrationState>()(
         set({ matrix: null, lastCalibratedAt: 0, viewportSnapshot: null }),
     }),
     {
-      name: 'gaze-calibration',
+      name: PERSIST_KEYS.gazeCalibration,
       version: 1,
       storage: zustandPersistJson,
     },

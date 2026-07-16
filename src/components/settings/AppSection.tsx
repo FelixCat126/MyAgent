@@ -454,7 +454,11 @@ export const AppSection: React.FC<AppSectionProps> = ({
                         setGwCfg(next);
                         setGwPortDraft(String(next.port));
                       })
-                      .catch((err: unknown) => alert(err instanceof Error ? err.message : String(err)));
+                      .catch((err: unknown) =>
+                        showError('common.operationFailed', {
+                          detail: err instanceof Error ? err.message : String(err),
+                        })
+                      );
                   }}
                 />
               </div>

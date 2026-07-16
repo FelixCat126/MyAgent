@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useChatStore } from './chatStore';
 import type { ChatSession, Message } from '../types';
+import { PERSIST_KEYS } from '../utils/persistKeys';
 
 function resetChatStore() {
-  localStorage.removeItem('chat-storage');
+  localStorage.removeItem(PERSIST_KEYS.chat);
   useChatStore.setState({
     sessions: [],
     currentSessionId: null,

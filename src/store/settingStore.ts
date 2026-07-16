@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { PERSIST_KEYS } from '../utils/persistKeys';
 import { zustandPersistJson } from '../utils/zustandFileStorage';
 import { applyBodyClassForStoredTheme } from '../utils/themeDocument';
 import type { Locale } from '../i18n/types';
@@ -112,7 +113,7 @@ export const useSettingStore = create<SettingStore>()(
         }),
     }),
     {
-      name: 'setting-storage',
+      name: PERSIST_KEYS.setting,
       version: 15,
       storage: zustandPersistJson,
       migrate: (persisted, version) => {

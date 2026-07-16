@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { useSettingStore } from './settingStore';
+import { PERSIST_KEYS } from '../utils/persistKeys';
 
 function reset() {
-  localStorage.removeItem('setting-storage');
+  localStorage.removeItem(PERSIST_KEYS.setting);
   useSettingStore.setState({
     theme: 'light',
     fontSize: 14,

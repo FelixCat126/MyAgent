@@ -1,6 +1,5 @@
+import { MAX_JSON_IMAGE_SCAN_DEPTH } from '../../constants/imageGenLimits';
 import { base64FieldToImageBuffer, stripUtf8Bom } from './parsing';
-
-const MAX_JSON_IMAGE_SCAN_DEPTH = 14; // 仍保留旧声明以兼容，逐函数改完后删除
 
 /** 兜底：递归查找任意字符串里的 base64 图（适配非标准字段名或嵌套结构） */
 function extractImageDeepScan(

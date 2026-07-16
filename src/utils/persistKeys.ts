@@ -12,6 +12,7 @@ export const PERSIST_KEYS = {
   webSearch: 'web-search-storage',
   model: 'model-storage',
   knowledge: 'knowledge-storage',
+  gazeCalibration: 'gaze-calibration',
   onboarding: 'myagent-onboarding-dismissed',
 } as const;
 

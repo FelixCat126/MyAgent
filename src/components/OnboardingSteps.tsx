@@ -2,8 +2,9 @@ import React, { Fragment, useCallback, useMemo, useState } from 'react';
 import { FiCheck } from 'react-icons/fi';
 import { useI18n, tStatic } from '../hooks/useI18n';
 import type { Locale } from '../i18n/types';
+import { PERSIST_KEYS } from '../utils/persistKeys';
 
-const STORAGE_KEY = 'myagent-onboarding-dismissed';
+const STORAGE_KEY = PERSIST_KEYS.onboarding;
 
 export interface OnboardingStep {
   id: string;

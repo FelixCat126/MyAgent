@@ -2,6 +2,7 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
 import App from './App';
 import { useChatStore } from './store/chatStore';
+import { PERSIST_KEYS } from './utils/persistKeys';
 
 describe('App', () => {
   beforeEach(() => {
@@ -11,7 +12,7 @@ describe('App', () => {
   it('从 localStorage 恢复会话后显示「新对话」', async () => {
     const now = Date.now();
     localStorage.setItem(
-      'chat-storage',
+      PERSIST_KEYS.chat,
       JSON.stringify({
         state: {
           sessions: [
@@ -28,7 +29,7 @@ describe('App', () => {
         version: 0,
       })
     );
-    localStorage.setItem('myagent-onboarding-dismissed', '1');
+    localStorage.setItem(PERSIST_KEYS.onboarding, '1');
 
     await useChatStore.persist.rehydrate();
 

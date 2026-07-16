@@ -1,6 +1,7 @@
 import React, { useState, useRef, DragEvent, ChangeEvent } from 'react';
 import { FiUpload, FiX, FiFile, FiImage, FiVideo, FiMusic } from 'react-icons/fi';
 import { useI18n } from '../hooks/useI18n';
+import { showWarning } from '../store/errorStore';
 
 interface FileUploaderProps {
   onFilesSelected: (files: File[]) => void;
@@ -48,14 +49,14 @@ const FileUploader: React.FC<FileUploaderProps> = ({
   const handleFiles = (files: File[]) => {
     // 验证文件数量和大小
     if (files.length > maxFiles) {
-      alert(t('fileUploader.tooMany', { max: maxFiles }));
+      showWarning('fileUploader.tooMany', { max: maxFiles });
       return;
     }
 
     const validFiles = files.filter((file) => {
       // 验证文件大小
       if (file.size > maxSize * 1024 * 1024) {
-        alert(t('fileUploader.tooBig', { name: file.name, max: maxSize }));
+        showWarning('fileUploader.tooBig', { name: file.name, max: maxSize });
         return false;
       }
 
@@ -69,7 +70,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({
       });
 
       if (!isValidType) {
-        alert(t('fileUploader.unsupported', { name: file.name }));
+        showWarning('fileUploader.unsupported', { name: file.name });
         return false;
       }
 

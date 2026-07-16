@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useModelStore } from './modelStore';
 import type { ModelConfig } from '../types';
+import { PERSIST_KEYS } from '../utils/persistKeys';
 
 function resetModelStore() {
-  localStorage.removeItem('model-storage');
+  localStorage.removeItem(PERSIST_KEYS.model);
   useModelStore.setState({ models: [], activeModelId: null });
 }
 

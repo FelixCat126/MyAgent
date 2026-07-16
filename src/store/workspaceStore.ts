@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { PERSIST_KEYS } from '../utils/persistKeys';
 import { zustandPersistJson } from '../utils/zustandFileStorage';
 
 /**
@@ -21,6 +22,6 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
       setRootPath: (p: string) => set({ rootPath: p }),
       setMaxChars: (n: number) => set({ maxChars: Math.min(200_000, Math.max(500, n)) }),
     }),
-    { name: 'workspace-storage', version: 1, storage: zustandPersistJson }
+    { name: PERSIST_KEYS.workspace, version: 1, storage: zustandPersistJson }
   )
 );

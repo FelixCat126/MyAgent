@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { PERSIST_KEYS } from '../utils/persistKeys';
 import { zustandPersistJson } from '../utils/zustandFileStorage';
 import type { EmbeddingProviderKey, KnowledgeEmbedConfig } from '../types';
 
@@ -87,7 +88,7 @@ export const useKnowledgeStore = create<KnowledgeStore>()(
       },
     }),
     {
-      name: 'knowledge-storage',
+      name: PERSIST_KEYS.knowledge,
       version: 2,
       storage: zustandPersistJson,
     }
