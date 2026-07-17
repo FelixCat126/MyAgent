@@ -73,8 +73,8 @@ export async function runSyncReplyPath(args: RunSyncReplyPathArgs): Promise<void
       );
       ui.updateMessage(sendSessionId, documentArtifactAssistantId, {
         content: artifactFiles.length
-          ? '文档已生成，点击下方文件即可查看或另存。'
-          : '文档内容已生成，但写入本地文件失败。请重试或检查文档目录权限。',
+          ? ui.t('chat.documentReady')
+          : ui.t('chat.documentWriteFailed'),
         ...(reasoningIn ? { reasoning: reasoningIn } : {}),
         exportHint,
         files: artifactFiles.length ? artifactFiles : undefined,

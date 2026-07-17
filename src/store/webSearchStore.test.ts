@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useWebSearchStore } from './webSearchStore';
+import { PERSIST_KEYS } from '../utils/persistKeys';
 
 function reset() {
-  localStorage.removeItem('web-search-storage');
+  localStorage.removeItem(PERSIST_KEYS.webSearch);
   useWebSearchStore.setState({ enabled: true, provider: 'duckduckgo', apiKey: '' });
 }
 

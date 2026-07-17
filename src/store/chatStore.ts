@@ -131,7 +131,10 @@ export const useChatStore = create<ChatStore>()(
       createSession: () => {
         const locale = useSettingStore.getState().locale;
         const newSession: ChatSession = {
-          id: Date.now().toString(),
+          id:
+            typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+              ? crypto.randomUUID()
+              : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
           title: t(locale, 'session.newTitle'),
           messages: [],
           createdAt: Date.now(),
@@ -334,18 +337,11 @@ export const useChatStore = create<ChatStore>()(
           }
           const next = new Set(state.loadingSessionIds);
           next.delete(sessionId);
-          /** 回复完成时，若用户已切到别的会话，标记未读（亮点提示） */
-          const becameUnread = sessionId !== state.currentSessionId;
-          return {
-            loadingSessionIds: next,
-            ...(becameUnread
-              ? {
-                  sessions: state.sessions.map((s: ChatSession) =>
-                    s.id === sessionId ? { ...s, unreadAssistantReply: true } : s
-                  ),
-                }
-              : {}),
-          };
+          /**
+           * 未读仅由 addMessage(assistant) 设置；此处不再打未读，
+           * 避免失败/停止/上传中止时误亮「新」。
+           */
+          return { loadingSessionIds: next };
         });
       },
 

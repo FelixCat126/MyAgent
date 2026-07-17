@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useWorkspaceStore } from './workspaceStore';
+import { PERSIST_KEYS } from '../utils/persistKeys';
 
 function reset() {
-  localStorage.removeItem('workspace-storage');
+  localStorage.removeItem(PERSIST_KEYS.workspace);
   useWorkspaceStore.setState({ rootPath: '', maxChars: 12_000 });
 }
 

@@ -17,6 +17,8 @@ import { IosSwitch } from '../IosSwitch';
 import { useKnowledgeStore } from '../../store/knowledgeStore';
 import { useWorkspaceStore } from '../../store/workspaceStore';
 import { showError, showInfo, showWarning } from '../../store/errorStore';
+import { formatDateTime } from '../../utils/formatDateTime';
+import { useSettingStore } from '../../store/settingStore';
 
 export interface KnowledgeSectionProps {
   /** 折叠态（父组件 useState） */
@@ -260,7 +262,7 @@ export const KnowledgeSection: React.FC<KnowledgeSectionProps> = ({
                   chunks: indexMeta.chunkCount,
                   time:
                     indexMeta.updatedAt > 0
-                      ? new Date(indexMeta.updatedAt).toLocaleString()
+                      ? formatDateTime(indexMeta.updatedAt, useSettingStore.getState().locale)
                       : '—',
                 })
               : t('settings.indexNone')}

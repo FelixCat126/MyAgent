@@ -1,10 +1,11 @@
 import { ChatSession } from '../types';
+import { formatDateTime } from './formatDateTime';
 
 export function sessionToMarkdown(session: ChatSession): string {
   const lines: string[] = [
     `# ${session.title}`,
     ``,
-    `> 导出时间: ${new Date().toLocaleString('zh-CN')}`,
+    `> 导出时间: ${formatDateTime(Date.now(), 'zh')}`,
     ``,
   ];
   for (const m of session.messages) {

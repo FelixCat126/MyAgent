@@ -32,7 +32,7 @@ const zh: Record<string, string> = {
   'imageLibrary.empty': '暂未发现本地保存的图片。',
   'imageLibrary.delete': '删除图片',
   'imageLibrary.confirmDelete': '确定要删除这张图片吗？此操作会删除本地文件。',
-  'imageLibrary.deleteFailed': '删除失败：{err}',
+  'imageLibrary.deleteFailed': '删除失败：{detail}',
   'message.user': '我',
   'message.copy': '复制',
   'message.copyCodeBlock': '复制代码块',
@@ -93,9 +93,13 @@ const zh: Record<string, string> = {
   'chat.emptyAfterReasoning': '模型只返回了思考过程，没有返回可展示的正文。请重试，或关闭流式输出后再试一次。',
   'chat.configureModel': '请先配置模型',
   'common.notifications': '通知',
+  'common.cancel': '取消',
+  'common.confirm': '确定',
   'common.operationFailed': '操作失败：{detail}',
   'chat.attachmentUploadFailed': '附件上传失败，请重试。',
   'chat.attachmentsUploadPartial': '有 {count} 个附件上传失败，已忽略失败项继续发送。',
+  'chat.documentReady': '文档已生成，点击下方文件即可查看或另存。',
+  'chat.documentWriteFailed': '文档内容已生成，但写入本地文件失败。请重试或检查文档目录权限。',
   'chat.newConversationDivider': '以下为新对话内容',
   'chat.compressingContext': '自动压缩上下文中',
   'chat.contextSummaryTitle': '【上下文摘要】',
@@ -140,7 +144,7 @@ const zh: Record<string, string> = {
     '本次交互将结合本地知识库内容发起（已按相关度选入 {used} 条片段，索引共 {total} 块）。',
   'chat.ragStatusEmpty':
     '本次未附加本地知识库：与当前问题足够相关的片段不足（或相关度未达阈值）。已建索引时可换更具体的问题重试。',
-  'chat.ragStatusError': '工作区向量未生效：{err}',
+  'chat.ragStatusError': '工作区向量未生效：{detail}',
   'chat.imageGenToolSystemPrompt':
     '【MyAgent · 图像生成】本客户端已连接图像生成工具（本地 CLI 或 HTTP）。当用户明确要求画图、生成图片、海报、插画、头像等时，你必须在回复中给出一条可被客户端解析的「工具调用」，以便在本机执行绘图；禁止仅用「我不能生成图片」「我没有绘图能力」「我是文本模型」等理由拒绝而不输出工具调用。\n\n' +
     '任选其一（须出现在回复正文中）：\n' +
@@ -363,6 +367,7 @@ const zh: Record<string, string> = {
     '联网搜索仅在关键词或 /web 触发时向配置的提供商发起请求。对话与设置保存在本机 应用数据目录（与安装包/开发态共用，不因重装 DMG 而丢失）； 选择清除数据将删除已保存的模型与聊天等，并刷新应用。',
   'settings.clearAll': '清除所有本地数据',
   'settings.clearConfirm': '将清除本机已保存的聊天记录、设置与模型配置并刷新。确定继续？',
+  'settings.clearFailed': '清除本地数据失败：{detail}',
   'settings.font': '字体大小',
   'settings.autosave': '自动保存对话',
   'settings.streamToggle': '启用流式输出',
@@ -451,7 +456,7 @@ const en: Record<string, string> = {
   'imageLibrary.empty': 'No saved images found on this device.',
   'imageLibrary.delete': 'Delete image',
   'imageLibrary.confirmDelete': 'Delete this image from local storage?',
-  'imageLibrary.deleteFailed': 'Delete failed: {err}',
+  'imageLibrary.deleteFailed': 'Delete failed: {detail}',
   'message.user': 'You',
   'message.copy': 'Copy',
   'message.copyCodeBlock': 'Copy code',
@@ -513,6 +518,14 @@ const en: Record<string, string> = {
   'chat.fallbackReply': 'No reply is available for now.',
   'chat.emptyAfterReasoning': 'The model returned reasoning only, with no displayable answer. Try again, or disable streaming and retry.',
   'chat.configureModel': 'Add a model in Settings first',
+  'common.notifications': 'Notifications',
+  'common.cancel': 'Cancel',
+  'common.confirm': 'OK',
+  'chat.attachmentUploadFailed': 'Attachment upload failed. Please try again.',
+  'chat.attachmentsUploadPartial': '{count} attachment(s) failed to upload; continuing with the rest.',
+  'chat.documentReady': 'Document ready. Open or save it from the files below.',
+  'chat.documentWriteFailed':
+    'Document content was generated, but writing the local file failed. Retry or check folder permissions.',
   'chat.newConversationDivider': 'New conversation',
   'chat.compressingContext': 'Compressing context…',
   'chat.contextSummaryTitle': '[Context summary]',
@@ -558,7 +571,7 @@ const en: Record<string, string> = {
     'This turn will use your local knowledge base ({used} chunk(s) selected by relevance; {total} chunk(s) in the index).',
   'chat.ragStatusEmpty':
     'No local knowledge was attached: nothing was close enough by relevance (or below the threshold). Try a more specific question if an index exists.',
-  'chat.ragStatusError': 'Workspace vectors were not applied: {err}',
+  'chat.ragStatusError': 'Workspace vectors were not applied: {detail}',
   'chat.imageGenToolSystemPrompt':
     '[MyAgent · Image generation] This client has an image-generation tool (local CLI or HTTP). When the user clearly asks for a drawing, image, poster, illustration, avatar, etc., you MUST include one machine-parseable tool invocation in your reply so the client can run it locally. Do not refuse with only “I cannot generate images” / “I have no image capability” / “I am a text-only model” without outputting the tool call.\n\n' +
     'Use either form (must appear in the reply body):\n' +
@@ -784,6 +797,7 @@ const en: Record<string, string> = {
     'Web search only runs for keyword / /web triggers. Chats and settings are stored in your app data (shared between dev and release). Clearing removes saved models and chats and reloads the app.',
   'settings.clearAll': 'Clear all local data',
   'settings.clearConfirm': 'This removes saved chats, settings, and model list. Continue?',
+  'settings.clearFailed': 'Failed to clear local data: {detail}',
   'settings.font': 'Font size',
   'settings.autosave': 'Auto-save chats',
   'settings.streamToggle': 'Enable streaming output',

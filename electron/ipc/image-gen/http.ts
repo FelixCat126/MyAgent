@@ -54,6 +54,11 @@ import {
   type BuiltImageHttpRequest,
 } from './adapters';
 
+/** 正常路径诊断日志；仅 MYAGENT_DEBUG=1 时输出，避免刷屏 */
+function imgGenDebug(...args: unknown[]) {
+  if (process.env.MYAGENT_DEBUG) console.warn(...args);
+}
+
 function buildUnifiedImageRequest(params: ImageGenerationParams): UnifiedImageRequest {
   const count =
     typeof params.count === 'number' && Number.isFinite(params.count) && params.count > 0
@@ -170,7 +175,7 @@ async function generateImageHttp(
   const readBodyAsStreamingText = Boolean(builtReq.readBodyAsStreamingText);
 
   if (providerKind === 'minimax') {
-    console.warn('[生图 HTTP] MiniMax 请求', {
+    imgGenDebug('[生图 HTTP] MiniMax 请求', {
       url: requestUrl.slice(0, 220),
       authSource: authMeta.source,
       keyHint: authMeta.keyHint || undefined,
@@ -219,7 +224,7 @@ async function generateImageHttp(
       if (peekMiniMaxStatusCode(peeked) === 2049) {
         const alt = alternateMiniMaxImageEndpoint(requestUrl);
         if (alt && alt !== requestUrl) {
-          console.warn('[生图 HTTP] MiniMax status_code=2049，尝试另一站点', {
+          imgGenDebug('[生图 HTTP] MiniMax status_code=2049，尝试另一站点', {
             from: requestUrl.slice(0, 220),
             to: alt.slice(0, 220),
             authSource: authMeta.source,
@@ -277,7 +282,7 @@ async function generateImageHttp(
   const bodyPayload = JSON.stringify(postBody);
 
   if (!buf.length && response.ok) {
-    console.warn('[生图 HTTP] fetch 读到 0 字节，尝试 Node http/https 兜底', {
+    imgGenDebug('[生图 HTTP] fetch 读到 0 字节，尝试 Node http/https 兜底', {
       te: teHdr,
       cl: clHdr,
       endpoint: endpoint.slice(0, 220),
@@ -294,7 +299,7 @@ async function generateImageHttp(
         throw new Error(formatAxiosGenerateHttpError(endpoint, raw.statusCode, raw.body));
       }
     } catch (e: unknown) {
-      console.warn('[生图 HTTP] Node 兜底未完成或失败:', e instanceof Error ? e.message : e);
+      imgGenDebug('[生图 HTTP] Node 兜底未完成或失败:', e instanceof Error ? e.message : e);
     }
   }
 
@@ -303,7 +308,7 @@ async function generateImageHttp(
    * 流式下才输出 NDJSON 片段（最后一行常带 image）。
    */
   if (!buf.length && mode === 'ollama' && httpStatus >= 200 && httpStatus < 300) {
-    console.warn('[生图 HTTP] 仍为 0 字节；改用 stream:true 再请求一次', {
+    imgGenDebug('[生图 HTTP] 仍为 0 字节；改用 stream:true 再请求一次', {
       model: ollamaModel,
       endpoint: endpoint.slice(0, 220),
     });
@@ -323,7 +328,7 @@ async function generateImageHttp(
         throw new Error(formatAxiosGenerateHttpError(endpoint, raw.statusCode, raw.body));
       }
     } catch (e: unknown) {
-      console.warn('[生图 HTTP] stream:true 兜底失败:', e instanceof Error ? e.message : e);
+      imgGenDebug('[生图 HTTP] stream:true 兜底失败:', e instanceof Error ? e.message : e);
     }
   }
 
@@ -334,7 +339,7 @@ async function generateImageHttp(
   if (!buf.length && mode === 'ollama' && httpStatus >= 200 && httpStatus < 300) {
     const imagesEndpoint = buildSiblingEndpoint(endpoint, '/v1/images/generations');
     if (imagesEndpoint) {
-      console.warn('[生图 HTTP] 仍为 0 字节；改用 /v1/images/generations 再请求一次', {
+      imgGenDebug('[生图 HTTP] 仍为 0 字节；改用 /v1/images/generations 再请求一次', {
         model: ollamaModel,
         endpoint: imagesEndpoint.slice(0, 220),
       });
@@ -369,7 +374,7 @@ async function generateImageHttp(
           throw new Error(formatAxiosGenerateHttpError(imagesEndpoint, raw.statusCode, raw.body));
         }
       } catch (e: unknown) {
-        console.warn(
+        imgGenDebug(
           '[生图 HTTP] /v1/images/generations 兜底失败:',
           e instanceof Error ? e.message : e
         );
@@ -393,7 +398,7 @@ async function generateImageHttp(
     ]
       .filter(Boolean)
       .join('；');
-    console.warn('[生图 HTTP] 仍为 0 字节', {
+    imgGenDebug('[生图 HTTP] 仍为 0 字节', {
       diag,
       endpoint: lastEmptyDiagEndpoint.slice(0, 220),
       model: mode === 'ollama' ? ollamaModel : undefined,
@@ -572,7 +577,7 @@ async function generateImageHttp(
   }
 
   if (!imageBuf && mode === 'ollama') {
-    console.warn('[生图 HTTP] /api/generate 未返回图片；改用 /v1/images/generations 再请求一次', {
+    imgGenDebug('[生图 HTTP] /api/generate 未返回图片；改用 /v1/images/generations 再请求一次', {
       model: ollamaModel,
       endpoint: endpoint.slice(0, 220),
       bytes: buf.length,
@@ -581,7 +586,7 @@ async function generateImageHttp(
     if (viaImages.image) {
       imageBuf = viaImages.image;
     } else {
-      console.warn('[生图 HTTP] /v1/images/generations 未返回图片', {
+      imgGenDebug('[生图 HTTP] /v1/images/generations 未返回图片', {
         detail: viaImages.detail,
       });
     }
@@ -599,7 +604,7 @@ async function generateImageHttp(
     } catch {
       /* 非整块 JSON */
     }
-    console.warn('[生图 HTTP] 无法解析', {
+    imgGenDebug('[生图 HTTP] 无法解析', {
       contentType: ct,
       bytes: buf.length,
       utf8Preview: utf8Full.slice(0, 220).replace(/\s+/g, ' '),

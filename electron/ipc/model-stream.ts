@@ -267,14 +267,16 @@ function registerModelStreamIpc() {
             } catch (anthropicErr: unknown) {
               const status = (anthropicErr as AxiosError)?.response?.status;
               if (!canFallbackAnthropicToOpenAi(config)) throw anthropicErr;
-              console.warn('[model-stream] Anthropic 失败，回退 OpenAI 兼容', {
-                status,
-                /** 脱敏：截断消息并仅保留错误类型，避免远端 URL/响应内容泄漏 */
-                messagePrefix:
-                  anthropicErr instanceof Error
-                    ? anthropicErr.message.slice(0, 200)
-                    : String(anthropicErr).slice(0, 200),
-              });
+              if (process.env.MYAGENT_DEBUG) {
+                console.warn('[model-stream] Anthropic 失败，回退 OpenAI 兼容', {
+                  status,
+                  /** 脱敏：截断消息并仅保留错误类型，避免远端 URL/响应内容泄漏 */
+                  messagePrefix:
+                    anthropicErr instanceof Error
+                      ? anthropicErr.message.slice(0, 200)
+                      : String(anthropicErr).slice(0, 200),
+                });
+              }
             }
           }
 

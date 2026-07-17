@@ -2,13 +2,14 @@ import type { Message, WebSearchProvider, ModelConfig } from '../types';
 import { useWorkspaceStore } from '../store/workspaceStore';
 import { useKnowledgeStore } from '../store/knowledgeStore';
 import { getWebSearchQueryIfTriggered } from '../utils/webSearchTrigger';
+import { isAttachmentPlaceholder } from '../utils/attachmentPlaceholder';
 import { modelHasUsableImageGenerator } from '../store/modelStore';
 import { t as tUi } from '../i18n/ui';
 import type { Locale } from '../i18n/types';
 
 function userQueryTextForRag(m: Message): string {
   const t = (m.content || '').trim();
-  if (t && t !== '（附件）') return t;
+  if (t && !isAttachmentPlaceholder(t)) return t;
   if (m.files?.length) return m.files.map((f) => f.name).join(' ');
   return '';
 }
@@ -126,7 +127,7 @@ async function buildMessagesWithOptionalWebSearch(
   if (!web.enabled) return outgoing;
 
   const raw = userMessage.content.trim();
-  if (!raw || raw === '（附件）') return outgoing;
+  if (!raw || isAttachmentPlaceholder(raw)) return outgoing;
 
   const searchQuery = getWebSearchQueryIfTriggered(raw);
   if (!searchQuery) return outgoing;
@@ -242,7 +243,7 @@ export function formatVectorRagHint(
   const err = h.message;
   return {
     text: t('chat.ragStatusError', {
-      err: err.length > 120 ? err.slice(0, 120) + '…' : err,
+      detail: err.length > 120 ? err.slice(0, 120) + '…' : err,
     }),
     tone: 'error',
   };

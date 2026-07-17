@@ -1,6 +1,5 @@
 import type { Message, ModelConfig } from '../types';
 import { useChatStore } from '../store/chatStore';
-import { effectiveWebEnabled } from '../utils/chatModelPolicy';
 import { ensureContextBeforeSend } from './ensureContextBeforeSend';
 import {
   addFullTextBypassIfNeeded,
@@ -31,8 +30,6 @@ export async function resubmitEditedUserMessage(opts: {
   /** 会话级联网开关（已算好的 effective） */
   webEnabled: boolean;
   runModelReply: RunModelReplyFn;
-  /** 调用方已 tryClaim 成功时传 true，避免二次占坑 */
-  loadingAlreadyClaimed?: boolean;
 }): Promise<ResubmitEditedResult> {
   const textContent = opts.textContent.trim();
   if (!textContent) return { ok: false, reason: 'empty' };
@@ -46,9 +43,7 @@ export async function resubmitEditedUserMessage(opts: {
   const sourceMessage = sess.messages[sourceIndex];
   if (sourceMessage.role !== 'user') return { ok: false, reason: 'not-user' };
 
-  if (!opts.loadingAlreadyClaimed) {
-    if (!tryClaimSessionSend(opts.sessionId)) return { ok: false, reason: 'busy' };
-  }
+  if (!tryClaimSessionSend(opts.sessionId)) return { ok: false, reason: 'busy' };
 
   let priorMessages = sess.messages.slice(0, sourceIndex);
   const staleMessageIds = sess.messages.slice(sourceIndex + 1).map((m) => m.id);
@@ -114,13 +109,4 @@ export async function resubmitEditedUserMessage(opts: {
     useChatStore.getState().clearLoadingForSession(opts.sessionId);
     throw e;
   }
-}
-
-/** 根据会话当前 webOverride 与全局开关计算 effective */
-export function resolveSessionWebEnabled(
-  sessionId: string,
-  globalWebEnabled: boolean
-): boolean {
-  const sess = useChatStore.getState().sessions.find((s) => s.id === sessionId);
-  return effectiveWebEnabled(sess, globalWebEnabled);
 }

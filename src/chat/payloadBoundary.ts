@@ -1,4 +1,5 @@
 import type { Message, ModelConfig } from '../types';
+import { CONTEXT_COMPRESS_RATIO } from '../utils/contextBudget';
 
 /** 单条消息送入模型前的硬截断（与 sanitizeMessagesForModel 同源） */
 export const SANITIZE_MAX_CONTENT_CHARS = 80_000;
@@ -42,7 +43,7 @@ export function shouldWarnPayloadNearLimit(opts: {
   softLimitChars: number;
   ratio?: number;
 }): boolean {
-  const ratio = opts.ratio ?? 0.95;
+  const ratio = opts.ratio ?? CONTEXT_COMPRESS_RATIO;
   return opts.storedChars + opts.injectedOverhead >= opts.softLimitChars * ratio;
 }
 

@@ -31,6 +31,7 @@ import { useWorkspaceStore } from '../../store/workspaceStore';
 import { PERSIST_KEYS } from '../../utils/persistKeys';
 import { isAgentToolsBuildEnabled } from '../../agent/buildFlags';
 import { showError, showSuccess, showWarning } from '../../store/errorStore';
+import { confirmDestructive } from '../../store/confirmStore';
 
 /** 远端网关运行态（原父组件 useState<'unsupported' | 'ready'> 派生） */
 export type GatewayStatus = 'unsupported' | 'ready';
@@ -546,7 +547,7 @@ export const AppSection: React.FC<AppSectionProps> = ({
                   type="button"
                   className="rounded-lg border border-stone-400/35 bg-stone-100/95 px-3 py-2 text-xs font-medium text-stone-800 shadow-sm transition-colors hover:bg-stone-200/90 dark:border-slate-600 dark:bg-slate-800/95 dark:text-slate-100 dark:hover:bg-slate-700/95"
                   onClick={async () => {
-                    if (!confirm(t('settings.remoteGateway.confirmRegenerate'))) return;
+                    if (!(await confirmDestructive(t('settings.remoteGateway.confirmRegenerate')))) return;
                     try {
                       const next = await window.electron.remoteGatewaySetConfig({ regenerateToken: true });
                       setGwCfg(next);
@@ -577,15 +578,18 @@ export const AppSection: React.FC<AppSectionProps> = ({
             <button
               type="button"
               onClick={async () => {
-                if (!confirm(t('settings.clearConfirm'))) {
+                if (!(await confirmDestructive(t('settings.clearConfirm')))) {
                   return;
                 }
                 try {
                   if (window.electron?.persistClearAll) {
                     await window.electron.persistClearAll();
                   }
-                } catch {
-                  /* ignore */
+                } catch (err) {
+                  showError('settings.clearFailed', {
+                    detail: err instanceof Error ? err.message : String(err),
+                  });
+                  return;
                 }
                 const keys = Object.values(PERSIST_KEYS);
                 keys.forEach((k) => localStorage.removeItem(k));

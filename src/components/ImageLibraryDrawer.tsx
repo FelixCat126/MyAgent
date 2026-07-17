@@ -9,6 +9,7 @@ import {
   conversationGallerySlidesFromPaths,
 } from '@/utils/conversationImageGallery';
 import { setGestureUiPhase } from '@/utils/gestureUiContext';
+import { confirmDestructive } from '../store/confirmStore';
 
 const TRANSITION_MS = 320;
 
@@ -152,12 +153,12 @@ const ImageLibraryDrawer: React.FC<Props> = ({ open, sessions, onClose }) => {
 
   const deleteImagePath = useCallback(async (absolutePath: string) => {
     if (!absolutePath) return;
-    if (!window.confirm(t('imageLibrary.confirmDelete'))) return;
+    if (!(await confirmDestructive(t('imageLibrary.confirmDelete')))) return;
     setDeleteErr(null);
     try {
       const r = await window.electron.deleteMediaLibraryImage({ absolutePath });
       if (!r.ok) {
-        setDeleteErr(t('imageLibrary.deleteFailed', { err: r.error || 'unknown' }));
+        setDeleteErr(t('imageLibrary.deleteFailed', { detail: r.error || 'unknown' }));
         return;
       }
       setPaths((prev) => prev.filter((p) => p !== absolutePath));
@@ -172,7 +173,11 @@ const ImageLibraryDrawer: React.FC<Props> = ({ open, sessions, onClose }) => {
         return next;
       });
     } catch (e) {
-      setDeleteErr(t('imageLibrary.deleteFailed', { err: e instanceof Error ? e.message : String(e) }));
+      setDeleteErr(
+        t('imageLibrary.deleteFailed', {
+          detail: e instanceof Error ? e.message : String(e),
+        })
+      );
     }
   }, [t]);
 

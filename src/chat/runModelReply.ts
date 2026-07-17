@@ -2,13 +2,12 @@ import type { Message, ModelConfig } from '../types';
 import { useChatStore } from '../store/chatStore';
 import { useModelStore } from '../store/modelStore';
 import { useWebSearchStore } from '../store/webSearchStore';
-import { useSettingStore } from '../store/settingStore';
 import { effectiveWebEnabled } from '../utils/chatModelPolicy';
 import { enrichMessagesForModel } from '../utils/enrichMessagesForModel';
 import { sanitizeMessagesForModel } from '../utils/sanitizeMessagesForModel';
-import { isAgentToolsBuildEnabled } from '@/agent/buildFlags';
-import { looksLikeLocalFileAgentRequest, looksLikeLocalImageFindRequest } from '@/agent/localFileIntent';
+import { looksLikeLocalImageFindRequest } from '@/agent/localFileIntent';
 import { looksLikeWebBrowseRequest } from '@/agent/webBrowseIntent';
+import { shouldEnterAgentReply } from '@/agent/shouldEnterAgentReply';
 import { planImageIntent } from '../utils/imageIntentPlanner';
 import { inferDocumentExportHint } from '../utils/documentExportIntent';
 import {
@@ -41,18 +40,12 @@ export async function runModelReply(
   const exportHint = inferDocumentExportHint(userMessage.content);
   const isLocalImageFind = looksLikeLocalImageFindRequest(userMessage.content);
   const isWebBrowseTask = looksLikeWebBrowseRequest(userMessage.content);
-  const willRunLocalAgent =
-    isAgentToolsBuildEnabled() &&
-    !exportHint?.document &&
-    useSettingStore.getState().agentLocalToolsEnabled &&
-    looksLikeLocalFileAgentRequest(userMessage.content);
-  const willRunWebAgent =
-    isAgentToolsBuildEnabled() &&
-    !exportHint?.document &&
-    useSettingStore.getState().agentBrowserEnabled &&
-    isWebBrowseTask;
+  const agentGate = shouldEnterAgentReply({
+    userText: userMessage.content,
+    exportDocument: Boolean(exportHint?.document),
+  });
   /** 本机/网页 Agent 任务均跳过向量注入，避免无关 RAG 干扰工具链 */
-  const skipContextInject = willRunLocalAgent || willRunWebAgent;
+  const skipContextInject = agentGate.enter;
   try {
     const built = await buildOutgoingChain(
       historyBeforeUser,

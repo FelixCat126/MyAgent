@@ -24,6 +24,7 @@ import {
 } from 'react-icons/fi';
 import { IosSwitch } from '../IosSwitch';
 import { useModelStore, modelHasUsableImageGenerator } from '../../store/modelStore';
+import { confirmDestructive } from '../../store/confirmStore';
 import { ModelConfig } from '../../types';
 import {
   IMAGE_PROVIDER_PRESETS,
@@ -650,9 +651,11 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({
                       <button
                         type="button"
                         onClick={() => {
-                          if (confirm(t('settings.list.confirmDelete', { name: model.name }))) {
-                            removeModel(model.id);
-                          }
+                          void confirmDestructive(
+                            t('settings.list.confirmDelete', { name: model.name })
+                          ).then((ok) => {
+                            if (ok) removeModel(model.id);
+                          });
                         }}
                         className="rounded-lg p-1.5 text-stone-500 transition-colors hover:bg-red-50/80 hover:text-red-500 dark:hover:bg-red-500/10"
                         title={t('settings.list.delete')}

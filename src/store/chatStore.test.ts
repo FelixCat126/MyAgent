@@ -151,6 +151,13 @@ describe('chatStore', () => {
     expect(useChatStore.getState().loadingSessionIds.has(sid)).toBe(false);
   });
 
+  it('clearLoadingForSession 不因失败/停止误标未读', () => {
+    seedTwoSessions('sess-b', 'sess-a', 'sess-b');
+    useChatStore.getState().setLoadingSession('sess-a');
+    useChatStore.getState().clearLoadingForSession('sess-a');
+    expect(useChatStore.getState().sessions.find((x) => x.id === 'sess-a')?.unreadAssistantReply).toBeFalsy();
+  });
+
   it('setLoadingSession(null) 清空整个集合', () => {
     /** 用固定 sid 避免 createSession 在同毫秒下生成相同 id */
     useChatStore.setState({

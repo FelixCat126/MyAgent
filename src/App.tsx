@@ -7,6 +7,7 @@ import SessionList from './components/SessionList';
 import SettingsPanel from './components/SettingsPanel';
 import OnboardingSteps from './components/OnboardingSteps';
 import ErrorToast from './components/ErrorToast';
+import ConfirmDialog from './components/ConfirmDialog';
 import ImageLibraryDrawer from './components/ImageLibraryDrawer';
 import GazeIndicator from './components/GazeIndicator';
 import { FiSettings, FiPlus, FiMoon, FiSun, FiMessageSquare, FiX, FiMonitor } from 'react-icons/fi';
@@ -373,6 +374,7 @@ const App: React.FC = () => {
         themeMode={resolved}
       />
       <ErrorToast />
+      <ConfirmDialog />
     </div>
     </ImageLibraryContext.Provider>
   );

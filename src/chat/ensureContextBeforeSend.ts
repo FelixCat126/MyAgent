@@ -1,5 +1,6 @@
 import type { Message, ModelConfig } from '../types';
 import {
+  CONTEXT_COMPRESS_RATIO,
   canPerformCompressionSplit,
   estimateSessionChars,
   shouldCompressContext,
@@ -62,7 +63,7 @@ function needsCompression(
   const effectiveLimit = Math.max(soft - overhead, Math.floor(soft * 0.5));
   const overBudget =
     shouldCompressContext(priorMessages, draftInput, effectiveLimit, undefined, model) ||
-    estimateSessionChars(priorMessages, draftInput) + overhead >= soft * 0.95;
+    estimateSessionChars(priorMessages, draftInput) + overhead >= soft * CONTEXT_COMPRESS_RATIO;
   if (!overBudget) return false;
   /** 与 compressSessionContext 可行性对齐，避免空转压缩 UI */
   return canPerformCompressionSplit(priorMessages, soft);

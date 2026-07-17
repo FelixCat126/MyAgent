@@ -6,13 +6,16 @@ import { useSettingStore } from '../store/settingStore';
 import { t as tUi } from '../i18n/ui';
 import { effectiveWebEnabled } from '../utils/chatModelPolicy';
 import { flushZustandFilePersist } from '../utils/zustandFileStorage';
-import { ensureContextBeforeSend } from './ensureContextBeforeSend';
 import {
-  addFullTextBypassIfNeeded,
-  resolveInjectExtras,
+  commitUserMessageAndReply,
   tryClaimSessionSend,
 } from './sendPipeline';
 import { resubmitEditedUserMessage } from './resubmitEditedUserMessage';
+
+async function ensureModelsReady(): Promise<void> {
+  await useModelStore.persist?.rehydrate?.();
+  useModelStore.getState().initializeDefaultModels();
+}
 
 export function installRemoteChatBridge(opts: {
   runModelReply: (
@@ -58,22 +61,19 @@ export function installRemoteChatBridge(opts: {
       };
     },
     getActiveModelLabel: async () => {
-      await useModelStore.persist?.rehydrate?.();
-      useModelStore.getState().initializeDefaultModels();
+      await ensureModelsReady();
       return useModelStore.getState().getActiveModel()?.name ?? '';
     },
     getModelsSnapshot: async () => {
-      await useModelStore.persist?.rehydrate?.();
+      await ensureModelsReady();
       const ms = useModelStore.getState();
-      ms.initializeDefaultModels();
       return {
         models: ms.models.map((m) => ({ id: m.id, name: m.name })),
         activeModelId: ms.activeModelId,
       };
     },
     setActiveModelId: async (modelId: string) => {
-      await useModelStore.persist?.rehydrate?.();
-      useModelStore.getState().initializeDefaultModels();
+      await ensureModelsReady();
       const id = String(modelId ?? '').trim();
       const locale = useSettingStore.getState().locale;
       if (!id) throw new Error(tUi(locale, 'remoteGateway.modelIdRequired'));
@@ -135,8 +135,7 @@ export function installRemoteChatBridge(opts: {
       messageId: string;
       content: string;
     }) => {
-      await useModelStore.persist?.rehydrate?.();
-      useModelStore.getState().initializeDefaultModels();
+      await ensureModelsReady();
 
       const sessionId = String(payload.sessionId ?? '').trim();
       const messageId = String(payload.messageId ?? '').trim();
@@ -170,8 +169,8 @@ export function installRemoteChatBridge(opts: {
           if (result.reason === 'session-missing') {
             throw new Error(tUi(locale, 'remoteGateway.sessionMissing'));
           }
-          if (result.reason === 'not-user') throw new Error('remote: only user messages can be resent');
-          throw new Error('remote: message not found');
+          if (result.reason === 'not-user') throw new Error(tUi(locale, 'remoteGateway.emptySend'));
+          throw new Error(tUi(locale, 'remoteGateway.sessionMissing'));
         }
         await flushZustandFilePersist();
       } catch (e) {
@@ -180,8 +179,7 @@ export function installRemoteChatBridge(opts: {
       }
     },
     sendChat: async (payload: RemoteBridgePayload) => {
-      await useModelStore.persist?.rehydrate?.();
-      useModelStore.getState().initializeDefaultModels();
+      await ensureModelsReady();
       const { sessionId, content, attachments: attIn } = payload;
       const attachments = Array.isArray(attIn)
         ? attIn.filter(
@@ -200,7 +198,6 @@ export function installRemoteChatBridge(opts: {
         throw new Error(tUi(locale, 'remoteGateway.sessionMissing'));
       }
       chat.switchSession(sessionId);
-      let priorMessages = sess.messages.slice();
       const att = tUi(locale, 'chat.attachment');
       const textContent = content.trim() || (attachments.length > 0 ? att : '');
       if (!textContent.trim() && attachments.length === 0) {
@@ -213,46 +210,18 @@ export function installRemoteChatBridge(opts: {
 
       try {
         const webOn = effectiveWebEnabled(sess, useWebSearchStore.getState().enabled);
-        const ensured = await ensureContextBeforeSend({
+        await commitUserMessageAndReply({
           sessionId,
-          priorMessages,
-          draftInput: textContent,
+          textContent,
+          files: attachments.length > 0 ? attachments : undefined,
           model: activeModel,
           locale: locale === 'en' ? 'en' : 'zh',
           summaryTitle: tUi(locale, 'chat.contextSummaryTitle'),
-          injectExtras: resolveInjectExtras({ webEnabled: webOn }),
+          webEnabled: webOn,
+          attachmentTitle: tUi(locale, 'chat.attachmentTitle'),
+          newSessionTitle: tUi(locale, 'session.newTitle'),
+          runModelReply: opts.runModelReply,
         });
-        priorMessages = ensured.priorMessages;
-
-        if (priorMessages.length === 0) {
-          const titleCandidate =
-            (textContent === att ? tUi(locale, 'chat.attachmentTitle') : textContent) ||
-            tUi(locale, 'session.newTitle');
-          chat.updateSessionTitle(
-            sessionId,
-            titleCandidate.length > 15 ? titleCandidate.substring(0, 15) + '...' : titleCandidate
-          );
-        }
-        const userMessage: Message = {
-          id: Date.now().toString(),
-          role: 'user',
-          content: textContent,
-          files: attachments.length > 0 ? attachments : undefined,
-          timestamp: Date.now(),
-          model: activeModel.name,
-        };
-        chat.addMessage(sessionId, userMessage);
-
-        if (
-          !addFullTextBypassIfNeeded({
-            sessionId,
-            modelName: activeModel.name,
-            textContent,
-            hasAttachments: attachments.length > 0,
-          })
-        ) {
-          await opts.runModelReply(sessionId, priorMessages, userMessage, activeModel);
-        }
         await flushZustandFilePersist();
       } catch (e) {
         chat.clearLoadingForSession(sessionId);

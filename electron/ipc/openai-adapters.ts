@@ -60,7 +60,7 @@ export function formatOpenAITextOnly(messages: Message[]): Array<{ role: string;
     const hadImage = msg.files?.some((f) => f.type.startsWith('image/'));
     let content = normalizeTextContent((msg as { content?: unknown }).content);
     if (hadImage && !content.trim()) {
-      content = '（附件）';
+      content = '（附件）'; // 与 ATTACHMENT_PLACEHOLDERS / i18n chat.attachment 中文一致
     }
     const role = isContextSummaryMessage(msg) ? 'system' : msg.role;
     return { role, content };
@@ -79,13 +79,15 @@ export function formatOpenAIMultimodal(
       return { role: 'system', content: text };
     }
     if (msg.role === 'user' && msg.files && msg.files.some((f) => f.type.startsWith('image/'))) {
-      const imageFile = msg.files.find((f) => f.type.startsWith('image/'))!;
-      const dataUrl = imageFileToDataUrl(imageFile);
+      const imageFiles = msg.files.filter((f) => f.type.startsWith('image/'));
       return {
         role: msg.role,
         content: [
           { type: 'text', text },
-          { type: 'image_url', image_url: { url: dataUrl } },
+          ...imageFiles.map((imageFile) => ({
+            type: 'image_url' as const,
+            image_url: { url: imageFileToDataUrl(imageFile) },
+          })),
         ],
       };
     }
@@ -126,21 +128,21 @@ export function formatAnthropicMessages(messages: Message[]): {
     if (msg.role !== 'user' && msg.role !== 'assistant') continue;
     const text = normalizeTextContent((msg as { content?: unknown }).content);
     if (msg.role === 'user' && msg.files?.some((f) => f.type.startsWith('image/'))) {
-      const imageFile = msg.files.find((f) => f.type.startsWith('image/'))!;
-      const dataUrl = imageFileToDataUrl(imageFile);
-      const b64 = dataUrl.includes(',') ? dataUrl.split(',')[1]! : dataUrl;
-      const mediaType =
-        imageFile.type && imageFile.type.startsWith('image/') ? imageFile.type : 'image/png';
-      out.push({
-        role: 'user',
-        content: [
-          { type: 'text', text: text || '（空）' },
-          {
-            type: 'image',
-            source: { type: 'base64', media_type: mediaType, data: b64 },
-          },
-        ],
-      });
+      const imageFiles = msg.files.filter((f) => f.type.startsWith('image/'));
+      const blocks: Array<Record<string, unknown>> = [
+        { type: 'text', text: text || '（空）' },
+      ];
+      for (const imageFile of imageFiles) {
+        const dataUrl = imageFileToDataUrl(imageFile);
+        const b64 = dataUrl.includes(',') ? dataUrl.split(',')[1]! : dataUrl;
+        const mediaType =
+          imageFile.type && imageFile.type.startsWith('image/') ? imageFile.type : 'image/png';
+        blocks.push({
+          type: 'image',
+          source: { type: 'base64', media_type: mediaType, data: b64 },
+        });
+      }
+      out.push({ role: 'user', content: blocks });
       continue;
     }
     /** MiniMax 多轮要求保留 thinking 块；有 reasoning 时按 content 数组回传 */

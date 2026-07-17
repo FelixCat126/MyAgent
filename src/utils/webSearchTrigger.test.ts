@@ -6,6 +6,7 @@ describe('getWebSearchQueryIfTriggered', () => {
     expect(getWebSearchQueryIfTriggered('')).toBeNull();
     expect(getWebSearchQueryIfTriggered('  \t  ')).toBeNull();
     expect(getWebSearchQueryIfTriggered('（附件）')).toBeNull();
+    expect(getWebSearchQueryIfTriggered('(attachment)')).toBeNull();
   });
 
   it('明确不联网时返回 null（优先于句中「新闻」等关键词）', () => {

@@ -1,12 +1,10 @@
 import type { Message, ModelConfig } from '../types';
 import { useChatStore } from '../store/chatStore';
 import { StreamingSpeechReader } from '../utils/streamingSpeech';
-import { isAgentToolsBuildEnabled } from '@/agent/buildFlags';
 import { runAgentLoop } from '@/agent/agentRunner';
-import { looksLikeWebBrowseRequest } from '@/agent/webBrowseIntent';
+import { shouldEnterAgentReply } from '@/agent/shouldEnterAgentReply';
 import { extractGenerateImageCalls, stripGenerateImageArtifactsForDisplay } from '../utils/toolCalls';
 import { planImageIntent } from '../utils/imageIntentPlanner';
-import { useSettingStore } from '../store/settingStore';
 import {
   postProcessAssistantContent,
   imageReferencePathsFromFiles,
@@ -46,13 +44,10 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
   } = args;
 
   if (
-    !isAgentToolsBuildEnabled() ||
-    exportHint?.document ||
-    !(
-      useSettingStore.getState().agentLocalToolsEnabled ||
-      (useSettingStore.getState().agentBrowserEnabled &&
-        looksLikeWebBrowseRequest(userMessage.content))
-    )
+    !shouldEnterAgentReply({
+      userText: userMessage.content,
+      exportDocument: Boolean(exportHint?.document),
+    }).enter
   ) {
     return false;
   }

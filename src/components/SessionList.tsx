@@ -8,26 +8,20 @@ import { useResolvedTheme } from '../hooks/useResolvedTheme';
 import { useSettingStore } from '../store/settingStore';
 import { useImageLibraryOpener } from '../context/ImageLibraryContext';
 import FloatingParticleWindow from './FloatingParticleWindow';
-import type { Locale } from '../i18n/types';
-
-/** 会话列表时间：统一 24 小时制，避免英文 AM/PM 在窄栏折行 */
-function formatSessionUpdatedAt(ts: number, locale: Locale): string {
-  return new Date(ts).toLocaleString(locale === 'en' ? 'en-US' : 'zh-CN', {
-    year: 'numeric',
-    month: 'numeric',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
-}
+import { formatDateTime } from '../utils/formatDateTime';
+import { confirmDestructive } from '../store/confirmStore';
 
 const SessionList: React.FC = () => {
   const { t, locale } = useI18n();
   const resolvedTheme = useResolvedTheme();
   const particleFieldEnabled = useSettingStore((s) => s.particleFieldEnabled);
   const openImageLibrary = useImageLibraryOpener();
-  const { sessions, currentSessionId, switchSession, deleteSession, updateSessionTitle, loadingSessionIds } = useChatStore();
+  const sessions = useChatStore((s) => s.sessions);
+  const currentSessionId = useChatStore((s) => s.currentSessionId);
+  const switchSession = useChatStore((s) => s.switchSession);
+  const deleteSession = useChatStore((s) => s.deleteSession);
+  const updateSessionTitle = useChatStore((s) => s.updateSessionTitle);
+  const loadingSessionIds = useChatStore((s) => s.loadingSessionIds);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
   const [search, setSearch] = useState('');
@@ -52,9 +46,9 @@ const SessionList: React.FC = () => {
 
   const handleDelete = (e: React.MouseEvent, sessionId: string) => {
     e.stopPropagation();
-    if (confirm(t('sessionList.confirmDelete'))) {
-      deleteSession(sessionId);
-    }
+    void confirmDestructive(t('sessionList.confirmDelete')).then((ok) => {
+      if (ok) deleteSession(sessionId);
+    });
   };
 
   const startEdit = (e: React.MouseEvent, session: ChatSession) => {
@@ -170,9 +164,9 @@ const SessionList: React.FC = () => {
               )}
               <p
                 className="mt-1.5 truncate whitespace-nowrap text-xs font-medium text-stone-500 dark:text-slate-500"
-                title={formatSessionUpdatedAt(session.updatedAt, locale)}
+                title={formatDateTime(session.updatedAt, locale)}
               >
-                {formatSessionUpdatedAt(session.updatedAt, locale)}
+                {formatDateTime(session.updatedAt, locale)}
               </p>
             </div>
             

@@ -2,6 +2,8 @@
  * 按关键词 / 显式前缀决定是否发起联网检索，避免每条消息都打搜索 API。
  */
 
+import { isAttachmentPlaceholder } from './attachmentPlaceholder';
+
 /** 行首显式强制联网（检索时会去掉此前缀） */
 const FORCE_PREFIX = /^\s*(\/web|\/联网|#联网)\s+/i;
 
@@ -86,7 +88,7 @@ function hitKeywordEn(text: string): boolean {
  */
 export function getWebSearchQueryIfTriggered(rawContent: string): string | null {
   const trimmed = rawContent.trim();
-  if (!trimmed || trimmed === '（附件）') return null;
+  if (!trimmed || isAttachmentPlaceholder(trimmed)) return null;
 
   if (OPT_OUT.test(trimmed)) return null;
 

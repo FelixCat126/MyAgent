@@ -10,7 +10,7 @@ export interface MessageSelectionApi {
     currentSessionId: string | null;
     editingMessageId: string | null;
     setEditingMessageId: (id: string | null) => void;
-    confirm: (message: string) => boolean;
+    confirm: (message: string) => boolean | Promise<boolean>;
     removeMessages: (sessionId: string, ids: string[]) => void;
     label: string;
   }) => void;
@@ -49,7 +49,7 @@ export function useMessageSelection(): MessageSelectionApi {
       currentSessionId: string | null;
       editingMessageId: string | null;
       setEditingMessageId: (id: string | null) => void;
-      confirm: (message: string) => boolean;
+      confirm: (message: string) => boolean | Promise<boolean>;
       removeMessages: (sessionId: string, ids: string[]) => void;
       label: string;
     }) => {
@@ -62,10 +62,12 @@ export function useMessageSelection(): MessageSelectionApi {
         label,
       } = params;
       if (!currentSessionId || selectedMessageIds.size === 0) return;
-      if (!confirm(label)) return;
-      if (editingMessageId && selectedMessageIds.has(editingMessageId)) setEditingMessageId(null);
-      removeMessages(currentSessionId, [...selectedMessageIds]);
-      cancelSelection();
+      void Promise.resolve(confirm(label)).then((ok) => {
+        if (!ok) return;
+        if (editingMessageId && selectedMessageIds.has(editingMessageId)) setEditingMessageId(null);
+        removeMessages(currentSessionId, [...selectedMessageIds]);
+        cancelSelection();
+      });
     },
     [selectedMessageIds, cancelSelection]
   );

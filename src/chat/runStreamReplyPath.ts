@@ -156,8 +156,8 @@ function runDocumentStreamReply(args: RunStreamReplyPathArgs): void {
             );
             ui.updateMessage(sendSessionId, assistantId, {
               content: artifactFiles.length
-                ? '文档已生成，点击下方文件即可查看或另存。'
-                : '文档内容已生成，但写入本地文件失败。请重试或检查文档目录权限。',
+                ? ui.t('chat.documentReady')
+                : ui.t('chat.documentWriteFailed'),
               exportHint,
               files: artifactFiles.length ? artifactFiles : undefined,
             });
@@ -249,102 +249,97 @@ function runSseStreamReply(args: RunStreamReplyPathArgs): void {
         const aborted = ui.streamCancelledByUserRef.current;
         ui.streamCancelledByUserRef.current = false;
 
-        try {
-          if (ui.streamHadErrorRef.current) {
-            ui.speechReaderRef.current?.cancel();
-            ui.setVoiceReplySpeaking(false);
+        await withStreamLifecycle(
+          assistantId,
+          {
+            onFinalize: () => {
+              ui.setIsStreaming(false);
+              ui.clearLoadingForSession(sendSessionId);
+              ui.streamingAssistantIdRef.current = null;
+              ui.streamingSessionIdRef.current = null;
+              ui.setStreamingTargetAssistantId(null);
+            },
+          },
+          async () => {
+            if (ui.streamHadErrorRef.current) {
+              ui.speechReaderRef.current?.cancel();
+              ui.setVoiceReplySpeaking(false);
+              return;
+            }
+
+            const msg = useChatStore.getState()
+              .sessions.find((s) => s.id === sendSessionId)
+              ?.messages.find((m) => m.id === assistantId);
+            const raw = msg?.content ?? '';
+            const reasoningText = (msg?.reasoning ?? '').trim();
+
+            const plannedIntent = planImageIntent({
+              userText: userMessage.content,
+              historyBeforeUser,
+              assistantText: raw,
+              toolCallCount: extractGenerateImageCalls(raw).length,
+            });
+
+            if (aborted && !raw.trim() && !plannedIntent.shouldGenerate) {
+              ui.speechReaderRef.current?.cancel();
+              ui.setVoiceReplySpeaking(false);
+              ui.removeMessage(sendSessionId, assistantId);
+              return;
+            }
+
+            /** SSE 正文已全部写入；先于生图后处理解除流式态 */
             ui.setIsStreaming(false);
-            ui.clearLoadingForSession(sendSessionId);
             ui.streamingAssistantIdRef.current = null;
             ui.streamingSessionIdRef.current = null;
             ui.setStreamingTargetAssistantId(null);
-            return;
-          }
+            ui.speechReaderRef.current?.finish();
 
-          const msg = useChatStore.getState()
-            .sessions.find((s) => s.id === sendSessionId)
-            ?.messages.find((m) => m.id === assistantId);
-          const raw = msg?.content ?? '';
-          const reasoningText = (msg?.reasoning ?? '').trim();
-
-          const plannedIntent = planImageIntent({
-            userText: userMessage.content,
-            historyBeforeUser,
-            assistantText: raw,
-            toolCallCount: extractGenerateImageCalls(raw).length,
-          });
-
-          if (aborted && !raw.trim() && !plannedIntent.shouldGenerate) {
-            ui.speechReaderRef.current?.cancel();
-            ui.setVoiceReplySpeaking(false);
-            ui.removeMessage(sendSessionId, assistantId);
-            ui.setIsStreaming(false);
-            ui.clearLoadingForSession(sendSessionId);
-            ui.streamingAssistantIdRef.current = null;
-            ui.streamingSessionIdRef.current = null;
-            ui.setStreamingTargetAssistantId(null);
-            return;
-          }
-
-          /** SSE 正文已全部写入本地消息；先于生图后处理解除「流式」态，使 strip 与生图占位顺序符合「先说清再画图」 */
-          ui.setIsStreaming(false);
-          ui.streamingAssistantIdRef.current = null;
-          ui.streamingSessionIdRef.current = null;
-          ui.setStreamingTargetAssistantId(null);
-          ui.speechReaderRef.current?.finish();
-
-          let nextContent = raw;
-          let nextFiles = msg?.files as Message['files'] | undefined;
-          if (raw.trim() || plannedIntent.shouldGenerate) {
-            try {
-              const imageHooks = makeImageGenHooks({
-                assistantId,
-                syncImgGenUi: (v) => syncImgGenUi(ui, sendSessionId, v),
-                imageGenCancelledRef: ui.imageGenCancelledRef,
-                onImage: (image) =>
-                  appendGeneratedImageToAssistant(ui, sendSessionId, assistantId, image),
-              });
-              const { content, files } = await postProcessAssistantContent(
-                raw,
-                activeModel,
-                imgBase,
-                ui.setInlineImageIndex,
-                {
-                  imageGenHooks: imageHooks,
-                  referenceImages: imageReferencePathsFromFiles(userMessage.files),
-                  userPromptContext: userMessage.content,
-                  plannedIntent,
-                  shouldCancel: () => ui.imageGenCancelledRef.current,
-                }
-              );
-              nextContent = content;
-              nextFiles = mergeAssistantFiles(sendSessionId, assistantId, files);
-            } catch (e) {
-              nextContent =
-                raw + '\n\n' + ui.t('postProcess.tag') + (e instanceof Error ? e.message : String(e));
+            let nextContent = raw;
+            let nextFiles = msg?.files as Message['files'] | undefined;
+            if (raw.trim() || plannedIntent.shouldGenerate) {
+              try {
+                const imageHooks = makeImageGenHooks({
+                  assistantId,
+                  syncImgGenUi: (v) => syncImgGenUi(ui, sendSessionId, v),
+                  imageGenCancelledRef: ui.imageGenCancelledRef,
+                  onImage: (image) =>
+                    appendGeneratedImageToAssistant(ui, sendSessionId, assistantId, image),
+                });
+                const { content, files } = await postProcessAssistantContent(
+                  raw,
+                  activeModel,
+                  imgBase,
+                  ui.setInlineImageIndex,
+                  {
+                    imageGenHooks: imageHooks,
+                    referenceImages: imageReferencePathsFromFiles(userMessage.files),
+                    userPromptContext: userMessage.content,
+                    plannedIntent,
+                    shouldCancel: () => ui.imageGenCancelledRef.current,
+                  }
+                );
+                nextContent = content;
+                nextFiles = mergeAssistantFiles(sendSessionId, assistantId, files);
+              } catch (e) {
+                nextContent =
+                  raw + '\n\n' + ui.t('postProcess.tag') + (e instanceof Error ? e.message : String(e));
+              }
+              if (aborted) {
+                nextContent = `${nextContent}\n\n---\n\n${ui.t('chat.stoppedBanner')}`;
+              }
             }
-            if (aborted) {
-              nextContent =
-                `${nextContent}\n\n---\n\n${ui.t('chat.stoppedBanner')}`;
+            if (!nextContent.trim() && !nextFiles?.length && reasoningText) {
+              nextContent = ui.t('chat.emptyAfterReasoning');
             }
-          }
-          if (!nextContent.trim() && !nextFiles?.length && reasoningText) {
-            nextContent = ui.t('chat.emptyAfterReasoning');
-          }
 
-          ui.updateMessage(sendSessionId, assistantId, {
-            content: nextContent,
-            files: mergeAssistantFiles(sendSessionId, assistantId, nextFiles as FileInfo[] | undefined),
-            ...(exportHint ? { exportHint } : {}),
-            imageGenProgress: undefined,
-          });
-        } finally {
-          ui.setIsStreaming(false);
-          ui.clearLoadingForSession(sendSessionId);
-          ui.streamingAssistantIdRef.current = null;
-          ui.streamingSessionIdRef.current = null;
-          ui.setStreamingTargetAssistantId(null);
-        }
+            ui.updateMessage(sendSessionId, assistantId, {
+              content: nextContent,
+              files: mergeAssistantFiles(sendSessionId, assistantId, nextFiles as FileInfo[] | undefined),
+              ...(exportHint ? { exportHint } : {}),
+              imageGenProgress: undefined,
+            });
+          }
+        );
       })();
     },
   });

@@ -12,6 +12,7 @@ import { useSettingStore } from '../store/settingStore';
 import { useParticleStore } from '../store/particleStore';
 import { useI18n } from '../hooks/useI18n';
 import { showError, showWarning } from '../store/errorStore';
+import { confirmDestructive } from '../store/confirmStore';
 import { ChatSession, FileInfo, Message } from '../types';
 import { useWebSpeechDictation, type SpeechApiTranscribeConfig } from '@/hooks/useWebSpeechDictation';
 import { useVoiceWake } from '@/hooks/useVoiceWake';
@@ -32,13 +33,12 @@ import {
   resolveContextProgressFullChars,
 } from '../utils/contextBudget';
 import { resolveContextSoftLimitChars } from '../utils/inferContextWindow';
-import { ensureContextBeforeSend } from '../chat/ensureContextBeforeSend';
 import {
   estimateInjectedPayloadOverheadChars,
   messagesExceedSanitizeLimit,
 } from '../chat/payloadBoundary';
 import {
-  addFullTextBypassIfNeeded,
+  commitUserMessageAndReply,
   resolveInjectExtras,
   tryClaimSessionSend,
 } from '../chat/sendPipeline';
@@ -64,12 +64,10 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   const {
     currentSessionId,
     sessions,
-    addMessage,
     removeMessages,
     updateMessage,
     loadingSessionIds,
     clearLoadingForSession,
-    updateSessionTitle,
     setSessionWebOverride,
     compressingSessionIds,
   } = useChatStore();
@@ -414,7 +412,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
       currentSessionId: currentSessionId ?? null,
       editingMessageId,
       setEditingMessageId,
-      confirm: (msg) => window.confirm(msg),
+      confirm: (msg) => confirmDestructive(msg),
       removeMessages,
       label: t('chat.confirmDeleteMessages', { count: selection.selectedMessageIds.size }),
     });
@@ -487,64 +485,33 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
       const att = t('chat.attachment');
       const textContent = input.trim() || (uploadedFiles.length > 0 ? att : '');
 
-      let priorMessages =
-        useChatStore.getState().sessions.find((s) => s.id === sendSessionId)?.messages ?? messages;
-
       stickToBottomRef.current = true;
       const webOn = currentSession
         ? effectiveWebEnabled(currentSession, webSearchEnabled)
         : webSearchEnabled;
-      const ensured = await ensureContextBeforeSend({
-        sessionId: sendSessionId,
-        priorMessages,
-        draftInput: textContent,
-        model: activeModel,
-        locale: uiLocale === 'en' ? 'en' : 'zh',
-        summaryTitle: t('chat.contextSummaryTitle'),
-        injectExtras: resolveInjectExtras({ webEnabled: webOn }),
-      });
-      priorMessages = ensured.priorMessages;
-      if (ensured.didCompress) {
-        requestAnimationFrame(() => {
-          const el = scrollContainerRef.current;
-          if (el) el.scrollTop = el.scrollHeight;
-        });
-      }
 
-      if (priorMessages.length === 0) {
-        const title = (textContent === att ? t('chat.attachmentTitle') : textContent) || t('session.newTitle');
-        updateSessionTitle(
-          sendSessionId,
-          title.length > 15 ? title.substring(0, 15) + '...' : title
-        );
-      }
-
-      const userMessage: Message = {
-        id: Date.now().toString(),
-        role: 'user',
-        content: textContent,
-        files: uploadedFiles.length > 0 ? uploadedFiles : undefined,
-        timestamp: Date.now(),
-        model: activeModel.name,
-      };
-
-      addMessage(sendSessionId, userMessage);
       setInput('');
       attachments.clearAttachments();
       requestAnimationFrame(() => inputAreaRef.current?.focus());
 
-      if (
-        addFullTextBypassIfNeeded({
-          sessionId: sendSessionId,
-          modelName: activeModel.name,
-          textContent,
-          hasAttachments: uploadedFiles.length > 0,
-        })
-      ) {
-        return;
-      }
-
-      await runModelReply(sendSessionId, priorMessages, userMessage, activeModel);
+      await commitUserMessageAndReply({
+        sessionId: sendSessionId,
+        textContent,
+        files: uploadedFiles.length > 0 ? uploadedFiles : undefined,
+        model: activeModel,
+        locale: uiLocale === 'en' ? 'en' : 'zh',
+        summaryTitle: t('chat.contextSummaryTitle'),
+        webEnabled: webOn,
+        attachmentTitle: t('chat.attachmentTitle'),
+        newSessionTitle: t('session.newTitle'),
+        runModelReply,
+        onDidCompress: () => {
+          requestAnimationFrame(() => {
+            const el = scrollContainerRef.current;
+            if (el) el.scrollTop = el.scrollHeight;
+          });
+        },
+      });
     } catch (e) {
       clearLoadingForSession(sendSessionId);
       console.error('[handleSend]', e);
