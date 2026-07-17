@@ -32,12 +32,15 @@ export interface ChatToolbarProps {
 export const ChatToolbar: React.FC<ChatToolbarProps> = (p) => {
   if (!p.visible) return null;
 
+  const btn =
+    'inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg px-2 py-1 text-xs';
+
   return (
-    <div className="shrink-0 flex flex-wrap items-center gap-2 border-b border-stone-600/20 px-6 py-2 dark:border-white/10 bg-stone-100/50 dark:bg-slate-900/40">
-      <div className="flex items-center gap-2.5 text-xs text-stone-600 dark:text-slate-400">
+    <div className="flex min-w-0 shrink-0 items-center gap-2 overflow-x-auto border-b border-stone-600/20 bg-stone-100/50 px-6 py-2 dark:border-white/10 dark:bg-slate-900/40">
+      <div className="flex shrink-0 items-center gap-2.5 whitespace-nowrap text-xs text-stone-600 dark:text-slate-400">
         <div className="flex items-center gap-1.5">
           <FiGlobe size={14} className="shrink-0" aria-hidden />
-          <span>{p.webLabel}</span>
+          <span className="whitespace-nowrap">{p.webLabel}</span>
         </div>
         <IosSwitch
           checked={p.webEffective}
@@ -45,28 +48,28 @@ export const ChatToolbar: React.FC<ChatToolbarProps> = (p) => {
           onChange={(v) => p.onWebChange(v)}
         />
       </div>
-      <div className="ml-auto flex items-center gap-1">
+      <div className="ml-auto flex min-w-0 shrink-0 items-center gap-1">
         {p.selectionMode ? (
           <>
-            <span className="mr-1 text-xs text-stone-500 dark:text-slate-400">
+            <span className="mr-1 shrink-0 whitespace-nowrap text-xs text-stone-500 dark:text-slate-400">
               {p.selectedCountLabel}
             </span>
             <button
               type="button"
               onClick={p.onDeleteSelected}
               disabled={p.selectedCount === 0 || p.isCurrentSessionLoading}
-              className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-red-600 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-45 dark:text-red-300 dark:hover:bg-red-950/45"
+              className={`${btn} text-red-600 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-45 dark:text-red-300 dark:hover:bg-red-950/45`}
               title={p.deleteSelectedLabel}
             >
-              <FiTrash2 size={14} /> {p.deleteSelectedLabel}
+              <FiTrash2 size={14} className="shrink-0" /> {p.deleteSelectedLabel}
             </button>
             <button
               type="button"
               onClick={p.onCancelSelection}
-              className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-stone-600 hover:bg-stone-200/80 dark:text-slate-300 dark:hover:bg-slate-800"
+              className={`${btn} text-stone-600 hover:bg-stone-200/80 dark:text-slate-300 dark:hover:bg-slate-800`}
               title={p.cancelSelectLabel}
             >
-              <FiX size={14} /> {p.cancelSelectLabel}
+              <FiX size={14} className="shrink-0" /> {p.cancelSelectLabel}
             </button>
           </>
         ) : (
@@ -74,27 +77,27 @@ export const ChatToolbar: React.FC<ChatToolbarProps> = (p) => {
             type="button"
             onClick={p.onStartSelection}
             disabled={p.messagesEmpty || p.isCurrentSessionLoading}
-            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-stone-600 hover:bg-stone-200/80 disabled:cursor-not-allowed disabled:opacity-45 dark:text-slate-300 dark:hover:bg-slate-800"
+            className={`${btn} text-stone-600 hover:bg-stone-200/80 disabled:cursor-not-allowed disabled:opacity-45 dark:text-slate-300 dark:hover:bg-slate-800`}
             title={p.selectMessagesLabel}
           >
-            <FiCheckSquare size={14} /> {p.selectMessagesLabel}
+            <FiCheckSquare size={14} className="shrink-0" /> {p.selectMessagesLabel}
           </button>
         )}
         <button
           type="button"
           onClick={() => p.onExport('md')}
-          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-stone-600 hover:bg-stone-200/80 dark:text-slate-300 dark:hover:bg-slate-800"
+          className={`${btn} text-stone-600 hover:bg-stone-200/80 dark:text-slate-300 dark:hover:bg-slate-800`}
           title={p.exportMdTitle}
         >
-          <FiDownload size={14} /> MD
+          <FiDownload size={14} className="shrink-0" /> MD
         </button>
         <button
           type="button"
           onClick={() => p.onExport('html')}
-          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-stone-600 hover:bg-stone-200/80 dark:text-slate-300 dark:hover:bg-slate-800"
+          className={`${btn} text-stone-600 hover:bg-stone-200/80 dark:text-slate-300 dark:hover:bg-slate-800`}
           title={p.exportHtmlTitle}
         >
-          <FiDownload size={14} /> HTML
+          <FiDownload size={14} className="shrink-0" /> HTML
         </button>
       </div>
     </div>

@@ -97,23 +97,23 @@ const SessionList: React.FC = () => {
             <button
               type="button"
               onClick={() => void exportAllJson()}
-              className="flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg border border-stone-400/25 bg-stone-100/60 py-1.5 text-xs font-medium text-stone-600 hover:bg-stone-200/80 dark:border-slate-600 dark:bg-slate-800/50 dark:text-slate-300 dark:hover:bg-slate-800"
+              className="flex min-w-0 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-stone-400/25 bg-stone-100/60 py-1.5 text-xs font-medium text-stone-600 hover:bg-stone-200/80 dark:border-slate-600 dark:bg-slate-800/50 dark:text-slate-300 dark:hover:bg-slate-800"
               title={t('sessionList.exportAllTitle')}
             >
-              <FiDownload size={14} />
-              {t('sessionList.exportAll')}
+              <FiDownload size={14} className="shrink-0" />
+              <span className="truncate">{t('sessionList.exportAll')}</span>
             </button>
           ) : null}
           <button
             type="button"
             onClick={() => openImageLibrary()}
-            className={`flex min-w-0 items-center justify-center gap-1.5 rounded-lg border border-stone-400/25 bg-stone-100/60 py-1.5 text-xs font-medium text-stone-600 hover:bg-stone-200/80 dark:border-slate-600 dark:bg-slate-800/50 dark:text-slate-300 dark:hover:bg-slate-800 ${
+            className={`flex min-w-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-stone-400/25 bg-stone-100/60 py-1.5 text-xs font-medium text-stone-600 hover:bg-stone-200/80 dark:border-slate-600 dark:bg-slate-800/50 dark:text-slate-300 dark:hover:bg-slate-800 ${
               sessions.length > 0 ? 'flex-1' : 'w-full'
             }`}
             title={t('sessionList.imageLibraryTitle')}
           >
-            <FiImage size={14} />
-            {t('sessionList.imageLibrary')}
+            <FiImage size={14} className="shrink-0" />
+            <span className="truncate">{t('sessionList.imageLibrary')}</span>
           </button>
         </div>
       </div>

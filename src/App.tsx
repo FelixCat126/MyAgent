@@ -206,7 +206,7 @@ const App: React.FC = () => {
         {gestureControlEnabled ? (
           <div
             className={
-              'flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium ' +
+              'flex max-w-full items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium whitespace-nowrap ' +
               (resolved === 'dark'
                 ? 'bg-white/10 text-slate-200'
                 : 'bg-stone-500/15 text-stone-700')
@@ -281,17 +281,17 @@ const App: React.FC = () => {
 
       {/* 行3左：底部操作栏 */}
       <div
-        className="border-t border-r border-stone-600/38 dark:border-white/10 flex items-center justify-between px-5"
+        className="flex items-center justify-between gap-2 overflow-x-auto border-t border-r border-stone-600/38 px-5 dark:border-white/10"
         style={{ background: resolved === 'dark' ? '#1c1c22' : 'var(--shell-chrome)' }}
       >
         <button
           onClick={handleNewChat}
-          className="shrink-0 px-4 py-2 bg-gradient-to-r from-primary-500 to-teal-500 hover:from-primary-600 hover:to-teal-600 shadow-md shadow-primary-500/20 text-white rounded-xl transition-all flex items-center gap-2 font-medium text-sm"
+          className="flex shrink-0 items-center gap-2 whitespace-nowrap rounded-xl bg-gradient-to-r from-primary-500 to-teal-500 px-4 py-2 text-sm font-medium text-white shadow-md shadow-primary-500/20 transition-all hover:from-primary-600 hover:to-teal-600"
         >
-          <FiPlus size={18} />
+          <FiPlus size={18} className="shrink-0" />
           <span className="whitespace-nowrap">{t('app.newChat')}</span>
         </button>
-        <div className="ml-3 flex shrink-0 items-center gap-0.5">
+        <div className="ml-auto flex shrink-0 items-center gap-0.5">
           <button
             type="button"
             onClick={() => setLocale(locale === 'zh' ? 'en' : 'zh')}
