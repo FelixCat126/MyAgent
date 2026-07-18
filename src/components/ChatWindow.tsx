@@ -53,6 +53,7 @@ import { useChatScrollStick } from './ChatWindow/hooks/useChatScrollStick';
 import { useMessageSelection } from './ChatWindow/hooks/useMessageSelection';
 import { useChatAttachments } from './ChatWindow/hooks/useChatAttachments';
 import { useChatLifecycleCleanup } from './ChatWindow/hooks/useChatLifecycle';
+import { useChatStreamRefs } from './ChatWindow/hooks/useChatStreamRefs';
 import { useChatRunModelReply } from './ChatWindow/hooks/useChatRunModelReply';
 import {
   buildConversationImageGallery,
@@ -112,18 +113,18 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
 
   // ===== refs =====
   const inputAreaRef = useRef<HTMLTextAreaElement>(null);
-  const streamUnsubRef = useRef<(() => void) | null>(null);
-  const streamHadErrorRef = useRef(false);
-  const imageGenCancelledRef = useRef(false);
-  /** 用户点击中止后 onEnd 中用于区分「无输出取消」（删气泡）与「有错结束」 */
-  const streamCancelledByUserRef = useRef(false);
-  const streamingAssistantIdRef = useRef<string | null>(null);
-  /** 当前流式回复所属会话；切会话时点阵不误绑其他会话 */
-  const streamingSessionIdRef = useRef<string | null>(null);
+  /** 流式 ref 集群：抽到 useChatStreamRefs（762→<600 减少行数集中） */
+  const {
+    streamUnsubRef,
+    streamHadErrorRef,
+    imageGenCancelledRef,
+    streamCancelledByUserRef,
+    streamingAssistantIdRef,
+    streamingSessionIdRef,
+    imageGenSyncRef,
+  } = useChatStreamRefs();
   /** 中文/日文等 IME 组字中为 true，避免 Enter 上屏时被当成发送 */
   const imeComposingRef = useRef(false);
-  /** 与本机 UI 同步：把生图进度写入消息，便于远端壳页快照显示占位格 */
-  const imageGenSyncRef = useRef<{ sessionId: string; messageId: string } | null>(null);
   /** 语音识别：与 input 同步，避免 onresult 闭包陈旧 */
   const inputSyncRef = useRef('');
   inputSyncRef.current = input;
