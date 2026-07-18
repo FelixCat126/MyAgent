@@ -35,7 +35,7 @@ import {
   resolveImageProviderId,
   suggestedHttpFormatForProvider,
   type ImageProviderId,
-} from '../../utils/imageProviderPresets';
+} from '../../../electron/shared/imageProviderPresets';
 
 /** 编辑表单数据结构（原 SettingsPanel.tsx 模块作用域 type，移入本组件以避免跨模块依赖） */
 export type EditingFormData = {

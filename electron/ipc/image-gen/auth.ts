@@ -1,5 +1,5 @@
 import type { ModelConfig } from '../../../src/types';
-import { resolveImageProviderId, type InferredImageProviderId } from '../../../src/utils/imageProviderPresets';
+import { resolveImageProviderId, type InferredImageProviderId } from '../../shared/imageProviderPresets';
 
 export function sanitizeSecretToken(raw: string): string { return String(raw ?? '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim().replace(/^["']+|["']+$/g, '').replace(/\s+/g, ''); }
 export function normalizeBearerAuthorization(headerValue: string): string { const t = sanitizeSecretToken(headerValue); if (!t) return t; return /^bearer\s+/i.test(t) ? t : `Bearer ${t}`; }

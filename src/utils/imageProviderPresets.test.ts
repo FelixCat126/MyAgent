@@ -4,7 +4,7 @@ import {
   inferImageProviderFromEndpoint,
   isUnsetImageProvider,
   resolveImageProviderId,
-} from '../../src/utils/imageProviderPresets';
+} from '../../electron/shared/imageProviderPresets';
 
 describe('inferImageProviderFromEndpoint', () => {
   it('识别百炼 / MiniMax / 火山 / 智谱 / OpenAI / SD / Ollama', () => {

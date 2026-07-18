@@ -1,4 +1,4 @@
-import { isUnsetImageProvider } from '../../../../src/utils/imageProviderPresets';
+import { isUnsetImageProvider } from '../../../shared/imageProviderPresets';
 import { effectiveImageProvider } from '../auth';
 import type { HttpImageProviderAdapter } from './types';
 

@@ -121,13 +121,13 @@ describe('authorize（鉴权）', () => {
     expect(ok).toBe(true);
   });
 
-  it('?t=<token> 通过', () => {
+  it('?t=<token> 不再被接受（已移除 query token 鉴权）', () => {
     const ok = authorize(
       fakeReq({}),
       new URL('http://x/remote/api/state?t=tk'),
       'tk'
     );
-    expect(ok).toBe(true);
+    expect(ok).toBe(false);
   });
 
   it('token 不匹配返回 false', () => {

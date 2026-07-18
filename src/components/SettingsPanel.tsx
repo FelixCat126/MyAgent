@@ -14,7 +14,7 @@ import { useMediaInputAvailability } from '@/hooks/useMediaInputAvailability';
 import {
   resolveImageProviderId,
   type ImageProviderId,
-} from '../utils/imageProviderPresets';
+} from '../../electron/shared/imageProviderPresets';
 
 type EditingFormData = {
   name: string;
