@@ -80,7 +80,7 @@ export const WebSearchSection: React.FC<WebSearchSectionProps> = ({ cardShell, t
               onChange={(e) => setWebSearchProvider(e.target.value as WebSearchProvider)}
               className="w-full rounded-md border border-stone-400/25 bg-stone-100/90 px-2 py-1.5 text-xs text-stone-900 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-slate-700 dark:text-white"
             >
-              <option value="duckduckgo">{t('settings.duck.option')}</option>
+              <option value="duckduckgo">{t('settings.duckDuckGo.option')}</option>
               <option value="tavily">Tavily</option>
               <option value="brave">Brave Search</option>
             </select>

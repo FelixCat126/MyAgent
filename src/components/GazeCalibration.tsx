@@ -152,22 +152,22 @@ const GazeCalibration: React.FC<GazeCalibrationProps> = ({ open, onClose }) => {
     >
       {phase === 'intro' && (
         <div className="max-w-md rounded-2xl bg-white/10 p-6 text-center text-slate-100 backdrop-blur-md">
-          <h2 className="mb-2 text-lg font-semibold">{t('gaze.calib.title')}</h2>
-          <p className="mb-4 text-sm text-slate-300">{t('gaze.calib.intro')}</p>
+          <h2 className="mb-2 text-lg font-semibold">{t('gaze.calibration.title')}</h2>
+          <p className="mb-4 text-sm text-slate-300">{t('gaze.calibration.intro')}</p>
           <div className="flex justify-center gap-3">
             <button
               type="button"
               className="rounded-lg bg-white/15 px-4 py-2 text-sm hover:bg-white/25"
               onClick={onClose}
             >
-              {t('gaze.calib.cancel')}
+              {t('gaze.calibration.cancel')}
             </button>
             <button
               type="button"
               className="rounded-lg bg-emerald-500 px-4 py-2 text-sm text-white hover:bg-emerald-600"
               onClick={startSampling}
             >
-              {t('gaze.calib.start')}
+              {t('gaze.calibration.start')}
             </button>
           </div>
         </div>
@@ -198,39 +198,39 @@ const GazeCalibration: React.FC<GazeCalibrationProps> = ({ open, onClose }) => {
             <div className="absolute inset-0 rounded-full border-2 border-white/75" />
           </div>
           <div className="absolute bottom-8 left-1/2 -translate-x-1/2 rounded-full bg-white/15 px-3 py-1 text-xs text-slate-200 backdrop-blur">
-            {t('gaze.calib.progress', { n: currentIdx + 1, total: TARGETS_RATIO.length })}
+            {t('gaze.calibration.progress', { n: currentIdx + 1, total: TARGETS_RATIO.length })}
           </div>
         </>
       )}
 
       {phase === 'fitting' && (
-        <div className="text-sm text-slate-300">{t('gaze.calib.fitting')}</div>
+        <div className="text-sm text-slate-300">{t('gaze.calibration.fitting')}</div>
       )}
 
       {phase === 'success' && (
         <div className="max-w-md rounded-2xl bg-white/10 p-6 text-center text-slate-100 backdrop-blur-md">
-          <h2 className="mb-2 text-lg font-semibold">{t('gaze.calib.successTitle')}</h2>
-          <p className="mb-4 text-sm text-slate-300">{t('gaze.calib.successDesc')}</p>
+          <h2 className="mb-2 text-lg font-semibold">{t('gaze.calibration.successTitle')}</h2>
+          <p className="mb-4 text-sm text-slate-300">{t('gaze.calibration.successDesc')}</p>
           <button
             type="button"
             className="rounded-lg bg-white/15 px-4 py-2 text-sm hover:bg-white/25"
             onClick={onClose}
           >
-            {t('gaze.calib.done')}
+            {t('gaze.calibration.done')}
           </button>
         </div>
       )}
 
       {phase === 'fail' && (
         <div className="max-w-md rounded-2xl bg-white/10 p-6 text-center text-slate-100 backdrop-blur-md">
-          <h2 className="mb-2 text-lg font-semibold">{t('gaze.calib.failTitle')}</h2>
-          <p className="mb-4 text-sm text-slate-300">{t('gaze.calib.failDesc')}</p>
+          <h2 className="mb-2 text-lg font-semibold">{t('gaze.calibration.failTitle')}</h2>
+          <p className="mb-4 text-sm text-slate-300">{t('gaze.calibration.failDesc')}</p>
           <button
             type="button"
             className="rounded-lg bg-white/15 px-4 py-2 text-sm hover:bg-white/25"
             onClick={onClose}
           >
-            {t('gaze.calib.close')}
+            {t('gaze.calibration.close')}
           </button>
         </div>
       )}

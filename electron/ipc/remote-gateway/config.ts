@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { app } from 'electron';
 
 import { readPersistParsedSync } from '../persist';
+import { protectPersistParsed, revealPersistParsed } from '../../utils/securePersist';
 
 const CONFIG_FILE = 'remote-gateway.json';
 const DEFAULT_PORT = 9742;
@@ -87,15 +88,19 @@ export function normalizeConfig(parsed: Record<string, unknown>): RemoteGatewayF
 
 export async function persistConfig(cfg: RemoteGatewayFileConfig): Promise<void> {
   await fs.mkdir(path.dirname(configFilePath()), { recursive: true });
-  await fs.writeFile(configFilePath(), `${JSON.stringify(cfg, null, 2)}\n`, 'utf-8');
+  // token 属敏感字段：落盘前按钥匙串加密（不可用时保持明文，与既往一致）
+  const onDisk = protectPersistParsed(cfg);
+  await fs.writeFile(configFilePath(), `${JSON.stringify(onDisk, null, 2)}\n`, 'utf-8');
 }
 
 export async function loadOrCreateConfig(): Promise<RemoteGatewayFileConfig> {
   try {
     const txt = await fs.readFile(configFilePath(), 'utf-8');
     const parsed = JSON.parse(txt) as Record<string, unknown>;
-    const n = normalizeConfig(parsed);
-    if (!parsed.token || !String(parsed.token).trim()) {
+    // 旧版明文 token 直通；加密 token 在此还原（解密失败则原样保留，等可解密环境恢复）
+    const revealed = revealPersistParsed(parsed) as Record<string, unknown>;
+    const n = normalizeConfig(revealed);
+    if (!revealed.token || !String(revealed.token).trim()) {
       await persistConfig(n);
     }
     return n;

@@ -224,12 +224,12 @@ export const AppSection: React.FC<AppSectionProps> = ({
                       value={voiceWakePhrase}
                       onChange={(e) => setVoiceWakePhrase(e.target.value)}
                       onBlur={(e) => setVoiceWakePhrase(e.target.value.trim())}
-                      placeholder={t('settings.speech.wakePhrasePlaceholder')}
+                      placeholder={t('settings.speech.wakePhrasePh')}
                       className="w-full rounded-md border border-stone-400/25 bg-stone-100/90 px-2 py-1.5 text-xs text-stone-900 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-slate-700 dark:text-white"
                     />
                     <p className="mt-1 text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
                       {t('settings.speech.wakeDesc', {
-                        phrase: voiceWakePhrase.trim() || t('settings.speech.wakePhrasePlaceholder'),
+                        phrase: voiceWakePhrase.trim() || t('settings.speech.wakePhrasePh'),
                       })}
                     </p>
                   </div>
@@ -388,7 +388,7 @@ export const AppSection: React.FC<AppSectionProps> = ({
                       .filter(Boolean)
                   )
                 }
-                placeholder={t('settings.agentDeniedPathsPlaceholder')}
+                placeholder={t('settings.agentDeniedPathsPh')}
                 rows={3}
                 className="w-full resize-y rounded-md border border-stone-400/30 bg-stone-100/90 px-2 py-1.5 font-mono text-xs text-stone-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
               />
@@ -419,7 +419,7 @@ export const AppSection: React.FC<AppSectionProps> = ({
               type="text"
               value={rootPath}
               onChange={(e) => setRootPath(e.target.value)}
-              placeholder={t('settings.workspacePlaceholder')}
+              placeholder={t('settings.workspacePh')}
               className="w-full rounded-md border border-stone-400/30 bg-stone-100/90 px-2 py-1.5 font-mono text-xs text-stone-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
             />
             <div className="mt-2 flex items-center gap-2">
@@ -582,7 +582,7 @@ export const AppSection: React.FC<AppSectionProps> = ({
             <button
               type="button"
               onClick={async () => {
-                if (!(await confirmDestructive(t('settings.clearConfirm')))) {
+                if (!(await confirmDestructive(t('settings.confirmClear')))) {
                   return;
                 }
                 try {

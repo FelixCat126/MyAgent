@@ -691,7 +691,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                                 <option value="sdwebui">{t('settings.form.format.sdwebui')}</option>
                                 <option value="ollama">{t('settings.form.format.ollama')}</option>
                                 <option value="openai_images">
-                                  {t('settings.form.format.openai_images')}
+                                  {t('settings.form.format.openaiImages')}
                                 </option>
                                 <option value="raw">{t('settings.form.format.raw')}</option>
                               </select>

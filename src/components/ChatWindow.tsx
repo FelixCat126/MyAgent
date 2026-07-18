@@ -474,7 +474,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           }
         }
         if (uploadedFiles.length === 0) {
-          showError('chat.attachmentUploadFailed');
+          showError('chat.attachmentsUploadFailed');
           clearLoadingForSession(sendSessionId);
           return;
         }
@@ -677,7 +677,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         footerH={footerH}
         attachmentStripH={attachmentStripH}
         attachmentsLength={attachments.attachments.length}
-        emptyLabel={t('chat.emptyChat')}
+        emptyLabel={t('chat.empty')}
         newConversationDividerLabel={t('chat.newConversationDivider')}
         compressingLabel={t('chat.compressingContext')}
       />
@@ -706,7 +706,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
           imeComposingRef.current = false;
         }}
         isSessionBusy={isSessionBusy}
-        inputPlaceholder={t('chat.inputPlaceholder')}
+        inputPlaceholder={t('chat.inputPh')}
         speechInputEnabled={speechInputEnabled}
         speechSupported={speechDictation.supported}
         speechListening={speechDictation.listening}
