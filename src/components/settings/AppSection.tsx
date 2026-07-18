@@ -7,12 +7,13 @@
  *
  * 状态拆分原则：
  *  - store 派生量（streamResponses / voiceWakeEnabled / rootPath 等）→ 本组件自己调对应 store hook
- *  - 父组件局部 useState（折叠态 / gwStatus / gwCfg / showGatewayToken / gwPortDraft 等）→ 通过 props 传入
- *  - 硬件探测派生量（microphoneMissing / cameraMissing）与 TTS 可用性（ttsPlaybackReady）→ 由父组件传入
+ *  - 折叠态、远端网关态（appBlockExpanded / gwStatus / gwCfg / showGatewayToken / gwPortDraft）→ 本组件内部 useState
+ *  - 远端网关初始化（useEffect 获取配置）→ 本组件内部 useEffect
+ *  - 硬件探测派生量（microphoneMissing / cameraMissing）与 TTS 可用性（systemTtsAvailable）→ 由父组件传入
  *    （这些 hook 在父组件挂载以驱动 useEffect 副作用，子组件只读结果即可）
  */
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   FiZap,
   FiChevronUp,
@@ -44,9 +45,6 @@ export interface GatewayConfig {
 }
 
 export interface AppSectionProps {
-  /** 折叠态（父组件 useState） */
-  appBlockExpanded: boolean;
-  setAppBlockExpanded: React.Dispatch<React.SetStateAction<boolean>>;
   /**
    * 系统级 TTS 可用性（原父组件 useSystemTtsAvailable(locale) 返回值）。
    * 三态：null=检测中；false=不可用；true=可用。
@@ -60,18 +58,6 @@ export interface AppSectionProps {
   cameraMissing: boolean;
   /** 当前语言，用于火山 ASR 文档链接（zh/en） */
   locale: string;
-  /** 远端网关运行态（父组件 useState） */
-  gwStatus: GatewayStatus;
-  setGwStatus: React.Dispatch<React.SetStateAction<GatewayStatus>>;
-  /** 远端网关配置（父组件 useState：value + setter） */
-  gwCfg: GatewayConfig | null;
-  setGwCfg: React.Dispatch<React.SetStateAction<GatewayConfig | null>>;
-  /** 是否明文展示网关 token（父组件 useState：value + setter） */
-  showGatewayToken: boolean;
-  setShowGatewayToken: React.Dispatch<React.SetStateAction<boolean>>;
-  /** 网关端口草稿（父组件 useState：value + setter） */
-  gwPortDraft: string;
-  setGwPortDraft: React.Dispatch<React.SetStateAction<string>>;
   /** 卡片外壳 CSS（父组件常量） */
   cardShell: string;
   /** i18n 翻译函数 */
@@ -79,22 +65,40 @@ export interface AppSectionProps {
 }
 
 export const AppSection: React.FC<AppSectionProps> = ({
-  appBlockExpanded,
-  setAppBlockExpanded,
   systemTtsAvailable,
   microphoneMissing,
   cameraMissing,
   locale,
-  gwStatus,
-  gwCfg,
-  setGwCfg,
-  showGatewayToken,
-  setShowGatewayToken,
-  gwPortDraft,
-  setGwPortDraft,
   cardShell,
   t,
 }) => {
+  // 本组件内部状态：折叠态 + 远端网关
+  const [appBlockExpanded, setAppBlockExpanded] = useState(false);
+  const [gwStatus, setGwStatus] = useState<GatewayStatus>('unsupported');
+  const [gwCfg, setGwCfg] = useState<GatewayConfig | null>(null);
+  const [showGatewayToken, setShowGatewayToken] = useState(false);
+  const [gwPortDraft, setGwPortDraft] = useState('9742');
+
+  // 远端网关配置初始化（原父组件 useEffect，移入本组件）
+  useEffect(() => {
+    try {
+      const e = window.electron;
+      if (!e?.remoteGatewayGetConfig) {
+        setGwStatus('unsupported');
+        return;
+      }
+      void e
+        .remoteGatewayGetConfig()
+        .then((c) => {
+          setGwCfg(c);
+          setGwPortDraft(String(c.port));
+          setGwStatus('ready');
+        })
+        .catch(() => setGwStatus('unsupported'));
+    } catch {
+      setGwStatus('unsupported');
+    }
+  }, []);
   // store 派生量本组件自己消费
   const {
     streamResponses,

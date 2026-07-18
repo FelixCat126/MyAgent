@@ -8,10 +8,11 @@
  *
  * 状态拆分原则：
  *  - store 派生量（vectorRagEnabled / embeddingProvider / rootPath 等）→ 本组件自己调对应 store hook
- *  - 父组件局部 useState / useCallback（indexBusy / indexMeta / refreshIndexStatus / 折叠态）→ 通过 props 传入
+ *  - 折叠态、索引态（knowledgeBlockExpanded / indexBusy / indexMeta）→ 本组件内部 useState
+ *  - 刷新索引状态（refreshIndexStatus）→ 本组件内部 useCallback + 初始化 useEffect
  */
 
-import React from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { FiLayers, FiChevronUp, FiChevronDown, FiChevronRight } from 'react-icons/fi';
 import { IosSwitch } from '../IosSwitch';
 import { useKnowledgeStore } from '../../store/knowledgeStore';
@@ -21,37 +22,13 @@ import { formatDateTime } from '../../utils/formatDateTime';
 import { useSettingStore } from '../../store/settingStore';
 
 export interface KnowledgeSectionProps {
-  /** 折叠态（父组件 useState） */
-  knowledgeBlockExpanded: boolean;
-  setKnowledgeBlockExpanded: React.Dispatch<React.SetStateAction<boolean>>;
-  /** 重新索引进行中（父组件 useState：value + setter） */
-  indexBusy: boolean;
-  setIndexBusy: React.Dispatch<React.SetStateAction<boolean>>;
-  /** 当前索引元信息（父组件 useState） */
-  indexMeta: {
-    chunkCount: number;
-    root: string | null;
-    model: string | null;
-    updatedAt: number;
-  } | null;
-  /** 刷新索引状态（父组件 useCallback） */
-  refreshIndexStatus: () => Promise<void>;
   /** 卡片外壳 CSS（父组件常量） */
   cardShell: string;
   /** i18n 翻译函数 */
   t: (key: string, params?: Record<string, string | number>) => string;
 }
 
-export const KnowledgeSection: React.FC<KnowledgeSectionProps> = ({
-  knowledgeBlockExpanded,
-  setKnowledgeBlockExpanded,
-  indexBusy,
-  setIndexBusy,
-  indexMeta,
-  refreshIndexStatus,
-  cardShell,
-  t,
-}) => {
+export const KnowledgeSection: React.FC<KnowledgeSectionProps> = ({ cardShell, t }) => {
   // store 派生量本组件自己消费（仅读 rootPath；写入由 AppSection 负责）
   const { rootPath } = useWorkspaceStore();
   const {
@@ -73,6 +50,36 @@ export const KnowledgeSection: React.FC<KnowledgeSectionProps> = ({
     setEmbeddingVolcMultimodal,
     getEmbedConfigForIpc,
   } = useKnowledgeStore();
+
+  // 本组件内部状态：折叠态 + 索引状态
+  const [knowledgeBlockExpanded, setKnowledgeBlockExpanded] = useState(false);
+  const [indexBusy, setIndexBusy] = useState(false);
+  const [indexMeta, setIndexMeta] = useState<{
+    chunkCount: number;
+    root: string | null;
+    model: string | null;
+    updatedAt: number;
+  } | null>(null);
+
+  const refreshIndexStatus = useCallback(async () => {
+    try {
+      const s = await window.electron.knowledgeGetIndexStatus();
+      if (s?.ok) {
+        setIndexMeta({
+          chunkCount: s.chunkCount,
+          root: s.root,
+          model: s.model,
+          updatedAt: s.updatedAt,
+        });
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshIndexStatus();
+  }, [refreshIndexStatus]);
 
   /** 索引进行中时禁用按钮（原父组件 knowledgeIndexLocked 派生量） */
   const knowledgeIndexLocked = indexBusy;

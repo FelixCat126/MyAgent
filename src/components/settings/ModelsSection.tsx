@@ -6,12 +6,11 @@
  *
  * 状态拆分原则：
  *  - store 派生量（models / imageGenModelId 等）→ 本组件自己调 useModelStore
- *  - 父组件局部 useState（showForm / editingId / formData）与 useCallback（startAdd / startEdit / handleSave）→ 通过 props 传入
- *    （这些 handler 依赖父组件的 formData/setEditingId/setShowForm 等 setter，整体留在父组件更合理，
- *      子组件只负责渲染与调用）
+ *  - 折叠态、编辑表单 state（modelBlockExpanded / showForm / editingId / formData）→ 本组件内部 useState
+ *  - 表单派生 handler（startAdd / startEdit / handleSave）→ 本组件内部 useCallback
  */
 
-import React from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   FiCpu,
   FiChevronUp,
@@ -25,6 +24,7 @@ import {
 import { IosSwitch } from '../IosSwitch';
 import { useModelStore, modelHasUsableImageGenerator } from '../../store/modelStore';
 import { confirmDestructive } from '../../store/confirmStore';
+import { showError, showWarning } from '../../store/errorStore';
 import { ModelConfig } from '../../types';
 import {
   IMAGE_PROVIDER_PRESETS,
@@ -84,48 +84,182 @@ export const defaultFormData: EditingFormData = {
   imageGenModel: '',
 };
 
+/** 解析 KEY=VALUE 多行为 env map */
+function parseEnvMap(text: string): Record<string, string> {
+  const envMap: Record<string, string> = {};
+  const envLines = text.trim().split('\n');
+  for (const line of envLines) {
+    const eq = line.indexOf('=');
+    if (eq > 0) {
+      const k = line.slice(0, eq).trim();
+      const v = line.slice(eq + 1).trim();
+      if (k) envMap[k] = v;
+    }
+  }
+  return envMap;
+}
+
+/** 校验生图工具配置（原 SettingsPanel.tsx 模块作用域函数，移入本组件） */
+function validateImageGeneratorForm(form: EditingFormData, envMap: Record<string, string>): string | null {
+  if (!form.isImageGenerator) return null;
+  if (form.imageGenType === 'cli') {
+    if (!form.imageGenCommand.trim()) return '启用生图工具后，CLI 命令不能为空。';
+    const argLines = form.imageGenCliArgLines
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (argLines.length === 0) return '启用 CLI 生图后，CLI 参数不能为空，至少需要脚本路径和输出路径占位符。';
+    if (!argLines.some((line) => line.includes('{{outputPath}}'))) {
+      return '启用 CLI 生图后，CLI 参数必须包含 {{outputPath}}，否则无法确认图片输出文件。';
+    }
+    if (!envMap.MYAGENT_SD_MODEL && !envMap.OLLAMA_MODEL && !envMap.MODEL && !envMap.MODEL_ID) {
+      return '启用 CLI 生图后，环境变量必须包含模型名称，例如 MYAGENT_SD_MODEL=你的本地生图模型。';
+    }
+    return null;
+  }
+  if (form.imageGenType === 'http') {
+    if (!form.imageGenEndpoint.trim()) return '启用 HTTP 生图后，接口地址不能为空。';
+    if (!/^https?:\/\//i.test(form.imageGenEndpoint.trim())) {
+      return '启用 HTTP 生图后，接口地址必须以 http:// 或 https:// 开头。';
+    }
+    if (
+      form.imageGenHttpFormat === 'ollama' &&
+      !envMap.OLLAMA_MODEL &&
+      !envMap.MODEL &&
+      !envMap.MODEL_ID
+    ) {
+      return 'Ollama HTTP 生图必须在环境变量里填写 OLLAMA_MODEL=你的模型标签。';
+    }
+    return null;
+  }
+  return '生图工具类型无效。';
+}
+
 export interface ModelsSectionProps {
-  /** 折叠态（父组件 useState） */
-  modelBlockExpanded: boolean;
-  setModelBlockExpanded: React.Dispatch<React.SetStateAction<boolean>>;
-  /** 是否显示编辑表单（父组件 useState：value + setter） */
-  showForm: boolean;
-  setShowForm: React.Dispatch<React.SetStateAction<boolean>>;
-  /** 当前正在编辑的模型 id（null=新增）（父组件 useState：value + setter） */
-  editingId: string | null;
-  setEditingId: React.Dispatch<React.SetStateAction<string | null>>;
-  /** 表单数据（父组件 useState：value + setter） */
-  formData: EditingFormData;
-  setFormData: React.Dispatch<React.SetStateAction<EditingFormData>>;
-  /** 新增模型（父组件 useCallback） */
-  startAdd: () => void;
-  /** 编辑某个模型（父组件 useCallback） */
-  startEdit: (model: ModelConfig) => void;
-  /** 保存表单（父组件 useCallback） */
-  handleSave: () => void;
   /** 卡片外壳 CSS（父组件常量） */
   cardShell: string;
   /** i18n 翻译函数 */
   t: (key: string, params?: Record<string, string | number>) => string;
 }
 
-export const ModelsSection: React.FC<ModelsSectionProps> = ({
-  modelBlockExpanded,
-  setModelBlockExpanded,
-  showForm,
-  setShowForm,
-  editingId,
-  setEditingId,
-  formData,
-  setFormData,
-  startAdd,
-  startEdit,
-  handleSave,
-  cardShell,
-  t,
-}) => {
+export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) => {
   // store 派生量本组件自己消费
-  const { models, removeModel, imageGenModelId, setImageGenModel } = useModelStore();
+  const { models, addModel, updateModel, removeModel, imageGenModelId, setImageGenModel } = useModelStore();
+
+  // 本组件内部状态：折叠态 + 编辑表单
+  const [modelBlockExpanded, setModelBlockExpanded] = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [formData, setFormData] = useState<EditingFormData>(defaultFormData);
+
+  const startAdd = useCallback(() => {
+    setEditingId(null);
+    setFormData(defaultFormData);
+    setShowForm(true);
+  }, []);
+
+  const startEdit = useCallback((model: ModelConfig) => {
+    setEditingId(model.id);
+    setFormData({
+      name: model.name,
+      provider: model.provider,
+      apiUrl: model.apiUrl,
+      apiKey: model.apiKey || '',
+      modelName: model.modelName,
+      chatApiMode: model.chatApiMode || 'auto',
+      isLocal: model.isLocal,
+      maxTokens: model.maxTokens,
+      isImageGenerator: model.isImageGenerator || false,
+      imageGenType: model.imageGeneratorConfig?.type || 'http',
+      imageGenCommand: model.imageGeneratorConfig?.command || '',
+      imageGenEndpoint: model.imageGeneratorConfig?.endpoint || '',
+      imageGenEnv: model.imageGeneratorConfig?.env
+        ? Object.entries(model.imageGeneratorConfig.env).map(([k, v]) => `${k}=${v}`).join('\n')
+        : '',
+      imageGenHttpFormat: model.imageGeneratorConfig?.httpFormat || 'auto',
+      imageGenCliArgLines: model.imageGeneratorConfig?.cliArgLines || '',
+      imageGenProvider:
+        (model.imageGeneratorConfig?.provider as ImageProviderId | undefined) || '',
+      imageGenApiKey: model.imageGeneratorConfig?.apiKey || '',
+      imageGenModel: model.imageGeneratorConfig?.model || '',
+    });
+    setShowForm(true);
+  }, []);
+
+  const handleSave = useCallback(() => {
+    if (!formData.name || !formData.apiUrl || !formData.modelName) {
+      showWarning('settings.form.required');
+      return;
+    }
+
+    const envMap = parseEnvMap(formData.imageGenEnv);
+    const imageGenError = validateImageGeneratorForm(formData, envMap);
+    if (imageGenError) {
+      showError('common.operationFailed', { detail: imageGenError });
+      return;
+    }
+
+    const existingImageKey =
+      editingId != null
+        ? models.find((m) => m.id === editingId)?.imageGeneratorConfig?.apiKey?.trim()
+        : undefined;
+    /** 生图密钥：优先表单字段；空则保留已存密钥；再回退同一模型顶部「API 密钥」 */
+    const resolvedImageApiKey =
+      formData.imageGenApiKey.trim() || existingImageKey || formData.apiKey.trim() || '';
+
+    /** 显式厂商（非 custom）优先；否则按 Endpoint 推断后写入，便于列表展示与老逻辑兼容 */
+    const resolvedImageProvider =
+      formData.imageGenProvider && formData.imageGenProvider !== 'custom'
+        ? formData.imageGenProvider
+        : resolveImageProviderId(
+            formData.imageGenProvider,
+            formData.imageGenEndpoint,
+            formData.imageGenHttpFormat
+          );
+
+    const payload: ModelConfig = {
+      id: editingId || Date.now().toString(),
+      name: formData.name,
+      provider: formData.provider,
+      apiUrl: formData.apiUrl,
+      apiKey: formData.apiKey,
+      modelName: formData.modelName,
+      chatApiMode: formData.chatApiMode,
+      isLocal: formData.isLocal,
+      maxTokens: formData.maxTokens,
+      isImageGenerator: formData.isImageGenerator,
+      imageGeneratorConfig: undefined,
+      ...(formData.isImageGenerator
+        ? {
+            imageGeneratorConfig: {
+              type: formData.imageGenType as 'cli' | 'http',
+              ...(resolvedImageProvider ? { provider: resolvedImageProvider } : {}),
+              ...(resolvedImageApiKey ? { apiKey: resolvedImageApiKey } : {}),
+              ...(formData.imageGenModel.trim() ? { model: formData.imageGenModel.trim() } : {}),
+              command: formData.imageGenCommand,
+              endpoint: formData.imageGenEndpoint,
+              env: envMap,
+              ...(formData.imageGenType === 'http'
+                ? { httpFormat: formData.imageGenHttpFormat }
+                : {}),
+              ...(formData.imageGenType === 'cli' && formData.imageGenCliArgLines.trim()
+                ? { cliArgLines: formData.imageGenCliArgLines }
+                : {}),
+            },
+          }
+        : {}),
+    };
+
+    if (editingId) {
+      updateModel(editingId, payload);
+    } else {
+      addModel(payload);
+    }
+
+    setShowForm(false);
+    setEditingId(null);
+    setFormData(defaultFormData);
+  }, [editingId, formData, models, addModel, updateModel]);
 
   return (
     <section className={`${cardShell} shrink-0`} aria-labelledby="settings-models-heading">

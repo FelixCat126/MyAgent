@@ -2,39 +2,39 @@
  * 联网搜索设置区：provider 切换（duckduckgo / Tavily / Brave）、API Key 输入。
  *
  * 抽离自 SettingsPanel.tsx（行 991-1057），行为与拆分前完全一致。
- * 状态全部从父组件通过 props 传入——本组件无内部 state。
+ *
+ * 状态拆分原则：
+ *  - store 派生量（enabled / provider / apiKey）→ 本组件自己调 useWebSearchStore
+ *  - 折叠态（webSearchBlockExpanded）→ 本组件内部 useState
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import { FiGlobe, FiChevronUp, FiChevronDown } from 'react-icons/fi';
 import { IosSwitch } from '../IosSwitch';
+import { useWebSearchStore } from '../../store/webSearchStore';
 import type { WebSearchProvider } from '../../types';
 
 export interface WebSearchSectionProps {
-  webSearchBlockExpanded: boolean;
-  setWebSearchBlockExpanded: React.Dispatch<React.SetStateAction<boolean>>;
-  webSearchEnabled: boolean;
-  setWebSearchEnabled: (v: boolean) => void;
-  webSearchProvider: WebSearchProvider;
-  setWebSearchProvider: (v: WebSearchProvider) => void;
-  webSearchApiKey: string;
-  setWebSearchApiKey: (v: string) => void;
+  /** 卡片外壳 CSS（父组件常量） */
   cardShell: string;
-  t: (key: string) => string;
+  /** i18n 翻译函数 */
+  t: (key: string, params?: Record<string, string | number>) => string;
 }
 
-export const WebSearchSection: React.FC<WebSearchSectionProps> = ({
-  webSearchBlockExpanded,
-  setWebSearchBlockExpanded,
-  webSearchEnabled,
-  setWebSearchEnabled,
-  webSearchProvider,
-  setWebSearchProvider,
-  webSearchApiKey,
-  setWebSearchApiKey,
-  cardShell,
-  t,
-}) => {
+export const WebSearchSection: React.FC<WebSearchSectionProps> = ({ cardShell, t }) => {
+  // store 派生量本组件自己消费
+  const {
+    enabled: webSearchEnabled,
+    provider: webSearchProvider,
+    apiKey: webSearchApiKey,
+    setEnabled: setWebSearchEnabled,
+    setProvider: setWebSearchProvider,
+    setApiKey: setWebSearchApiKey,
+  } = useWebSearchStore();
+
+  // 本组件内部状态：折叠态
+  const [webSearchBlockExpanded, setWebSearchBlockExpanded] = useState(false);
+
   return (
     <section
       className={`${cardShell} mt-2 shrink-0`}
