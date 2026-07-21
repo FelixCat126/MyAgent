@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware';
 import { ChatSession, Message } from '../types';
 import { zustandPersistJson } from '../utils/zustandFileStorage';
 import { PERSIST_KEYS } from '../utils/persistKeys';
+import { newId } from '../utils/newId';
 import { t } from '../i18n/ui';
 import { useSettingStore } from './settingStore';
 
@@ -19,6 +20,46 @@ function mapSession(
   fn: (session: ChatSession) => ChatSession
 ): ChatSession[] {
   return sessions.map((s) => (s.id === sessionId ? fn(s) : s));
+}
+
+type BusySetKey = 'loadingSessionIds' | 'compressingSessionIds';
+
+/**
+ * 忙态 Set 操作工厂：loading/compressing 两组 action 逻辑同构，仅字段名不同。
+ * 注意：未读标记仅由 addMessage(assistant) 设置；remove 不打未读，
+ * 避免失败/停止/上传中止时误亮「新」。
+ */
+function makeBusySetActions(
+  key: BusySetKey,
+  set: (fn: Partial<ChatStore> | ((state: ChatStore) => Partial<ChatStore>)) => void,
+  get: () => ChatStore
+) {
+  return {
+    /** null = 清空全部；非 null = 加入集合（支持多会话并发） */
+    add(sessionId: string | null): void {
+      if (sessionId === null) {
+        set({ [key]: new Set() } as Partial<ChatStore>);
+        return;
+      }
+      set((state) => {
+        if (state[key].has(sessionId)) return {};
+        const next = new Set(state[key]);
+        next.add(sessionId);
+        return { [key]: next } as Partial<ChatStore>;
+      });
+    },
+    remove(sessionId: string): void {
+      set((state) => {
+        if (!state[key].has(sessionId)) return {};
+        const next = new Set(state[key]);
+        next.delete(sessionId);
+        return { [key]: next } as Partial<ChatStore>;
+      });
+    },
+    has(sessionId: string): boolean {
+      return get()[key].has(sessionId);
+    },
+  };
 }
 
 /**
@@ -122,7 +163,10 @@ interface ChatStore {
 
 export const useChatStore = create<ChatStore>()(
   persist(
-    (set, get) => ({
+    (set, get) => {
+      const loadingBusy = makeBusySetActions('loadingSessionIds', set, get);
+      const compressingBusy = makeBusySetActions('compressingSessionIds', set, get);
+      return {
       sessions: [],
       currentSessionId: null,
       loadingSessionIds: new Set<string>(),
@@ -131,10 +175,7 @@ export const useChatStore = create<ChatStore>()(
       createSession: () => {
         const locale = useSettingStore.getState().locale;
         const newSession: ChatSession = {
-          id:
-            typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-              ? crypto.randomUUID()
-              : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+          id: newId(),
           title: t(locale, 'session.newTitle'),
           messages: [],
           createdAt: Date.now(),
@@ -315,65 +356,17 @@ export const useChatStore = create<ChatStore>()(
         }));
       },
 
-      setLoadingSession: (sessionId: string | null) => {
-        /** null = 清空全部；非 null = 加入集合（支持多会话并发转圈） */
-        if (sessionId === null) {
-          set({ loadingSessionIds: new Set() });
-        } else {
-          set((state: ChatStore) => {
-            if (state.loadingSessionIds.has(sessionId)) return {};
-            const next = new Set(state.loadingSessionIds);
-            next.add(sessionId);
-            return { loadingSessionIds: next };
-          });
-        }
-      },
+      setLoadingSession: loadingBusy.add,
 
-      clearLoadingForSession: (sessionId: string) => {
-        set((state: ChatStore) => {
-          /** 要清除的 id 不在加载集合中 → 状态不变 */
-          if (!state.loadingSessionIds.has(sessionId)) {
-            return {};
-          }
-          const next = new Set(state.loadingSessionIds);
-          next.delete(sessionId);
-          /**
-           * 未读仅由 addMessage(assistant) 设置；此处不再打未读，
-           * 避免失败/停止/上传中止时误亮「新」。
-           */
-          return { loadingSessionIds: next };
-        });
-      },
+      clearLoadingForSession: loadingBusy.remove,
 
-      isLoadingSession: (sessionId: string): boolean => {
-        return get().loadingSessionIds.has(sessionId);
-      },
+      isLoadingSession: loadingBusy.has,
 
-      setCompressingContext: (sessionId: string | null) => {
-        if (sessionId === null) {
-          set({ compressingSessionIds: new Set() });
-          return;
-        }
-        set((state: ChatStore) => {
-          if (state.compressingSessionIds.has(sessionId)) return {};
-          const next = new Set(state.compressingSessionIds);
-          next.add(sessionId);
-          return { compressingSessionIds: next };
-        });
-      },
+      setCompressingContext: compressingBusy.add,
 
-      clearCompressingForSession: (sessionId: string) => {
-        set((state: ChatStore) => {
-          if (!state.compressingSessionIds.has(sessionId)) return {};
-          const next = new Set(state.compressingSessionIds);
-          next.delete(sessionId);
-          return { compressingSessionIds: next };
-        });
-      },
+      clearCompressingForSession: compressingBusy.remove,
 
-      isCompressingSession: (sessionId: string): boolean => {
-        return get().compressingSessionIds.has(sessionId);
-      },
+      isCompressingSession: compressingBusy.has,
 
       replaceMessagesPrefix: (sessionId, keepFromIndex, summaryMessage) => {
         set((state: ChatStore) => ({
@@ -399,7 +392,8 @@ export const useChatStore = create<ChatStore>()(
           })),
         }));
       },
-    }),
+      };
+    },
     {
       name: PERSIST_KEYS.chat,
       storage: zustandPersistJson,

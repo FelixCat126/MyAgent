@@ -1,5 +1,3 @@
-import { join } from 'path';
-import fs from 'fs/promises';
 import type { ModelConfig, ImageGenerationParams } from '../../../src/types';
 import { stripUtf8Bom, looksLikeBinaryImage, base64FieldToImageBuffer } from './parsing';
 import {
@@ -9,6 +7,7 @@ import {
   sanitizeSecretToken,
   hasExplicitAuthorizationHeader,
   firstMatchingEnvKey,
+  firstMatchingEnvKeyFromAll,
   effectiveImageProvider,
   extraHttpHeadersFromImageEnv,
   VOLC_API_KEY_CANDIDATES,
@@ -34,6 +33,7 @@ import {
   writePngBuffersToOutputFiles,
   finalizeOnePngBuffer,
   fetchImageBinaryFromUrl,
+  resolveImageOutputDir,
 } from './buffers';
 import {
   buildSiblingEndpoint,
@@ -49,15 +49,12 @@ import {
   looksLikeMiniMaxResponseJson,
   peekMiniMaxStatusCode,
   alternateMiniMaxImageEndpoint,
+  MINIMAX_SITE_MISMATCH_CODE,
   type HttpImageMode,
   type UnifiedImageRequest,
   type BuiltImageHttpRequest,
 } from './adapters';
-
-/** 正常路径诊断日志；仅 MYAGENT_DEBUG=1 时输出，避免刷屏 */
-function imgGenDebug(...args: unknown[]) {
-  if (process.env.MYAGENT_DEBUG) console.warn(...args);
-}
+import { imgGenDebug } from './debug';
 
 function buildUnifiedImageRequest(params: ImageGenerationParams): UnifiedImageRequest {
   const count =
@@ -124,12 +121,37 @@ function describeImageHttpAuth(config: NonNullable<ModelConfig['imageGeneratorCo
     case 'openai-images': envKey = firstMatchingEnvKey(env, OPENAI_API_KEY_CANDIDATES) ?? firstMatchingEnvKey(env, VOLC_API_KEY_CANDIDATES); break;
     case 'zhipu-cogview': envKey = firstMatchingEnvKey(env, ZHIPU_API_KEY_CANDIDATES); break;
     case 'minimax': envKey = firstMatchingEnvKey(env, MINIMAX_API_KEY_CANDIDATES); break;
-    default: envKey = firstMatchingEnvKey(env, OPENAI_API_KEY_CANDIDATES) ?? firstMatchingEnvKey(env, BAILIAN_API_KEY_CANDIDATES) ?? firstMatchingEnvKey(env, MINIMAX_API_KEY_CANDIDATES) ?? firstMatchingEnvKey(env, ZHIPU_API_KEY_CANDIDATES) ?? firstMatchingEnvKey(env, VOLC_API_KEY_CANDIDATES);
+    default: envKey = firstMatchingEnvKeyFromAll(env);
   }
   if (envKey) return { source: `环境变量 ${envKey}`, keyHint: hint };
   if (hasExplicitAuthorizationHeader(extraHttpHeadersFromImageEnv(env))) return { source: '环境变量 HEADER_AUTHORIZATION', keyHint: hint };
   if (auth) return { source: 'Authorization 请求头', keyHint: hint };
   return { source: '未携带', keyHint: '' };
+}
+
+/** URL 下载 / b64 解码 → 写盘：火山/百炼/MiniMax 三处物料化路径统一；无有效图返回 null */
+async function materializeImagesToOutput(
+  urls: string[],
+  b64s: string[],
+  outputDir: string,
+  params: ImageGenerationParams
+): Promise<Array<{ url: string; path: string; width: number; height: number }> | null> {
+  if (urls.length > 0) {
+    const buffers: Buffer[] = [];
+    for (const u of urls) {
+      buffers.push(await fetchImageBinaryFromUrl(u, IMAGE_GEN_TIMEOUT_MS));
+    }
+    return writePngBuffersToOutputFiles(buffers, outputDir, params);
+  }
+  const buffers: Buffer[] = [];
+  for (const b of b64s) {
+    const buf2 = base64FieldToImageBuffer(b);
+    if (buf2) buffers.push(buf2);
+  }
+  if (buffers.length > 0) {
+    return writePngBuffersToOutputFiles(buffers, outputDir, params);
+  }
+  return null;
 }
 
 async function generateImageHttp(
@@ -140,13 +162,7 @@ async function generateImageHttp(
     throw new Error('请配置生图 HTTP 接口 URL');
   }
 
-  const appModule = await import('electron');
-  const electronApp = appModule.app;
-
-  const outputDir =
-    params.outputDir ||
-    join(electronApp.getPath('documents'), 'MyAgent', 'GeneratedImages');
-  await fs.mkdir(outputDir, { recursive: true }).catch(() => {});
+  const outputDir = await resolveImageOutputDir(params);
 
   const configuredEndpoint = config.endpoint.trim();
   const mode = detectHttpFormat(configuredEndpoint, config);
@@ -221,7 +237,7 @@ async function generateImageHttp(
   if (providerKind === 'minimax' && buf.length && response.ok) {
     try {
       const peeked = JSON.parse(stripUtf8Bom(buf.toString('utf8'))) as unknown;
-      if (peekMiniMaxStatusCode(peeked) === 2049) {
+      if (peekMiniMaxStatusCode(peeked) === MINIMAX_SITE_MISMATCH_CODE) {
         const alt = alternateMiniMaxImageEndpoint(requestUrl);
         if (alt && alt !== requestUrl) {
           imgGenDebug('[生图 HTTP] MiniMax status_code=2049，尝试另一站点', {
@@ -269,8 +285,29 @@ async function generateImageHttp(
   let clHdr = response.headers.get('content-length');
   const teHdr = response.headers.get('transfer-encoding');
   let lastEmptyDiagEndpoint = requestUrl;
+  /** 兜底链末次真实错误：最终报错时附带，避免用户只看到「0 字节」泛化提示 */
+  let lastFallbackError: string | null = null;
   /** 后续兜底/解析统一用实际请求 URL（可能已换站） */
   const endpoint = requestUrl;
+
+  /** 兜底链统一应用 Node 原生响应：2xx 且有体则接管；非 2xx 抛诊断错；否则返回 false 继续下一级 */
+  const applyRawFallback = (
+    raw: Awaited<ReturnType<typeof nodeRawPostJsonBody>>,
+    errEndpoint: string
+  ): boolean => {
+    if (raw.body.length > 0 && raw.statusCode >= 200 && raw.statusCode < 300) {
+      buf = raw.body;
+      httpStatus = raw.statusCode;
+      const hCl = raw.headers['content-length'];
+      clHdr = Array.isArray(hCl) ? hCl[0] ?? null : hCl ?? null;
+      ct = String(raw.headers['content-type'] ?? '').toLowerCase();
+      return true;
+    }
+    if (raw.statusCode < 200 || raw.statusCode >= 300) {
+      throw new Error(formatAxiosGenerateHttpError(errEndpoint, raw.statusCode, raw.body));
+    }
+    return false;
+  };
 
   if (!response.ok) {
     /** 按厂商给出针对性排查提示，避免一律显示 Ollama 模板 */
@@ -289,17 +326,10 @@ async function generateImageHttp(
     });
     try {
       const raw = await nodeRawPostJsonBody(endpoint, bodyPayload, IMAGE_GEN_FALLBACK_MS, customHdr);
-      if (raw.body.length > 0) {
-        buf = raw.body;
-        httpStatus = raw.statusCode;
-        const hCl = raw.headers['content-length'];
-        clHdr = Array.isArray(hCl) ? hCl[0] ?? null : hCl ?? null;
-        ct = String(raw.headers['content-type'] ?? '').toLowerCase();
-      } else if (raw.statusCode < 200 || raw.statusCode >= 300) {
-        throw new Error(formatAxiosGenerateHttpError(endpoint, raw.statusCode, raw.body));
-      }
+      applyRawFallback(raw, endpoint);
     } catch (e: unknown) {
-      imgGenDebug('[生图 HTTP] Node 兜底未完成或失败:', e instanceof Error ? e.message : e);
+      lastFallbackError = e instanceof Error ? e.message : String(e);
+      imgGenDebug('[生图 HTTP] Node 兜底未完成或失败:', lastFallbackError);
     }
   }
 
@@ -318,17 +348,10 @@ async function generateImageHttp(
         stream: true,
       });
       const raw = await nodeRawPostJsonBody(endpoint, streamPayload, OLLAMA_EMPTY_PROBE_MS, customHdr);
-      if (raw.body.length > 0 && raw.statusCode >= 200 && raw.statusCode < 300) {
-        buf = raw.body;
-        httpStatus = raw.statusCode;
-        const hCl = raw.headers['content-length'];
-        clHdr = Array.isArray(hCl) ? hCl[0] ?? null : hCl ?? null;
-        ct = String(raw.headers['content-type'] ?? '').toLowerCase();
-      } else if (raw.statusCode < 200 || raw.statusCode >= 300) {
-        throw new Error(formatAxiosGenerateHttpError(endpoint, raw.statusCode, raw.body));
-      }
+      applyRawFallback(raw, endpoint);
     } catch (e: unknown) {
-      imgGenDebug('[生图 HTTP] stream:true 兜底失败:', e instanceof Error ? e.message : e);
+      lastFallbackError = e instanceof Error ? e.message : String(e);
+      imgGenDebug('[生图 HTTP] stream:true 兜底失败:', lastFallbackError);
     }
   }
 
@@ -364,20 +387,10 @@ async function generateImageHttp(
           customHdr
         );
         lastEmptyDiagEndpoint = imagesEndpoint;
-        if (raw.body.length > 0 && raw.statusCode >= 200 && raw.statusCode < 300) {
-          buf = raw.body;
-          httpStatus = raw.statusCode;
-          const hCl = raw.headers['content-length'];
-          clHdr = Array.isArray(hCl) ? hCl[0] ?? null : hCl ?? null;
-          ct = String(raw.headers['content-type'] ?? '').toLowerCase();
-        } else if (raw.statusCode < 200 || raw.statusCode >= 300) {
-          throw new Error(formatAxiosGenerateHttpError(imagesEndpoint, raw.statusCode, raw.body));
-        }
+        applyRawFallback(raw, imagesEndpoint);
       } catch (e: unknown) {
-        imgGenDebug(
-          '[生图 HTTP] /v1/images/generations 兜底失败:',
-          e instanceof Error ? e.message : e
-        );
+        lastFallbackError = e instanceof Error ? e.message : String(e);
+        imgGenDebug('[生图 HTTP] /v1/images/generations 兜底失败:', lastFallbackError);
       }
     }
   }
@@ -395,6 +408,7 @@ async function generateImageHttp(
       clHdr != null ? `声明 Content-Length=${clHdr}` : '无 Content-Length',
       ct ? ct : '',
       ollamaVersion ? `Ollama server=${ollamaVersion}` : undefined,
+      lastFallbackError ? `末次兜底错误=${lastFallbackError.slice(0, 200)}` : undefined,
     ]
       .filter(Boolean)
       .join('；');
@@ -432,13 +446,8 @@ async function generateImageHttp(
 
   if (preferUrlDownload && !looksLikeBinaryImage(buf) && !ct.startsWith('image/')) {
     const urlsFromBody = collectImageUrlsFromArkStreamOrPlainJson(utf8Full);
-    if (urlsFromBody.length > 0) {
-      const buffers: Buffer[] = [];
-      for (const u of urlsFromBody) {
-        buffers.push(await fetchImageBinaryFromUrl(u, IMAGE_GEN_TIMEOUT_MS));
-      }
-      return writePngBuffersToOutputFiles(buffers, outputDir, params);
-    }
+    const out = await materializeImagesToOutput(urlsFromBody, [], outputDir, params);
+    if (out) return out;
   }
 
   /**
@@ -454,23 +463,8 @@ async function generateImageHttp(
     }
     if (bailianJson) {
       const { urls, b64s } = extractImagesFromBailianResponse(bailianJson);
-      if (urls.length > 0) {
-        const buffers: Buffer[] = [];
-        for (const u of urls) {
-          buffers.push(await fetchImageBinaryFromUrl(u, IMAGE_GEN_TIMEOUT_MS));
-        }
-        return writePngBuffersToOutputFiles(buffers, outputDir, params);
-      }
-      if (b64s.length > 0) {
-        const buffers: Buffer[] = [];
-        for (const b of b64s) {
-          const buf2 = base64FieldToImageBuffer(b);
-          if (buf2) buffers.push(buf2);
-        }
-        if (buffers.length > 0) {
-          return writePngBuffersToOutputFiles(buffers, outputDir, params);
-        }
-      }
+      const out = await materializeImagesToOutput(urls, b64s, outputDir, params);
+      if (out) return out;
     }
   }
 
@@ -502,23 +496,8 @@ async function generateImageHttp(
         keyHint: authMeta.keyHint,
       };
       const { urls: mmUrls, b64s: mmB64s } = extractImagesFromMiniMaxResponse(mmJson, mmMeta);
-      if (mmUrls.length > 0) {
-        const buffers: Buffer[] = [];
-        for (const u of mmUrls) {
-          buffers.push(await fetchImageBinaryFromUrl(u, IMAGE_GEN_TIMEOUT_MS));
-        }
-        return writePngBuffersToOutputFiles(buffers, outputDir, params);
-      }
-      if (mmB64s.length > 0) {
-        const buffers: Buffer[] = [];
-        for (const b of mmB64s) {
-          const buf2 = base64FieldToImageBuffer(b);
-          if (buf2) buffers.push(buf2);
-        }
-        if (buffers.length > 0) {
-          return writePngBuffersToOutputFiles(buffers, outputDir, params);
-        }
-      }
+      const out = await materializeImagesToOutput(mmUrls, mmB64s, outputDir, params);
+      if (out) return out;
       throw new Error(
         'MiniMax 返回成功状态，但未包含 image_urls / image_base64。请确认模型为 image-01，且 Endpoint 指向 /v1/image_generation。'
       );
@@ -530,8 +509,6 @@ async function generateImageHttp(
     imageBuf = buf;
   } else if (ct.startsWith('image/')) {
     imageBuf = buf;
-  } else if (mode === 'raw') {
-    /** 服务端仍可能返回 JSON / SSE — 再走下方解析 */
   }
 
   if (!imageBuf && (mode === 'sdwebui' || mode === 'ollama' || mode === 'openai_images')) {
@@ -624,15 +601,4 @@ async function generateImageHttp(
   return [await finalizeOnePngBuffer(imageBuf, outputDir, params)];
 }
 
-export {
-  generateImageHttp,
-  detectHttpFormat,
-  buildSiblingEndpoint,
-  fetchOllamaVersion,
-  tryOllamaOpenAiImagesFallback,
-  summarizeOllamaProgressOnlyBody,
-  extractImageFromOllamaFriendlyBody,
-  buildUnifiedImageRequest,
-  buildImageHttpRequestViaAdapter,
-  describeImageHttpAuth,
-};
+export { generateImageHttp };

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
+import { useCanvas2DLoop, lerp } from '../hooks/useCanvas2DLoop';
 import {
   PARTICLE_MOTION_DEFAULT,
   useParticleStore,
@@ -154,10 +155,6 @@ function buildSeeds(count: number): SeedPoint[] {
   return seeds;
 }
 
-function lerp(a: number, b: number, t: number): number {
-  return a + (b - a) * t;
-}
-
 interface ParticleFieldProps {
   className?: string;
   /** 输入栏等小尺寸容器：减少粒子数，避免拥挤与耗电 */
@@ -165,10 +162,7 @@ interface ParticleFieldProps {
 }
 
 const ParticleField: React.FC<ParticleFieldProps> = ({ className, compact = false }) => {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
   const seedsRef = useRef<SeedPoint[]>([]);
-  const rafRef = useRef<number | null>(null);
   /** 平滑后的当前 motion；store 写入后通过 lerp 缓慢跟上，避免跳变 */
   const currentMotionRef = useRef<ParticleMotion>({ ...PARTICLE_MOTION_DEFAULT });
   /** spin 平滑：跟随 store.spinSpeed，避免突变停转造成跳变 */
@@ -179,7 +173,7 @@ const ParticleField: React.FC<ParticleFieldProps> = ({ className, compact = fals
   const morphFactorRef = useRef<number>(0);
   /** 呼吸活跃度：0=不呼吸，1=完全呼吸；lerp 让 awake/replying 过渡平滑 */
   const breathingActivenessRef = useRef<number>(0);
-  const sizeRef = useRef<{ w: number; h: number; dpr: number }>({ w: 0, h: 0, dpr: 1 });
+  const t0Ref = useRef<number>(0);
   const resolvedTheme = useResolvedTheme();
   const themeRef = useRef<'light' | 'dark'>(resolvedTheme);
 
@@ -194,66 +188,17 @@ const ParticleField: React.FC<ParticleFieldProps> = ({ className, compact = fals
     seedsRef.current = buildSeeds(particleCount);
   }
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    const container = containerRef.current;
-    if (!canvas || !container) return;
-    const ctx = canvas.getContext('2d', { alpha: true });
-    if (!ctx) return;
-
-    const applySize = () => {
-      const rect = container.getBoundingClientRect();
-      const dpr = Math.min(1.5, Math.max(1, window.devicePixelRatio || 1));
-      const w = Math.max(2, Math.floor(rect.width));
-      const h = Math.max(2, Math.floor(rect.height));
-      if (sizeRef.current.w === w && sizeRef.current.h === h && sizeRef.current.dpr === dpr) {
-        return;
-      }
-      sizeRef.current = { w, h, dpr };
-      canvas.width = w * dpr;
-      canvas.height = h * dpr;
-      canvas.style.width = `${w}px`;
-      canvas.style.height = `${h}px`;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    };
-
-    applySize();
-    const ro = new ResizeObserver(applySize);
-    ro.observe(container);
-
-    const t0 = performance.now();
-    let active = true;
-
-    const pauseLoop = () => {
-      if (rafRef.current != null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-    };
-
-    const startLoop = () => {
-      if (!active || document.hidden || rafRef.current != null) return;
-      /** 暂停后恢复：避免 dt 过大导致旋转/动画跳变 */
+  const { canvasRef, containerRef } = useCanvas2DLoop({
+    dprCap: 1.5,
+    /** 暂停后恢复：重置 dt 基准，避免 dt 过大导致旋转/动画跳变 */
+    onResume: () => {
       lastTickRef.current = 0;
-      rafRef.current = requestAnimationFrame(tick);
-    };
+    },
+    onTick: (ctx, now, { w, h }) => {
+      if (w <= 0 || h <= 0) return;
+      if (t0Ref.current === 0) t0Ref.current = now;
 
-    const onVisibility = () => {
-      if (document.hidden) pauseLoop();
-      else startLoop();
-    };
-    document.addEventListener('visibilitychange', onVisibility);
-
-    const tick = (now: number) => {
-      rafRef.current = null;
-      if (!active || document.hidden) return;
-      const { w, h } = sizeRef.current;
-      if (w <= 0 || h <= 0) {
-        rafRef.current = requestAnimationFrame(tick);
-        return;
-      }
-
-      const seconds = (now - t0) / 1000;
+      const seconds = (now - t0Ref.current) / 1000;
       const stState = useParticleStore.getState();
       const targetMotion = stState.motion;
       const invertColor = stState.invertColor;
@@ -403,18 +348,8 @@ const ParticleField: React.FC<ParticleFieldProps> = ({ className, compact = fals
         ctx.arc(px, py, radius, 0, Math.PI * 2);
         ctx.fill();
       }
-      rafRef.current = requestAnimationFrame(tick);
-    };
-
-    if (!document.hidden) startLoop();
-
-    return () => {
-      active = false;
-      document.removeEventListener('visibilitychange', onVisibility);
-      pauseLoop();
-      ro.disconnect();
-    };
-  }, []);
+    },
+  });
 
   return (
     <div

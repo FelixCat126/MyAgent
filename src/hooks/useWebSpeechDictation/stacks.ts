@@ -1,10 +1,7 @@
 import type { VolcAsrDictationConfig } from './types';
 
-/** 与 Chromium Web Speech API / i18n locale 对齐 */
-export function speechLangFromUiLocale(locale: string): string {
-  if (locale === 'en') return 'en-US';
-  return 'zh-CN';
-}
+/** 单一来源在 @/utils/speechVoice；此处再导出保持 stacks 调用点不变 */
+export { speechLangFromUiLocale } from '@/utils/speechVoice';
 
 type RecognitionCtor = new () => SpeechRecognition;
 

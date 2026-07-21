@@ -2,11 +2,7 @@ import React, { useMemo } from 'react';
 import MessageItem from '../MessageItem';
 import AgentBrowserPanel from '../AgentBrowserPanel';
 import { FiLoader } from 'react-icons/fi';
-import {
-  buildConversationImageGallery,
-  findConversationGalleryIndex,
-  type ConversationImageGalleryItem,
-} from '../../utils/conversationImageGallery';
+import type { ConversationImageGalleryItem } from '../../utils/conversationImageGallery';
 import type { Message } from '../../types';
 
 export interface MessageStreamProps {
@@ -23,6 +19,8 @@ export interface MessageStreamProps {
   onSubmitEdit: (message: Message, next: string) => void;
   onCancelEdit: () => void;
   imageGenProgress: { current: number; total: number; messageId: string } | null;
+  /** 由 ChatWindow 统一构建（曾在此二次构建 + 二次索引查找） */
+  conversationGallery: ConversationImageGalleryItem[];
   onOpenConversationGallery: (messageId: string, fileIndex: number) => void;
   showTypingDots: boolean;
   isCompressingCurrent: boolean;
@@ -35,11 +33,6 @@ export interface MessageStreamProps {
 }
 
 export const MessageStream: React.FC<MessageStreamProps> = (p) => {
-  const conversationGallery: ConversationImageGalleryItem[] = useMemo(
-    () => buildConversationImageGallery(p.messages),
-    [p.messages]
-  );
-
   /** 新对话分隔线：同一会话内，若最后两条消息间隔超过阈值，在间隔处显示一条"以下为新对话内容"。 */
   const newConversationDividerIndex = useMemo(() => {
     const GAP_MS = 15 * 60 * 1000;
@@ -118,15 +111,8 @@ export const MessageStream: React.FC<MessageStreamProps> = (p) => {
                   !(message.content ?? '').trim().length &&
                   !!(message.reasoning ?? '').trim().length
                 }
-                conversationGallery={conversationGallery}
-                onOpenConversationGallery={(messageId, fileIndex) => {
-                  const idx = findConversationGalleryIndex(
-                    conversationGallery,
-                    messageId,
-                    fileIndex
-                  );
-                  if (idx >= 0) p.onOpenConversationGallery(messageId, fileIndex);
-                }}
+                conversationGallery={p.conversationGallery}
+                onOpenConversationGallery={p.onOpenConversationGallery}
                 imageGenProgress={
                   p.imageGenProgress && p.imageGenProgress.messageId === message.id
                     ? { current: p.imageGenProgress.current, total: p.imageGenProgress.total }

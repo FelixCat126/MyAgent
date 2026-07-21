@@ -1,26 +1,16 @@
 import type { Message, ModelConfig, FileInfo } from '../types';
 import { useChatStore } from '../store/chatStore';
 import { useSettingStore } from '../store/settingStore';
-import { StreamingSpeechReader } from '../utils/streamingSpeech';
 import { canUseSseStream } from '../utils/chatModelPolicy';
-import { extractGenerateImageCalls, stripGenerateImageArtifactsForDisplay } from '../utils/toolCalls';
-import { planImageIntent } from '../utils/imageIntentPlanner';
 import {
-  documentArtifactBaseName,
-  documentArtifactBaseNameFromContent,
-  documentExportFormatsFromHint,
-} from '../utils/documentExportIntent';
-import {
-  postProcessAssistantContent,
-  imageReferencePathsFromFiles,
-  createDocumentArtifactsFromMarkdown,
-} from './imageGenAssist';
-import { makeImageGenHooks } from './makeImageGenHooks';
-import {
-  syncImgGenUi,
-  appendGeneratedImageToAssistant,
-  mergeAssistantFiles,
   createAnimStream,
+  beginAssistantStream,
+  createVoiceWakeReplyReader,
+  fulfillDocumentArtifact,
+  mergeAssistantFiles,
+  planAssistantImageIntent,
+  resetStreamingUi,
+  runImagePostProcess,
   withStreamLifecycle,
 } from './runModelReplyShared';
 import type { RunModelReplyUi } from './runModelReplyTypes';
@@ -62,53 +52,25 @@ function runDocumentStreamReply(args: RunStreamReplyPathArgs): void {
   const { ui, sendSessionId, userMessage, activeModel, plainMessages, plainModel, exportHint } = args;
   if (!exportHint) return;
 
-  ui.streamHadErrorRef.current = false;
-  ui.streamCancelledByUserRef.current = false;
   const assistantId = `${Date.now()}-doc`;
   let artifactBuffer = '';
-  ui.streamingAssistantIdRef.current = assistantId;
-  ui.streamingSessionIdRef.current = sendSessionId;
-  ui.setStreamingTargetAssistantId(assistantId);
-  ui.setIsStreaming(true);
-  ui.addMessage(sendSessionId, {
-    id: assistantId,
-    role: 'assistant',
-    content: '',
+  beginAssistantStream(ui, sendSessionId, {
+    assistantId,
+    modelName: activeModel.name,
     exportHint: { ...exportHint, status: 'thinking' },
-    timestamp: Date.now(),
-    model: activeModel.name,
   });
 
-  let docPendingReasoning = '';
-  let docReasoningFlushRaf = 0;
-  const flushDocReasoningImmediately = (): void => {
-    if (docReasoningFlushRaf !== 0) {
-      window.cancelAnimationFrame(docReasoningFlushRaf);
-      docReasoningFlushRaf = 0;
-    }
-    const merged = docPendingReasoning;
-    docPendingReasoning = '';
-    if (!merged) return;
-    ui.appendReasoningToMessage(sendSessionId, assistantId, merged);
-  };
-  const queueDocReasoningChunk = (th: string): void => {
-    docPendingReasoning += th;
-    if (docReasoningFlushRaf !== 0) return;
-    docReasoningFlushRaf = window.requestAnimationFrame(() => {
-      docReasoningFlushRaf = 0;
-      flushDocReasoningImmediately();
-    });
-  };
+  const reasoningStream = createAnimStream(sendSessionId, assistantId, ui.appendReasoningToMessage);
 
   const unsub = window.electron.subscribeModelStream(plainMessages, plainModel, {
     onDelta: (d) => {
       artifactBuffer += d;
     },
     onThinkingDelta: (th) => {
-      if (th) queueDocReasoningChunk(th);
+      if (th) reasoningStream.push(th);
     },
     onError: (m) => {
-      flushDocReasoningImmediately();
+      reasoningStream.flush();
       ui.streamHadErrorRef.current = true;
       ui.updateMessage(sendSessionId, assistantId, {
         content: ui.t('chat.requestFailed') + m,
@@ -118,20 +80,14 @@ function runDocumentStreamReply(args: RunStreamReplyPathArgs): void {
     locale: ui.locale,
     onEnd: () => {
       void (async () => {
-        flushDocReasoningImmediately();
+        reasoningStream.flush();
         ui.streamUnsubRef.current = null;
         const aborted = ui.streamCancelledByUserRef.current;
         ui.streamCancelledByUserRef.current = false;
         await withStreamLifecycle(
           assistantId,
           {
-            onFinalize: () => {
-              ui.setIsStreaming(false);
-              ui.clearLoadingForSession(sendSessionId);
-              ui.streamingAssistantIdRef.current = null;
-              ui.streamingSessionIdRef.current = null;
-              ui.setStreamingTargetAssistantId(null);
-            },
+            onFinalize: () => resetStreamingUi(ui, sendSessionId),
           },
           async () => {
             if (ui.streamHadErrorRef.current) return;
@@ -142,24 +98,16 @@ function runDocumentStreamReply(args: RunStreamReplyPathArgs): void {
               });
               return;
             }
-            const artifactBody = stripGenerateImageArtifactsForDisplay(artifactBuffer).trim();
             ui.updateMessage(sendSessionId, assistantId, {
               exportHint: { ...exportHint, status: 'generating' },
             });
-            const artifactFiles = await createDocumentArtifactsFromMarkdown(
-              artifactBody,
-              documentExportFormatsFromHint(exportHint),
-              documentArtifactBaseNameFromContent(
-                artifactBody,
-                documentArtifactBaseName(userMessage.content)
-              )
-            );
-            ui.updateMessage(sendSessionId, assistantId, {
-              content: artifactFiles.length
-                ? ui.t('chat.documentReady')
-                : ui.t('chat.documentWriteFailed'),
+            await fulfillDocumentArtifact({
+              ui,
+              sendSessionId,
+              assistantId,
+              rawText: artifactBuffer,
+              userText: userMessage.content,
               exportHint,
-              files: artifactFiles.length ? artifactFiles : undefined,
             });
           }
         );
@@ -181,34 +129,16 @@ function runSseStreamReply(args: RunStreamReplyPathArgs): void {
     exportHint,
   } = args;
 
-  ui.streamHadErrorRef.current = false;
-  ui.streamCancelledByUserRef.current = false;
   const assistantId = `${Date.now()}-a`;
-  ui.streamingAssistantIdRef.current = assistantId;
-  ui.streamingSessionIdRef.current = sendSessionId;
-  ui.setStreamingTargetAssistantId(assistantId);
-  ui.setIsStreaming(true);
-  ui.addMessage(sendSessionId, {
-    id: assistantId,
-    role: 'assistant',
-    content: '',
+  beginAssistantStream(ui, sendSessionId, {
+    assistantId,
+    modelName: activeModel.name,
     ...(exportHint ? { exportHint } : {}),
-    timestamp: Date.now(),
-    model: activeModel.name,
   });
 
-  if (ui.consumeVoiceWakeReply()) {
-    ui.speechReaderRef.current?.cancel();
-    const reader = new StreamingSpeechReader(ui.locale, {
-      onSpeakingChange: ui.setVoiceReplySpeaking,
-    });
-    ui.speechReaderRef.current = reader;
-    void reader.start();
-  }
-
-  const voiceReplyThisTurn = Boolean(ui.speechReaderRef.current);
-
-  const imgBase = ui.inlineImageIndexRef.current;
+  const voiceReader = createVoiceWakeReplyReader(ui);
+  if (voiceReader) void voiceReader.start();
+  const voiceReplyThisTurn = Boolean(voiceReader);
 
   const contentStream = createAnimStream(sendSessionId, assistantId, ui.appendToMessage);
   const reasoningStream = createAnimStream(sendSessionId, assistantId, ui.appendReasoningToMessage);
@@ -252,13 +182,7 @@ function runSseStreamReply(args: RunStreamReplyPathArgs): void {
         await withStreamLifecycle(
           assistantId,
           {
-            onFinalize: () => {
-              ui.setIsStreaming(false);
-              ui.clearLoadingForSession(sendSessionId);
-              ui.streamingAssistantIdRef.current = null;
-              ui.streamingSessionIdRef.current = null;
-              ui.setStreamingTargetAssistantId(null);
-            },
+            onFinalize: () => resetStreamingUi(ui, sendSessionId),
           },
           async () => {
             if (ui.streamHadErrorRef.current) {
@@ -273,12 +197,7 @@ function runSseStreamReply(args: RunStreamReplyPathArgs): void {
             const raw = msg?.content ?? '';
             const reasoningText = (msg?.reasoning ?? '').trim();
 
-            const plannedIntent = planImageIntent({
-              userText: userMessage.content,
-              historyBeforeUser,
-              assistantText: raw,
-              toolCallCount: extractGenerateImageCalls(raw).length,
-            });
+            const plannedIntent = planAssistantImageIntent(userMessage, historyBeforeUser, raw);
 
             if (aborted && !raw.trim() && !plannedIntent.shouldGenerate) {
               ui.speechReaderRef.current?.cancel();
@@ -298,28 +217,18 @@ function runSseStreamReply(args: RunStreamReplyPathArgs): void {
             let nextFiles = msg?.files as Message['files'] | undefined;
             if (raw.trim() || plannedIntent.shouldGenerate) {
               try {
-                const imageHooks = makeImageGenHooks({
+                const { content, files } = await runImagePostProcess({
+                  ui,
+                  sendSessionId,
                   assistantId,
-                  syncImgGenUi: (v) => syncImgGenUi(ui, sendSessionId, v),
-                  imageGenCancelledRef: ui.imageGenCancelledRef,
-                  onImage: (image) =>
-                    appendGeneratedImageToAssistant(ui, sendSessionId, assistantId, image),
-                });
-                const { content, files } = await postProcessAssistantContent(
-                  raw,
+                  rawText: raw,
+                  userMessage,
                   activeModel,
-                  imgBase,
-                  ui.setInlineImageIndex,
-                  {
-                    imageGenHooks: imageHooks,
-                    referenceImages: imageReferencePathsFromFiles(userMessage.files),
-                    userPromptContext: userMessage.content,
-                    plannedIntent,
-                    shouldCancel: () => ui.imageGenCancelledRef.current,
-                  }
-                );
+                  historyBeforeUser,
+                  plannedIntent,
+                });
                 nextContent = content;
-                nextFiles = mergeAssistantFiles(sendSessionId, assistantId, files);
+                nextFiles = files;
               } catch (e) {
                 nextContent =
                   raw + '\n\n' + ui.t('postProcess.tag') + (e instanceof Error ? e.message : String(e));

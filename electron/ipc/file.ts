@@ -70,8 +70,8 @@ ipcMain.handle('cleanup-uploads', async () => {
   try {
     await fs.rm(getUploadDir(), { recursive: true, force: true });
     console.log('上传目录已清理');
-  } catch (error: any) {
-    console.error('清理上传目录失败:', error.message);
+  } catch (error: unknown) {
+    console.error('清理上传目录失败:', error instanceof Error ? error.message : String(error));
   }
 });
 

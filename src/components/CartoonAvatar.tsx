@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { useParticleStore, ParticleMood, AgentActivity } from '../store/particleStore';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
+import { useCanvas2DLoop, lerp } from '../hooks/useCanvas2DLoop';
 
 /**
  * 粒子点阵女性面孔渲染（赛博 / 全息风）。
@@ -10,7 +11,7 @@ import { useResolvedTheme } from '../hooks/useResolvedTheme';
  *  - 每帧给每个粒子加一个微抖动（基于 phase 的 sin/cos，幅度 ≈ 0.6 px）；
  *  - 同组（脸轮廓 / 头发 / 眉 / 上下眼睑 / 鼻 / 上下唇）相邻粒子之间绘制
  *    淡薄的连线，形成"网格描边"的科技感；
- *  - 双层粒子：内核（亮）+ 外晕（径向梯度）；
+ *  - 双层粒子：内核（亮）+ 外晕（径向梯度 sprite，按 颜色+半径 缓存，避免每帧数百个梯度对象）；
  *  - 眼睛除眼眶外，单独绘制实心瞳孔，跟随 gazeTarget 在眼眶内位移；
  *  - 眨眼时上眼睑 morph 到下眼睑中线；
  *  - 嘴唇按 mouthOpen 张合；
@@ -80,6 +81,9 @@ interface FacePoint {
   group: FaceGroup;
 }
 
+/** 眼睛几何：中心 (±cx, cy)，半轴 (ax, ay) —— 眼眶生成与瞳孔绘制共用 */
+const EYE = { cx: 0.24, cy: 0.02, ax: 0.14, ay: 0.07 } as const;
+
 /** 二次贝塞尔 */
 function quadBezier(t: number, p0: [number, number], p1: [number, number], p2: [number, number]): [number, number] {
   const u = 1 - t;
@@ -147,27 +151,24 @@ function generateFacePoints(blink: number, mouth: number): FacePoint[] {
   }
 
   // -------- 眼眶（含眨眼）--------
-  // 眼睛中心：left=(-0.24, 0.02), right=(0.24, 0.02), 半轴 ax=0.14, ay=0.07
   const EYE_STEPS = 14;
-  const EYE_AX = 0.14;
-  const EYE_AY = 0.07;
   const lift = 1 - blink; // 上眼睑高度系数
   const lower = 1 - blink * 0.35; // 下眼睑只小幅上移
   for (let i = 0; i <= EYE_STEPS; i++) {
     const t = i / EYE_STEPS;
     const angle = Math.PI - t * Math.PI; // 上半弧
-    const dx = EYE_AX * Math.cos(angle);
-    const dy = EYE_AY * Math.sin(angle); // sin > 0
-    pts.push({ x: -0.24 + dx, y: 0.02 - dy * lift, group: 'eyeLT' });
-    pts.push({ x: 0.24 + dx, y: 0.02 - dy * lift, group: 'eyeRT' });
+    const dx = EYE.ax * Math.cos(angle);
+    const dy = EYE.ay * Math.sin(angle); // sin > 0
+    pts.push({ x: -EYE.cx + dx, y: EYE.cy - dy * lift, group: 'eyeLT' });
+    pts.push({ x: EYE.cx + dx, y: EYE.cy - dy * lift, group: 'eyeRT' });
   }
   for (let i = 0; i <= EYE_STEPS; i++) {
     const t = i / EYE_STEPS;
     const angle = Math.PI + t * Math.PI; // 下半弧
-    const dx = EYE_AX * Math.cos(angle);
-    const dy = -EYE_AY * Math.sin(angle); // sin < 0 → dy > 0 朝下
-    pts.push({ x: -0.24 + dx, y: 0.02 + dy * lower, group: 'eyeLB' });
-    pts.push({ x: 0.24 + dx, y: 0.02 + dy * lower, group: 'eyeRB' });
+    const dx = EYE.ax * Math.cos(angle);
+    const dy = -EYE.ay * Math.sin(angle); // sin < 0 → dy > 0 朝下
+    pts.push({ x: -EYE.cx + dx, y: EYE.cy + dy * lower, group: 'eyeLB' });
+    pts.push({ x: EYE.cx + dx, y: EYE.cy + dy * lower, group: 'eyeRB' });
   }
 
   // -------- 鼻梁 + 鼻尖 --------
@@ -204,10 +205,6 @@ const BLINK_LERP = 0.32;
 const MOUTH_LERP = 0.2;
 const TILT_LERP = 0.12;
 
-function lerp(a: number, b: number, t: number): number {
-  return a + (b - a) * t;
-}
-
 function moodFromActivity(act: AgentActivity): ParticleMood {
   if (act === 'thinking') return 'thinking';
   if (act === 'replying') return 'streaming';
@@ -215,59 +212,44 @@ function moodFromActivity(act: AgentActivity): ParticleMood {
   return 'idle';
 }
 
+/** 外晕 sprite 缓存：径向梯度按 (颜色, 半径) 预渲染一次，每帧 drawImage 替代逐粒子 createRadialGradient */
+function renderHaloSprite(color: string, r: number): HTMLCanvasElement {
+  const size = Math.max(2, Math.ceil(r * 2));
+  const off = document.createElement('canvas');
+  off.width = size;
+  off.height = size;
+  const octx = off.getContext('2d');
+  if (octx) {
+    const grad = octx.createRadialGradient(r, r, 0, r, r, r);
+    grad.addColorStop(0, color + 'aa');
+    grad.addColorStop(1, color + '00');
+    octx.fillStyle = grad;
+    octx.fillRect(0, 0, size, size);
+  }
+  return off;
+}
+
 const CartoonAvatar: React.FC<CartoonAvatarProps> = ({ className }) => {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const rafRef = useRef<number | null>(null);
-  const sizeRef = useRef({ w: 0, h: 0, dpr: 1 });
   const theme = useResolvedTheme();
   const themeRef = useRef(theme);
   const blinkPhaseRef = useRef(0);
   const smoothRef = useRef({ scale: 1, headTilt: 0, gazeX: 0, gazeY: 0, blink: 0, mouth: 0 });
+  const t0Ref = useRef(0);
+  const lastTickRef = useRef(0);
+  const haloSpriteRef = useRef<{ key: string; canvas: HTMLCanvasElement } | null>(null);
 
   useEffect(() => {
     themeRef.current = theme;
   }, [theme]);
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    const container = containerRef.current;
-    if (!canvas || !container) return;
-    const ctx = canvas.getContext('2d', { alpha: true });
-    if (!ctx) return;
-
-    const applySize = () => {
-      const rect = container.getBoundingClientRect();
-      const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
-      const w = Math.max(2, Math.floor(rect.width));
-      const h = Math.max(2, Math.floor(rect.height));
-      if (sizeRef.current.w === w && sizeRef.current.h === h && sizeRef.current.dpr === dpr) return;
-      sizeRef.current = { w, h, dpr };
-      canvas.width = w * dpr;
-      canvas.height = h * dpr;
-      canvas.style.width = `${w}px`;
-      canvas.style.height = `${h}px`;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    };
-    applySize();
-    const ro = new ResizeObserver(applySize);
-    ro.observe(container);
-
-    const t0 = performance.now();
-    let running = true;
-    let lastTick = 0;
-
-    const tick = (now: number) => {
-      rafRef.current = null;
-      if (!running || document.hidden) return;
-      const { w, h } = sizeRef.current;
-      if (w <= 0 || h <= 0) {
-        rafRef.current = requestAnimationFrame(tick);
-        return;
-      }
-      const dt = lastTick > 0 ? (now - lastTick) / 1000 : 0;
-      lastTick = now;
-      const seconds = (now - t0) / 1000;
+  const { canvasRef, containerRef } = useCanvas2DLoop({
+    dprCap: 2,
+    onTick: (ctx, now, { w, h }) => {
+      if (w <= 0 || h <= 0) return;
+      if (t0Ref.current === 0) t0Ref.current = now;
+      const dt = lastTickRef.current > 0 ? (now - lastTickRef.current) / 1000 : 0;
+      lastTickRef.current = now;
+      const seconds = (now - t0Ref.current) / 1000;
 
       const st = useParticleStore.getState();
       const motion = st.motion;
@@ -343,16 +325,15 @@ const CartoonAvatar: React.FC<CartoonAvatarProps> = ({ className }) => {
       }
       ctx.stroke();
 
-      // 2) 外晕粒子（径向梯度），先画在底层
+      // 2) 外晕粒子（sprite 化径向梯度），先画在底层
       const haloR = Math.max(2.2, half * 0.022);
+      const haloKey = `${pal.accent}|${haloR.toFixed(2)}`;
+      if (haloSpriteRef.current?.key !== haloKey) {
+        haloSpriteRef.current = { key: haloKey, canvas: renderHaloSprite(pal.accent, haloR) };
+      }
+      const haloSprite = haloSpriteRef.current.canvas;
       for (const p of screenPts) {
-        const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, haloR);
-        grad.addColorStop(0, pal.accent + 'aa');
-        grad.addColorStop(1, pal.accent + '00');
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, haloR, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.drawImage(haloSprite, p.x - haloR, p.y - haloR);
       }
 
       // 3) 核心粒子（亮点）
@@ -370,11 +351,11 @@ const CartoonAvatar: React.FC<CartoonAvatarProps> = ({ className }) => {
 
       // 4) 瞳孔：左右各一颗实心圆，受 gaze 控制在眼眶内位移；闭眼接近完全时不画
       if (s.blink < 0.82) {
-        const eyeCxL = -0.24 * half;
-        const eyeCxR = 0.24 * half;
-        const eyeCy = 0.02 * half;
-        const eyeAx = 0.14 * half;
-        const eyeAy = 0.07 * half;
+        const eyeCxL = -EYE.cx * half;
+        const eyeCxR = EYE.cx * half;
+        const eyeCy = EYE.cy * half;
+        const eyeAx = EYE.ax * half;
+        const eyeAy = EYE.ay * half;
         const pupilR = Math.max(2.0, half * 0.025);
         const gazeMaxX = eyeAx - pupilR - 2;
         const gazeMaxY = eyeAy - pupilR - 2;
@@ -421,30 +402,8 @@ const CartoonAvatar: React.FC<CartoonAvatarProps> = ({ className }) => {
         ctx.fill();
         ctx.restore();
       }
-
-      rafRef.current = requestAnimationFrame(tick);
-    };
-    rafRef.current = requestAnimationFrame(tick);
-
-    const onVisibility = () => {
-      if (document.hidden) {
-        if (rafRef.current) {
-          cancelAnimationFrame(rafRef.current);
-          rafRef.current = null;
-        }
-      } else if (rafRef.current == null && running) {
-        rafRef.current = requestAnimationFrame(tick);
-      }
-    };
-    document.addEventListener('visibilitychange', onVisibility);
-
-    return () => {
-      running = false;
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      document.removeEventListener('visibilitychange', onVisibility);
-      ro.disconnect();
-    };
-  }, []);
+    },
+  });
 
   return (
     <div ref={containerRef} className={className} style={{ pointerEvents: 'none' }} aria-hidden>

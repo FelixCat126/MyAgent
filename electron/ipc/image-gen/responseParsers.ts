@@ -125,8 +125,11 @@ function extractAllOpenAiCompatibleImageUrls(data: unknown): string[] {
     out.push(t);
   };
 
+  /** 火山流式/深嵌套响应的 URL 扫描允许更深（方舟 SSE 包层级显著深于普通 JSON） */
+  const MAX_ARK_STREAM_URL_SCAN_DEPTH = 26;
+
   function walkDeep(val: unknown, depth: number, seenObjs: WeakSet<object>): void {
-    if (depth > 26 || val === null || val === undefined) return;
+    if (depth > MAX_ARK_STREAM_URL_SCAN_DEPTH || val === null || val === undefined) return;
     if (typeof val === 'string') {
       const t = val.trim();
       if (

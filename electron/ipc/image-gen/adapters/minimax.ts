@@ -1,6 +1,11 @@
 import { ImageGenerationParams } from '../../../../src/types';
 import { hasExplicitAuthorizationHeader, effectiveImageProvider } from '../auth';
+import { VENDOR_IMAGE_COUNT_LIMITS } from '../../../constants';
+import { resolveAdapterImageModel } from './shared';
 import type { HttpImageProviderAdapter } from './types';
+
+/** MiniMax 站点不匹配错误码：国内/国际站与 Key 不对应时返回，提示表与换站重试共用 */
+export const MINIMAX_SITE_MISMATCH_CODE = 2049;
 
 /**
  * MiniMax 响应：
@@ -23,13 +28,13 @@ function formatMiniMaxStatusError(
     1008: '账户余额不足，请前往 MiniMax 开放平台充值',
     1026: '提示词含敏感内容，请修改后再试',
     2013: '请求参数无效：请确认模型名为 image-01，Endpoint 为 …/v1/image_generation，宽高比合法',
-    2049:
+    [MINIMAX_SITE_MISMATCH_CODE]:
       'API Key 无效或与站点不匹配：请确认密钥填在生图「API 密钥」（不是对话模型密钥）；国内站 Key 配 api.minimaxi.com，国际站 Key 配 api.minimax.io',
   };
   const hint = hints[statusCode] || '请查阅 MiniMax 开放平台错误码说明';
   const detail = statusMsg.trim() ? `，${statusMsg.trim()}` : '';
   let msg = `MiniMax 生图失败（status_code=${statusCode}${detail}）：${hint}`;
-  if (statusCode === 2049 && meta) {
+  if (statusCode === MINIMAX_SITE_MISMATCH_CODE && meta) {
     const bits = [
       meta.host ? `host=${meta.host}` : '',
       meta.authSource ? `鉴权来自 ${meta.authSource}` : '',
@@ -163,15 +168,16 @@ const minimaxAdapter: HttpImageProviderAdapter = {
         'MiniMax 鉴权未带上：请在生图模型「API 密钥」字段填写 MiniMax API Key（同一模型顶部的对话 API 密钥也可作为回退），或在「环境变量」中填写 `MINIMAX_API_KEY=…`。国内站 Endpoint：https://api.minimaxi.com/v1/image_generation ；国际站：https://api.minimax.io/v1/image_generation'
       );
     }
-    const model =
-      (typeof config.model === 'string' ? config.model.trim() : '') ||
-      env?.REMOTE_IMAGE_MODEL ||
-      env?.IMAGE_MODEL ||
-      'image-01';
+    const model = resolveAdapterImageModel({
+      config,
+      env,
+      envKeys: ['REMOTE_IMAGE_MODEL', 'IMAGE_MODEL'],
+      fallback: 'image-01',
+    });
     const aspectRatio = inferMiniMaxAspectRatio(request.params);
     const n =
       typeof request.count === 'number' && request.count > 0
-        ? Math.max(1, Math.min(9, Math.round(request.count)))
+        ? Math.max(1, Math.min(VENDOR_IMAGE_COUNT_LIMITS.minimax, Math.round(request.count)))
         : 1;
     const body: Record<string, unknown> = {
       model,

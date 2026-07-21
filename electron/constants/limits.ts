@@ -9,3 +9,6 @@ export const DOCUMENT_MAX_CHARS = 120_000;
 
 /** Agent 本地文件读取最大字符数 */
 export const AGENT_LOCAL_MAX_READ_CHARS = 120_000;
+
+/** 对话模型 max_tokens 兜底值（未配置时） */
+export const DEFAULT_MAX_TOKENS = 4096;

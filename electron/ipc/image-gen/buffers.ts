@@ -3,26 +3,45 @@ import { randomUUID } from 'crypto';
 import fs from 'fs/promises';
 import { ImageGenerationParams } from '../../../src/types';
 
+/** sharp 读图片尺寸；读取失败或无 sharp 时回退 params 宽高（最终 512） */
+async function readImageSizeWithFallback(
+  outputPath: string,
+  params: ImageGenerationParams
+): Promise<{ width: number; height: number }> {
+  const fallback = { width: Number(params.width) || 512, height: Number(params.height) || 512 };
+  try {
+    const sharp = require('sharp');
+    const m = await sharp(outputPath).metadata();
+    return {
+      width: Number.isInteger(m.width) && (m.width as number) > 0 ? (m.width as number) : fallback.width,
+      height:
+        Number.isInteger(m.height) && (m.height as number) > 0 ? (m.height as number) : fallback.height,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+/** 生图输出目录：params.outputDir 优先，否则 Documents/MyAgent/GeneratedImages；尽力创建 */
+async function resolveImageOutputDir(params: ImageGenerationParams): Promise<string> {
+  const { app } = await import('electron');
+  const outputDir =
+    params.outputDir || join(app.getPath('documents'), 'MyAgent', 'GeneratedImages');
+  await fs.mkdir(outputDir, { recursive: true }).catch(() => {});
+  return outputDir;
+}
+
 async function writePngBuffersToOutputFiles(
   buffersWithBinaries: Buffer[],
   outputDir: string,
   params: ImageGenerationParams
 ): Promise<Array<{ url: string; path: string; width: number; height: number }>> {
-  const results: Array<{ url: string; path: string; width: number; height: number }> = [];
+  const results: Array<{ url: string; path: string; width: number; height: number; size?: number }> = [];
   for (const imageBuf of buffersWithBinaries) {
     const outputPath = join(outputDir, `${randomUUID()}.png`);
     await fs.writeFile(outputPath, imageBuf, { encoding: null });
-    let w = Number(params.width) || 512;
-    let h = Number(params.height) || 512;
-    try {
-      const sharp = require('sharp');
-      const m = await sharp(outputPath).metadata();
-      if (Number.isInteger(m.width) && m.width && m.width > 0) w = m.width;
-      if (Number.isInteger(m.height) && m.height && m.height > 0) h = m.height;
-    } catch {
-      /* no sharp */
-    }
-    results.push({ url: `file://${outputPath}`, path: outputPath, width: w, height: h });
+    const { width: w, height: h } = await readImageSizeWithFallback(outputPath, params);
+    results.push({ url: `file://${outputPath}`, path: outputPath, width: w, height: h, size: imageBuf.length });
   }
   return results;
 }
@@ -57,4 +76,6 @@ export {
   writePngBuffersToOutputFiles,
   finalizeOnePngBuffer,
   fetchImageBinaryFromUrl,
+  readImageSizeWithFallback,
+  resolveImageOutputDir,
 };

@@ -1,9 +1,8 @@
 import { useCallback, useRef } from 'react';
-import { float32MonoToPCM16Mono16k } from '@/utils/pcmDownsample';
 import type { DictationShared } from './shared';
 import { hasVolcAsrStack, volcCredsConfigured } from './stacks';
 import type { SpeechDictationLabels, VolcAsrDictationConfig } from './types';
-import { addVolcPcmTapWorklet, VOLC_CHUNK_SAMPLES, VOLC_MAX_PENDING_SAMPLES, VOLC_PCM_TAP_PROCESSOR } from './volcWorklet';
+import { createVolcPcmSession, type VolcPcmSession } from '../volcPcmSession';
 
 /** 自上次识别结果发生变化起，静默该时长则自动结束火山会话（仍可随时点按钮结束） */
 const VOLC_SILENCE_MS = 3000;
@@ -18,7 +17,10 @@ function retryableVolcStartError(msg: string | undefined) {
   );
 }
 
-/** 火山大模型双向流式 ASR 路径：AudioWorklet 采 PCM → IPC 推块 → 文本回灌输入框 */
+/**
+ * 火山大模型双向流式 ASR 路径：文本回灌输入框、静默自动收尾、唤醒预热麦复用。
+ * PCM 采集管线与 useVoiceWake 共享 volcPcmSession，本 hook 只保留听写策略。
+ */
 export function useVolcAsrPath(shared: DictationShared, labels: SpeechDictationLabels) {
   const {
     mediaStreamRef,
@@ -38,12 +40,9 @@ export function useVolcAsrPath(shared: DictationShared, labels: SpeechDictationL
     finishDictationSession,
   } = shared;
 
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const audioTapRef = useRef<AudioWorkletNode | null>(null);
-  const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  /** volc：待发送 PCM；主进程单次至少 64 样本 */
-  const volcPendingPcmRef = useRef<number[]>([]);
-  const volcIpcCleanupRef = useRef<Array<() => void>>([]);
+  const volcSessionRef = useRef<VolcPcmSession | null>(null);
+  if (!volcSessionRef.current) volcSessionRef.current = createVolcPcmSession();
+
   /** 唤醒确认 TTS 播放期间并行预拉麦克风（WebSocket 须在 TTS 后再建，否则长时间无音频会失效） */
   const wakePreparedStreamRef = useRef<MediaStream | null>(null);
   const wakeMicPrepareRef = useRef<Promise<void> | null>(null);
@@ -102,43 +101,8 @@ export function useVolcAsrPath(shared: DictationShared, labels: SpeechDictationL
     return p;
   }, [discardWakePreparedMic]);
 
-  const cleanupVolcIpc = useCallback(() => {
-    volcIpcCleanupRef.current.forEach((fn) => {
-      try {
-        fn();
-      } catch {
-        /* ignore */
-      }
-    });
-    volcIpcCleanupRef.current = [];
-  }, []);
-
   const releaseVolcAudio = useCallback(() => {
-    try {
-      audioTapRef.current?.disconnect();
-    } catch {
-      /* ignore */
-    }
-    try {
-      audioSourceRef.current?.disconnect();
-    } catch {
-      /* ignore */
-    }
-    audioTapRef.current = null;
-    audioSourceRef.current = null;
-    const ctx = audioCtxRef.current;
-    audioCtxRef.current = null;
-    if (ctx?.state !== 'closed') {
-      void ctx?.close().catch(() => {});
-    }
-    volcPendingPcmRef.current = [];
-    mediaStreamRef.current?.getTracks().forEach((t) => {
-      try {
-        t.stop();
-      } catch {
-        /* ignore */
-      }
-    });
+    volcSessionRef.current?.releaseAudio();
     mediaStreamRef.current = null;
   }, [mediaStreamRef]);
 
@@ -146,46 +110,11 @@ export function useVolcAsrPath(shared: DictationShared, labels: SpeechDictationL
     (opts: { abortSocket: boolean }) => {
       clearVolcIdleTimer();
       lastVolcPayloadRef.current = '__VOLC_IDLE_SENTINEL__';
-      cleanupVolcIpc();
-      releaseVolcAudio();
-      if (opts.abortSocket) {
-        try {
-          void window.electron.volcAsrAbort();
-        } catch {
-          /* ignore */
-        }
-      }
+      volcSessionRef.current?.teardown(opts);
+      mediaStreamRef.current = null;
     },
-    [cleanupVolcIpc, clearVolcIdleTimer, releaseVolcAudio]
+    [clearVolcIdleTimer, mediaStreamRef]
   );
-
-  const flushVolcRemainder = useCallback(async () => {
-    const rest = volcPendingPcmRef.current;
-    volcPendingPcmRef.current = [];
-    if (rest.length >= 64) {
-      try {
-        await window.electron.volcAsrPushChunk(rest);
-      } catch {
-        /* ignore */
-      }
-    }
-  }, []);
-
-  const pushVolcPcmInts = useCallback(async (pcm: Int16Array) => {
-    const pend = volcPendingPcmRef.current;
-    for (let i = 0; i < pcm.length; i++) pend.push(pcm[i] ?? 0);
-    if (pend.length > VOLC_MAX_PENDING_SAMPLES) {
-      pend.splice(0, pend.length - VOLC_MAX_PENDING_SAMPLES);
-    }
-    while (pend.length >= VOLC_CHUNK_SAMPLES) {
-      const chunk = pend.splice(0, VOLC_CHUNK_SAMPLES);
-      try {
-        await window.electron.volcAsrPushChunk(chunk);
-      } catch {
-        /* ignore */
-      }
-    }
-  }, []);
 
   const applyVolcCommitted = useCallback(
     (middle: string) => {
@@ -203,33 +132,23 @@ export function useVolcAsrPath(shared: DictationShared, labels: SpeechDictationL
   );
 
   const gracefulEndVolcSession = useCallback(async () => {
+    const session = volcSessionRef.current;
     clearVolcIdleTimer();
     lastVolcPayloadRef.current = '__VOLC_IDLE_SENTINEL__';
     stopRequestedRef.current = true;
-    try {
-      audioTapRef.current?.disconnect();
-    } catch {
-      /* ignore */
-    }
-    try {
-      audioSourceRef.current?.disconnect();
-    } catch {
-      /* ignore */
-    }
-    audioTapRef.current = null;
-    audioSourceRef.current = null;
-    await flushVolcRemainder();
+    session?.disconnectTap();
+    await session?.flushRemainder();
     try {
       await window.electron.volcAsrFinish();
     } catch {
       /* ignore */
     }
-    cleanupVolcIpc();
+    session?.cleanupIpc();
     releaseVolcAudio();
     if (dictationKindRef.current === 'volc') dictationKindRef.current = 'none';
     stopRequestedRef.current = false;
     finishDictationSession();
-  }, [cleanupVolcIpc, clearVolcIdleTimer, finishDictationSession, flushVolcRemainder, releaseVolcAudio, stopRequestedRef, dictationKindRef]);
+  }, [clearVolcIdleTimer, finishDictationSession, releaseVolcAudio, stopRequestedRef, dictationKindRef]);
 
   gracefulEndVolcSessionRef.current = gracefulEndVolcSession;
 
@@ -259,20 +178,20 @@ export function useVolcAsrPath(shared: DictationShared, labels: SpeechDictationL
   dispatchVolcRawTextRef.current = dispatchVolcRawText;
 
   const startVolcRecording = useCallback(async () => {
+    const session = volcSessionRef.current;
     clearBanner();
     const ta = textareaRef.current;
     const fn = getVolcCfgRef.current;
     const vcfg = fn?.() ?? null;
 
-    if (!ta || !hasVolcAsrStack() || !vcfg || !volcCredsConfigured(vcfg)) {
+    if (!session || !ta || !hasVolcAsrStack() || !vcfg || !volcCredsConfigured(vcfg)) {
       setBanner(labels.notSupported);
       return;
     }
 
     if (!captureAnchor()) return;
 
-    volcPendingPcmRef.current = [];
-    cleanupVolcIpc();
+    session.cleanupIpc();
 
     setStarting(true);
     let stream: MediaStream;
@@ -310,46 +229,35 @@ export function useVolcAsrPath(shared: DictationShared, labels: SpeechDictationL
     lastVolcPayloadRef.current = '__VOLC_IDLE_SENTINEL__';
     armVolcIdleTimer();
 
-    const offTxt = window.electron.onMessage('volc-asr-text', (...args: unknown[]) =>
-      dispatchVolcRawTextRef.current(String(args[0] ?? ''))
-    );
-    const offErr = window.electron.onMessage('volc-asr-error', (...args: unknown[]) => {
-      const msg = String(args[0] ?? '').trim();
-      setBanner(msg ? `${labels.genericError}: ${msg.slice(0, 240)}` : labels.genericError);
-      if (dictationKindRef.current === 'volc') {
-        teardownVolcFully({ abortSocket: true });
+    session.listenIpc({
+      onText: (text) => dispatchVolcRawTextRef.current(text),
+      onError: (rawMsg) => {
+        const msg = rawMsg.trim();
+        setBanner(msg ? `${labels.genericError}: ${msg.slice(0, 240)}` : labels.genericError);
+        if (dictationKindRef.current === 'volc') {
+          teardownVolcFully({ abortSocket: true });
+          dictationKindRef.current = 'none';
+          setListening(false);
+          stopRequestedRef.current = false;
+        }
+      },
+      onEnded: () => {
+        if (dictationKindRef.current !== 'volc') return;
+        clearVolcIdleTimer();
+        lastVolcPayloadRef.current = '__VOLC_IDLE_SENTINEL__';
+        session.cleanupIpc();
+        releaseVolcAudio();
         dictationKindRef.current = 'none';
-        setListening(false);
         stopRequestedRef.current = false;
-      }
+        finishDictationSession();
+      },
     });
-    const offEnd = window.electron.onMessage('volc-asr-ended', () => {
-      if (dictationKindRef.current !== 'volc') return;
-      clearVolcIdleTimer();
-      lastVolcPayloadRef.current = '__VOLC_IDLE_SENTINEL__';
-      cleanupVolcIpc();
-      releaseVolcAudio();
-      dictationKindRef.current = 'none';
-      stopRequestedRef.current = false;
-      finishDictationSession();
-    });
-    volcIpcCleanupRef.current.push(offTxt, offErr, offEnd);
-
-    let audioCtx: AudioContext;
-    try {
-      audioCtx = new AudioContext();
-    } catch {
-      teardownVolcFully({ abortSocket: true });
-      dictationKindRef.current = 'none';
-      setBanner(labels.startFailed);
-      setStarting(false);
-      return;
-    }
-    audioCtxRef.current = audioCtx;
-    await audioCtx.resume().catch(() => {});
 
     try {
-      await addVolcPcmTapWorklet(audioCtx);
+      await session.buildAudioPipeline(
+        stream,
+        () => dictationKindRef.current === 'volc' && !stopRequestedRef.current
+      );
     } catch {
       teardownVolcFully({ abortSocket: true });
       dictationKindRef.current = 'none';
@@ -358,43 +266,6 @@ export function useVolcAsrPath(shared: DictationShared, labels: SpeechDictationL
       setStarting(false);
       return;
     }
-
-    let tap: AudioWorkletNode;
-    try {
-      tap = new AudioWorkletNode(audioCtx, VOLC_PCM_TAP_PROCESSOR, {
-        numberOfInputs: 1,
-        numberOfOutputs: 1,
-        channelCount: 1,
-        channelInterpretation: 'speakers',
-        channelCountMode: 'explicit',
-      });
-    } catch {
-      teardownVolcFully({ abortSocket: true });
-      dictationKindRef.current = 'none';
-      setListening(false);
-      setBanner(labels.startFailed);
-      setStarting(false);
-      return;
-    }
-    audioTapRef.current = tap;
-
-    tap.port.onmessage = (ev: MessageEvent<ArrayBuffer>) => {
-      if (dictationKindRef.current !== 'volc' || stopRequestedRef.current) return;
-      const buf = ev.data;
-      if (!buf || !(buf instanceof ArrayBuffer) || buf.byteLength < 4) return;
-      const mono = new Float32Array(buf);
-      const pcm = float32MonoToPCM16Mono16k(mono, audioCtx.sampleRate);
-      if (pcm.length) void pushVolcPcmInts(pcm);
-    };
-
-    const source = audioCtx.createMediaStreamSource(stream);
-    audioSourceRef.current = source;
-    const silent = audioCtx.createGain();
-    silent.gain.value = 0;
-
-    source.connect(tap);
-    tap.connect(silent);
-    silent.connect(audioCtx.destination);
 
     try {
       setListening(true);
@@ -415,14 +286,12 @@ export function useVolcAsrPath(shared: DictationShared, labels: SpeechDictationL
   }, [
     armVolcIdleTimer,
     captureAnchor,
-    cleanupVolcIpc,
     clearBanner,
     clearVolcIdleTimer,
     labels.genericError,
     labels.notSupported,
     labels.startFailed,
     labels.transcribeDenied,
-    pushVolcPcmInts,
     finishDictationSession,
     releaseVolcAudio,
     teardownVolcFully,

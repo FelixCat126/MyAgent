@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { pathToFileURL } from 'url';
-import { FileInfo, Message } from '../../types';
+import { Message } from '../../types';
 import { FiMessageSquare, FiCopy, FiDownload, FiEdit2, FiCheckSquare, FiSquare, FiCheck } from 'react-icons/fi';
 import { useI18n } from '../../hooks/useI18n';
 import { showError } from '../../store/errorStore';
@@ -12,17 +11,16 @@ import {
   findConversationGalleryIndex,
   type ConversationImageGalleryItem,
 } from '@/utils/conversationImageGallery';
-import { attachmentImageDisplaySrc } from '@/utils/attachmentDisplaySrc';
 import {
   DownloadLocalFileError,
   downloadDisplayImage,
 } from '@/utils/imageDownload';
+import { localFileProtocolUrl } from '@/utils/localFileUrl';
+import { AttachmentGrid } from './AttachmentGrid';
 import {
   MAX_MARKDOWN_RENDER_CHARS,
   MAX_ASSISTANT_PREPROCESS_CHARS,
   MULTI_IMAGE_ATTACHMENT_GRID,
-  ASSISTANT_IMAGE_THUMB_IMG,
-  ASSISTANT_IMAGE_THUMB_META_ROW,
 } from './styleConstants';
 
 interface MessageItemProps {
@@ -72,9 +70,8 @@ function extractDocumentExportBody(raw: string): string {
 
 // AssistantReasoningCollapsible 已抽离到 ./MessageItem/AssistantReasoningCollapsible
 // 既要重新导出保留外部 import 兼容，也要让本地 JSX 通过别名可见
-import { AssistantReasoningCollapsible as AssistantReasoningCollapsibleImpl } from './AssistantReasoningCollapsible';
+import { AssistantReasoningCollapsible } from './AssistantReasoningCollapsible';
 import type { AssistantReasoningCollapsibleProps } from './AssistantReasoningCollapsible';
-const AssistantReasoningCollapsible = AssistantReasoningCollapsibleImpl;
 export { AssistantReasoningCollapsible };
 export type { AssistantReasoningCollapsibleProps };
 
@@ -170,9 +167,7 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
     e.stopPropagation();
     const src =
       (displaySrc && displaySrc.trim()) ||
-      ((localPath || '').trim() ?
-        pathToFileURL(localPath).href.replace(/^file:/i, 'local-file:')
-      : '');
+      ((localPath || '').trim() ? localFileProtocolUrl(localPath) : '');
     try {
       await downloadDisplayImage({
         src,
@@ -193,26 +188,7 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
     }
   };
 
-  const renderFileDownloadButton = (file: FileInfo) => {
-    if (!file.path) return null;
-    const displaySrc = attachmentImageDisplaySrc(file);
 
-    return (
-      <button
-        type="button"
-        className={`shrink-0 rounded p-0.5 ${
-          isUser
-            ? 'text-white/90 hover:bg-white/15'
-            : 'text-stone-600 hover:bg-stone-200 dark:text-slate-300 dark:hover:bg-slate-600'
-        }`}
-        title={t('message.imagePreviewDownload')}
-        aria-label={t('message.imagePreviewDownload')}
-        onClick={(e) => void downloadAttachmentCopy(e, file.path, file.name, displaySrc)}
-      >
-        <FiDownload size={12} aria-hidden />
-      </button>
-    );
-  };
 
   const isThoughtStreaming =
     message.role === 'assistant' &&
@@ -220,44 +196,31 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
     !!streamingAssistantId &&
     message.id === streamingAssistantId;
 
-  /** 流式输出的助手正文：禁用 strip + Markdown，避免半截 JSON/remark-gfm 把界面卡死 */
-  const skipHeavyAssistantMutationsDuringStream =
-    message.role === 'assistant' &&
-    Boolean(conversationStreaming) &&
-    streamingAssistantId != null &&
-    streamingAssistantId === message.id;
+  /** 超长截断（展示与导出共用）；复制按钮仍取完整原文 */
+  const capAssistantText = (raw: string): string =>
+    raw.length > MAX_ASSISTANT_PREPROCESS_CHARS
+      ? `${raw.slice(0, MAX_ASSISTANT_PREPROCESS_CHARS)}\n\n${t('message.contentTruncated')}`
+      : raw;
 
+  /** 流式输出的助手正文：禁用 strip + Markdown，避免半截 JSON/remark-gfm 把界面卡死 */
   const assistantDisplayBody = useMemo(
     () => {
       if (message.role !== 'assistant') return '';
       const raw = message.content ?? '';
-      const capped =
-        raw.length > MAX_ASSISTANT_PREPROCESS_CHARS
-          ? `${raw.slice(0, MAX_ASSISTANT_PREPROCESS_CHARS)}\n\n[内容过长，已截断显示；复制按钮仍会复制完整内容]`
-          : raw;
-      if (skipHeavyAssistantMutationsDuringStream) return capped;
+      const capped = capAssistantText(raw);
+      if (isThoughtStreaming) return capped;
       return stripGenerateImageArtifactsForDisplay(capped);
     },
-    [message.role, message.id, message.content, conversationStreaming, streamingAssistantId]
+    [message.role, message.id, message.content, isThoughtStreaming]
   );
   const assistantExportBody = useMemo(
     () => {
       if (message.role !== 'assistant') return '';
       const raw = message.content ?? '';
-      if (
-        conversationStreaming &&
-        streamingAssistantId != null &&
-        streamingAssistantId === message.id
-      ) {
-        const capped =
-          raw.length > MAX_ASSISTANT_PREPROCESS_CHARS
-            ? `${raw.slice(0, MAX_ASSISTANT_PREPROCESS_CHARS)}\n\n[内容过长，已截断显示；复制按钮仍会复制完整内容]`
-            : raw;
-        return capped;
-      }
+      if (isThoughtStreaming) return capAssistantText(raw);
       return stripGenerateImageArtifactsForDisplay(raw);
     },
-    [message.role, message.id, message.content, conversationStreaming, streamingAssistantId]
+    [message.role, message.id, message.content, isThoughtStreaming]
   );
 
   const handleCopy = async () => {
@@ -318,7 +281,7 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
     showDocumentGeneratingPlaceholder || showDocDraftingTerminalStripe;
   const markdownBody =
     assistantDisplayBody.length > MAX_MARKDOWN_RENDER_CHARS
-      ? `${assistantDisplayBody.slice(0, MAX_MARKDOWN_RENDER_CHARS)}\n\n[内容过长，已截断显示；复制按钮仍会复制完整内容]`
+      ? `${assistantDisplayBody.slice(0, MAX_MARKDOWN_RENDER_CHARS)}\n\n${t('message.contentTruncated')}`
       : assistantDisplayBody;
   const hasExportableAssistantText =
     message.role === 'assistant' && !showInlineStreamPlaceholder && assistantExportBody.trim().length > 0;
@@ -343,9 +306,7 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
           <button
             type="button"
             onClick={() => onToggleSelect?.(message.id)}
-            className={`mt-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors ${
-              isUser ? 'mr-2' : 'mr-2'
-            } ${
+            className={`mt-2 mr-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors ${
               selected
                 ? 'text-primary-600 dark:text-primary-300'
                 : 'text-stone-400 hover:bg-stone-200 hover:text-stone-700 dark:text-slate-500 dark:hover:bg-slate-800 dark:hover:text-slate-200'
@@ -375,60 +336,12 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
                 >
               {message.files && message.files.length > 0 && (
                     <div className={`mb-2 ${MULTI_IMAGE_ATTACHMENT_GRID}`}>
-                  {message.files.map((file, index) => {
-                    const isImage = file.type.startsWith('image/');
-                    const displaySrc = isImage ? attachmentImageDisplaySrc(file) : '';
-                    const canShowImage = isImage && Boolean(displaySrc);
-
-                    return (
-                      <div
-                        key={index}
-                            className="relative group/file max-w-full min-w-0 transition-all"
-                        title={file.name}
-                      >
-                        {canShowImage ? (
-                          <div className="flex flex-col gap-1">
-                            <img
-                              src={displaySrc}
-                              alt={file.name}
-                                  onClick={() =>
-                                    displaySrc &&
-                                    openAttachmentPreview(file.name, displaySrc, file.path, index)
-                                  }
-                                  className="h-[90px] w-[120px] cursor-zoom-in rounded-md object-contain shadow-sm transition-transform hover:scale-[1.02] border border-white/50 ring-1 ring-white/25 sm:h-[112px] sm:w-[150px]"
-                                />
-                                <div className="flex w-[120px] items-center gap-1 sm:w-[150px]">
-                                  <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-white/95">
-                              {file.name}
-                            </span>
-                                  <button
-                                    type="button"
-                                    className="shrink-0 rounded p-0.5 text-white/90 hover:bg-white/15"
-                                    title={t('message.imagePreviewDownload')}
-                                    aria-label={t('message.imagePreviewDownload')}
-                                    onClick={(e) =>
-                                      void downloadAttachmentCopy(
-                                        e,
-                                        file.path,
-                                        file.name,
-                                        displaySrc || undefined
-                                      )
-                                    }
-                                  >
-                                    <FiDownload size={12} aria-hidden />
-                                  </button>
-                                </div>
-                          </div>
-                        ) : (
-                              <div className="inline-flex max-w-full min-w-0 items-center gap-1 rounded-md border border-white/40 bg-white/20 px-2.5 py-1 text-[11px] font-medium text-white shadow-sm">
-                            <span className="shrink-0 opacity-90">📎</span>
-                            <span className="min-w-0 truncate">{file.name}</span>
-                                {renderFileDownloadButton(file)}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                      <AttachmentGrid
+                        files={message.files}
+                        tone="user"
+                        onPreviewImage={openAttachmentPreview}
+                        onDownload={downloadAttachmentCopy}
+                      />
                 </div>
               )}
                   {editing ? (
@@ -516,7 +429,7 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
                   />
                 ) : null}
                 {assistantDocTerminalActive ? (
-                  <div className="assistant-stream-terminal mb-3 space-y-3 overflow-hidden rounded-lg border border-emerald-900/38 bg-[#070b10] px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] dark:border-emerald-500/26">
+                  <div className="assistant-stream-terminal mb-3 space-y-3 overflow-hidden rounded-lg border border-emerald-900/38 bg-terminal px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] dark:border-emerald-500/26">
                     {showDocDraftingTerminalStripe ? (
                       <p className="m-0 text-[11px] leading-relaxed text-stone-400 dark:text-slate-500" role="status">
                         {t('chat.documentDraftingTerminal')}
@@ -530,14 +443,14 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
                     <InlineStreamDots />
                   </div>
                 ) : null}
-                {skipHeavyAssistantMutationsDuringStream &&
+                {isThoughtStreaming &&
                   !showInlineStreamPlaceholder &&
                   !hideBodyForDocumentThinking ? (
                   <div className="max-w-full whitespace-pre-wrap break-words pt-0.5 text-[13px] leading-relaxed text-stone-800 dark:text-slate-100">
                     {markdownBody}
                   </div>
                 ) : standaloneCode ? (
-                  <div className="overflow-hidden rounded-lg border border-stone-300/60 bg-[#faf8f5] shadow-inner dark:border-slate-600/50 dark:bg-slate-900/90">
+                  <div className="overflow-hidden rounded-lg border border-stone-300/60 bg-codeLight shadow-inner dark:border-slate-600/50 dark:bg-slate-900/90">
                     <div className="flex items-center justify-between border-b border-stone-300/50 bg-stone-200/85 px-3 py-1.5 text-[11px] text-stone-600 dark:border-slate-600/50 dark:bg-slate-800/90 dark:text-slate-400">
                       <span className="font-medium opacity-90">{t('message.codeSnippetBadge')}</span>
                       <button
@@ -616,60 +529,12 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
                     }
                   >
                     <div className={MULTI_IMAGE_ATTACHMENT_GRID}>
-                      {message.files.map((file, index) => {
-                        const isImage = file.type.startsWith('image/');
-                        const displaySrc = isImage ? attachmentImageDisplaySrc(file) : '';
-                        const canShowImage = isImage && Boolean(displaySrc);
-
-                        return (
-                          <div
-                            key={index}
-                            className="relative group/file max-w-full min-w-0 transition-all"
-                            title={file.name}
-                          >
-                            {canShowImage ? (
-                              <div className="flex w-max flex-col gap-1">
-                                <img
-                                  src={displaySrc}
-                                  alt={file.name}
-                                  onClick={() =>
-                                    displaySrc &&
-                                    openAttachmentPreview(file.name, displaySrc, file.path, index)
-                                  }
-                                  className={`${ASSISTANT_IMAGE_THUMB_IMG} bg-stone-50/80 dark:bg-slate-900/25`}
-                                />
-                                <div className={ASSISTANT_IMAGE_THUMB_META_ROW}>
-                                  <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-stone-700 dark:text-slate-300">
-                                    {file.name}
-                </span>
-                                  <button
-                                    type="button"
-                                    className="shrink-0 rounded p-0.5 text-stone-600 hover:bg-stone-200 dark:text-slate-300 dark:hover:bg-slate-600"
-                                    title={t('message.imagePreviewDownload')}
-                                    aria-label={t('message.imagePreviewDownload')}
-                                    onClick={(e) =>
-                                      void downloadAttachmentCopy(
-                                        e,
-                                        file.path,
-                                        file.name,
-                                        displaySrc || undefined
-                                      )
-                                    }
-                                  >
-                                    <FiDownload size={12} aria-hidden />
-                                  </button>
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="inline-flex max-w-full min-w-0 items-center gap-1 rounded-md border border-stone-300/70 bg-stone-200/90 px-2.5 py-1 text-[11px] font-medium text-stone-800 dark:border-white/10 dark:bg-slate-700 dark:text-slate-100">
-                                <span className="shrink-0 opacity-90">📎</span>
-                                <span className="min-w-0 truncate">{file.name}</span>
-                                {renderFileDownloadButton(file)}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
+                      <AttachmentGrid
+                        files={message.files}
+                        tone="assistant"
+                        onPreviewImage={openAttachmentPreview}
+                        onDownload={downloadAttachmentCopy}
+                      />
                     </div>
                   </div>
                 )}

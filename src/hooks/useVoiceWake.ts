@@ -1,28 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { float32MonoToPCM16Mono16k } from '@/utils/pcmDownsample';
 import {
-  VOLC_CHUNK_SAMPLES,
-  VOLC_MAX_PENDING_SAMPLES,
-  VOLC_PCM_TAP_PROCESSOR,
-  addVolcPcmTapWorklet,
+  getRecognitionCtor,
   hasVolcAsrStack,
   volcCredsConfigured,
   type VolcAsrDictationConfig,
 } from './useWebSpeechDictation';
-
-/** 与 useWebSpeechDictation 对齐 */
-function speechLangFromUiLocale(locale: string): string {
-  if (locale === 'en') return 'en-US';
-  return 'zh-CN';
-}
-
-type RecognitionCtor = new () => SpeechRecognition;
-
-function getRecognitionCtor(): RecognitionCtor | null {
-  if (typeof window === 'undefined') return null;
-  const w = window as Window & { webkitSpeechRecognition?: RecognitionCtor };
-  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
-}
+import { speechLangFromUiLocale } from '@/utils/speechVoice';
+import { createVolcPcmSession, type VolcPcmSession } from './volcPcmSession';
 
 /** 唤醒词比对前归一化：去空白/常见标点，英文小写 */
 export function normalizeWakeText(s: string): string {
@@ -108,9 +92,6 @@ export function detectWakePhraseLoose(transcript: string, phrase: string): boole
     }
   }
 
-  for (const v of XIAOYUAN_VARIANTS) {
-    if (normalizeWakeText(v) === p && tail.includes(normalizeWakeText(v))) return true;
-  }
   return false;
 }
 
@@ -174,14 +155,11 @@ export function useVoiceWake({
   const recRef = useRef<SpeechRecognition | null>(null);
   const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /** Volc wake */
+  /** Volc wake：PCM 采集管线收敛到共享会话；本 hook 只保留文本唤醒策略 */
   const volcActiveRef = useRef(false);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const audioTapRef = useRef<AudioWorkletNode | null>(null);
-  const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const volcPendingPcmRef = useRef<number[]>([]);
-  const volcIpcCleanupRef = useRef<Array<() => void>>([]);
+  const volcSessionRef = useRef<VolcPcmSession | null>(null);
+  if (!volcSessionRef.current) volcSessionRef.current = createVolcPcmSession();
 
   const pickEngine = useCallback((): VoiceWakeEngine => {
     const v = getVolcCfgRef.current?.() ?? null;
@@ -197,34 +175,10 @@ export function useVoiceWake({
     }
   }, []);
 
-  const cleanupVolcIpc = useCallback(() => {
-    volcIpcCleanupRef.current.forEach((fn) => {
-      try {
-        fn();
-      } catch {
-        /* ignore */
-      }
-    });
-    volcIpcCleanupRef.current = [];
-  }, []);
-
-  const releaseVolcAudio = useCallback(() => {
-    try {
-      audioTapRef.current?.disconnect();
-    } catch {
-      /* ignore */
-    }
-    try {
-      audioSourceRef.current?.disconnect();
-    } catch {
-      /* ignore */
-    }
-    audioTapRef.current = null;
-    audioSourceRef.current = null;
-    const ctx = audioCtxRef.current;
-    audioCtxRef.current = null;
-    if (ctx?.state !== 'closed') void ctx?.close().catch(() => {});
-    volcPendingPcmRef.current = [];
+  const teardownVolcWake = useCallback((opts: { abortSocket: boolean }) => {
+    volcActiveRef.current = false;
+    volcSessionRef.current?.teardown(opts);
+    /** 管线未建成时流只挂在 mediaStreamRef 上，这里兜底停轨，避免麦克风泄漏 */
     mediaStreamRef.current?.getTracks().forEach((t) => {
       try {
         t.stop();
@@ -233,38 +187,6 @@ export function useVoiceWake({
       }
     });
     mediaStreamRef.current = null;
-  }, []);
-
-  const teardownVolcWake = useCallback(
-    (opts: { abortSocket: boolean }) => {
-      volcActiveRef.current = false;
-      cleanupVolcIpc();
-      releaseVolcAudio();
-      if (opts.abortSocket) {
-        try {
-          void window.electron.volcAsrAbort();
-        } catch {
-          /* ignore */
-        }
-      }
-    },
-    [cleanupVolcIpc, releaseVolcAudio]
-  );
-
-  const pushVolcPcmInts = useCallback(async (pcm: Int16Array) => {
-    const pend = volcPendingPcmRef.current;
-    for (let i = 0; i < pcm.length; i++) pend.push(pcm[i] ?? 0);
-    if (pend.length > VOLC_MAX_PENDING_SAMPLES) {
-      pend.splice(0, pend.length - VOLC_MAX_PENDING_SAMPLES);
-    }
-    while (pend.length >= VOLC_CHUNK_SAMPLES) {
-      const chunk = pend.splice(0, VOLC_CHUNK_SAMPLES);
-      try {
-        await window.electron.volcAsrPushChunk(chunk);
-      } catch {
-        /* ignore */
-      }
-    }
   }, []);
 
   const tryWakeFromText = useCallback(
@@ -278,12 +200,7 @@ export function useVoiceWake({
       lastVolcFullRef.current = '';
       setLastWakeHeard('');
       void (async () => {
-        teardownVolcWake({ abortSocket: false });
-        try {
-          await window.electron.volcAsrAbort();
-        } catch {
-          /* ignore */
-        }
+        teardownVolcWake({ abortSocket: true });
         stopWebRef.current();
         setListening(false);
         setStarting(false);
@@ -319,11 +236,6 @@ export function useVoiceWake({
         lastVolcFullRef.current = '';
         void (async () => {
           teardownVolcWake({ abortSocket: true });
-          try {
-            await window.electron.volcAsrAbort();
-          } catch {
-            /* ignore */
-          }
           if (shouldRunRef.current) void startVolcWakeRef.current(wakeSessionRef.current);
         })();
       }
@@ -430,19 +342,27 @@ export function useVoiceWake({
 
   const startVolcWake = useCallback(
     async (sessionId: number) => {
-      if (isWakeStale(sessionId)) return;
+      const session = volcSessionRef.current;
+      if (!session || isWakeStale(sessionId)) return;
       if (volcActiveRef.current) teardownVolcWake({ abortSocket: true });
 
       const vcfg = getVolcCfgRef.current?.() ?? null;
       if (!vcfg || !volcCredsConfigured(vcfg) || !hasVolcAsrStack()) return;
       if (isWakeStale(sessionId)) return;
 
+      /** 每个异步步骤后统一调用：过期则全量拆除（含麦克风停轨），漏写即泄漏 */
+      const bailIfStale = (): boolean => {
+        if (!isWakeStale(sessionId)) return false;
+        teardownVolcWake({ abortSocket: true });
+        setStarting(false);
+        return true;
+      };
+
       setStarting(true);
       setWakeError(null);
       setLastWakeHeard('');
       lastVolcFullRef.current = '';
-      volcPendingPcmRef.current = [];
-      cleanupVolcIpc();
+      session.cleanupIpc();
 
       let stream: MediaStream;
       try {
@@ -452,18 +372,8 @@ export function useVoiceWake({
         setStarting(false);
         return;
       }
-      if (isWakeStale(sessionId)) {
-        stream.getTracks().forEach((t) => {
-          try {
-            t.stop();
-          } catch {
-            /* ignore */
-          }
-        });
-        setStarting(false);
-        return;
-      }
       mediaStreamRef.current = stream;
+      if (bailIfStale()) return;
 
       const hotwords = buildWakeHotwords(phraseRef.current);
       const startRes = await window.electron.volcAsrStart({
@@ -474,13 +384,9 @@ export function useVoiceWake({
         hotwords,
       });
 
-      if (isWakeStale(sessionId)) {
-        releaseVolcAudio();
-        setStarting(false);
-        return;
-      }
+      if (bailIfStale()) return;
       if (!startRes.ok) {
-        releaseVolcAudio();
+        session.releaseAudio();
         setStarting(false);
         setWakeError('volc-start-failed');
         return;
@@ -488,110 +394,47 @@ export function useVoiceWake({
 
       volcActiveRef.current = true;
 
-      const offTxt = window.electron.onMessage('volc-asr-text', (...args: unknown[]) => {
-        ingestVolcWakeTextRef.current(String(args[0] ?? ''));
-      });
-      const offErr = window.electron.onMessage('volc-asr-error', (...args: unknown[]) => {
-        const msg = String(args[0] ?? '').trim();
-        if (msg) setWakeError('volc-error');
-        if (volcActiveRef.current) {
-          teardownVolcWake({ abortSocket: true });
+      session.listenIpc({
+        onText: (text) => ingestVolcWakeTextRef.current(text),
+        onError: (rawMsg) => {
+          if (rawMsg.trim()) setWakeError('volc-error');
+          if (volcActiveRef.current) {
+            teardownVolcWake({ abortSocket: true });
+            setListening(false);
+            setStarting(false);
+          }
+        },
+        onEnded: () => {
+          if (!volcActiveRef.current) return;
+          const sid = wakeSessionRef.current;
+          teardownVolcWake({ abortSocket: false });
           setListening(false);
           setStarting(false);
-        }
+          if (shouldRunRef.current) {
+            window.setTimeout(() => {
+              if (shouldRunRef.current && !volcActiveRef.current) {
+                void startVolcWakeRef.current(sid);
+              }
+            }, RESTART_AFTER_ERROR_MS);
+          }
+        },
       });
-      const offEnd = window.electron.onMessage('volc-asr-ended', () => {
-        if (!volcActiveRef.current) return;
-        const sid = wakeSessionRef.current;
-        teardownVolcWake({ abortSocket: false });
-        setListening(false);
-        setStarting(false);
-        if (shouldRunRef.current) {
-          window.setTimeout(() => {
-            if (shouldRunRef.current && !volcActiveRef.current) {
-              void startVolcWakeRef.current(sid);
-            }
-          }, RESTART_AFTER_ERROR_MS);
-        }
-      });
-      volcIpcCleanupRef.current.push(offTxt, offErr, offEnd);
 
-      let audioCtx: AudioContext;
       try {
-        audioCtx = new AudioContext();
+        await session.buildAudioPipeline(stream, () => volcActiveRef.current);
       } catch {
         teardownVolcWake({ abortSocket: true });
         if (!isWakeStale(sessionId)) setWakeError('start-failed');
         setStarting(false);
         return;
       }
-      if (isWakeStale(sessionId)) {
-        teardownVolcWake({ abortSocket: true });
-        setStarting(false);
-        return;
-      }
-      audioCtxRef.current = audioCtx;
-      await audioCtx.resume().catch(() => {});
-
-      try {
-        await addVolcPcmTapWorklet(audioCtx);
-      } catch {
-        teardownVolcWake({ abortSocket: true });
-        if (!isWakeStale(sessionId)) setWakeError('start-failed');
-        setStarting(false);
-        return;
-      }
-      if (isWakeStale(sessionId)) {
-        teardownVolcWake({ abortSocket: true });
-        setStarting(false);
-        return;
-      }
-
-      let tap: AudioWorkletNode;
-      try {
-        tap = new AudioWorkletNode(audioCtx, VOLC_PCM_TAP_PROCESSOR, {
-          numberOfInputs: 1,
-          numberOfOutputs: 1,
-          channelCount: 1,
-          channelInterpretation: 'speakers',
-          channelCountMode: 'explicit',
-        });
-      } catch {
-        teardownVolcWake({ abortSocket: true });
-        if (!isWakeStale(sessionId)) setWakeError('start-failed');
-        setStarting(false);
-        return;
-      }
-      audioTapRef.current = tap;
-
-      tap.port.onmessage = (ev: MessageEvent<ArrayBuffer>) => {
-        if (!volcActiveRef.current) return;
-        const buf = ev.data;
-        if (!buf || !(buf instanceof ArrayBuffer) || buf.byteLength < 4) return;
-        const mono = new Float32Array(buf);
-        const pcm = float32MonoToPCM16Mono16k(mono, audioCtx.sampleRate);
-        if (pcm.length) void pushVolcPcmInts(pcm);
-      };
-
-      const source = audioCtx.createMediaStreamSource(stream);
-      audioSourceRef.current = source;
-      const silent = audioCtx.createGain();
-      silent.gain.value = 0;
-      source.connect(tap);
-      tap.connect(silent);
-      silent.connect(audioCtx.destination);
-
-      if (isWakeStale(sessionId)) {
-        teardownVolcWake({ abortSocket: true });
-        setStarting(false);
-        return;
-      }
+      if (bailIfStale()) return;
 
       setListening(true);
       setStarting(false);
       setWakeError(null);
     },
-    [cleanupVolcIpc, isWakeStale, pushVolcPcmInts, releaseVolcAudio, teardownVolcWake],
+    [isWakeStale, teardownVolcWake],
   );
 
   startVolcWakeRef.current = startVolcWake;

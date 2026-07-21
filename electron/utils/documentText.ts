@@ -48,7 +48,8 @@ export async function extractTextFromPath(filePath: string, originalName?: strin
     }
     const buf = await fs.readFile(filePath);
     const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(buf as any);
+    /** ExcelJS 类型定义只认其自带 Buffer 接口（结构同 ArrayBuffer）；切出真实 ArrayBuffer 传入 */
+    await wb.xlsx.load(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer);
     const parts: string[] = [];
     let sheetCount = 0;
     for (const sheet of wb.worksheets) {

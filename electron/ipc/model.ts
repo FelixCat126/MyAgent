@@ -23,6 +23,8 @@ import {
   canFallbackAnthropicToOpenAi,
   withOpenAiCompatibleFallbacks,
 } from './openai-chat-retry';
+import { DEFAULT_MAX_TOKENS } from '../constants/limits';
+import { GEMINI_HTTP_TIMEOUT_MS, MODEL_HTTP_TIMEOUT_MS } from '../constants/timeouts';
 
 /** Gemini 需单独处理 system；OpenAI 兼容接口一般可直接带 system 消息 */
 function splitSystemMessages(messages: Message[]): { systemText: string; convo: Message[] } {
@@ -53,7 +55,7 @@ async function callAnthropicMessages(opts: {
     resolveAnthropicMessagesUrl(apiUrl),
     {
       model: modelName,
-      max_tokens: Math.max(1, maxTokens || 4096),
+      max_tokens: Math.max(1, maxTokens || DEFAULT_MAX_TOKENS),
       ...thinking,
       messages: anthropicMessages,
       ...(system ? { system } : {}),
@@ -61,7 +63,7 @@ async function callAnthropicMessages(opts: {
     },
     {
       headers: buildAnthropicAuthHeaders({ apiKey, provider, apiUrl }),
-      timeout: 120000,
+      timeout: MODEL_HTTP_TIMEOUT_MS,
     }
   );
   return parseAnthropicContentBlocks(response.data);
@@ -219,7 +221,7 @@ ipcMain.handle(
           },
           {
             headers,
-            timeout: 120000,
+            timeout: MODEL_HTTP_TIMEOUT_MS,
           }
         );
 
@@ -250,16 +252,21 @@ ipcMain.handle(
       const { systemText, convo } = splitSystemMessages(messages);
 
       const formattedMessages = convo.map(msg => {
-        if (msg.files && msg.files.some(f => f.type.startsWith('image/'))) {
-          const imageFile = msg.files.find(f => f.type.startsWith('image/'));
+        const imageFile = msg.files?.find(f => f.type.startsWith('image/'));
+        /** preview 缺失或不含 base64 段时退化为纯文本，避免向 Gemini 发 inline_data.data=null */
+        const b64 =
+          imageFile?.preview && imageFile.preview.includes(',')
+            ? imageFile.preview.split(',')[1]
+            : '';
+        if (imageFile && b64) {
           return {
             role: msg.role === 'assistant' ? 'model' : 'user',
             parts: [
               { text: msg.content },
               {
                 inline_data: {
-                  mime_type: imageFile?.type || 'image/png',
-                  data: imageFile?.preview ? imageFile.preview.split(',')[1] : null
+                  mime_type: imageFile.type || 'image/png',
+                  data: b64
                 }
               }
             ]
@@ -294,7 +301,7 @@ ipcMain.handle(
         },
         {
           headers,
-          timeout: 60000,
+          timeout: GEMINI_HTTP_TIMEOUT_MS,
         }
       );
 
@@ -319,7 +326,7 @@ ipcMain.handle(
     }
 
     throw new Error(`Unsupported model provider: ${provider}`);
-  } catch (error: any) {
+  } catch (error: unknown) {
     /** 脱敏：只打印错误分类，避免完整 error 对象（含 URL/key/响应内容）泄漏 */
     const ax = error as { response?: { status?: number }; code?: string; message?: string };
     console.error('Model call error:', {
@@ -334,4 +341,4 @@ ipcMain.handle(
   }
 });
 
-console.log('✅ 模型调用 IPC 处理器已注册（支持智谱AI GLM-4）');
+console.log('✅ 模型调用 IPC 处理器已注册');

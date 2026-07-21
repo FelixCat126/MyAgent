@@ -104,12 +104,14 @@ const AgentBrowserPanel: React.FC = () => {
           </button>
         </div>
       ) : null}
-      {/* 固定 about:blank，导航一律走 loadURL，避免受控 src 与重定向互相打架 */}
+      {/* 固定 about:blank，导航一律走 loadURL，避免受控 src 与重定向互相打架；
+          显式声明隔离（webview 默认即禁 nodeIntegration，此处防御性明示） */}
       <webview
         ref={webviewRef}
         src="about:blank"
         className="min-h-0 flex-1 w-full"
         style={{ border: 'none' }}
+        webpreferences="contextIsolation=yes, nodeIntegration=no"
       />
     </div>
   );

@@ -6,14 +6,14 @@ import type { KnowledgeEmbedConfig } from './knowledge';
 
 // Electron API 类型定义
 export interface ElectronAPI {
-  sendMessage: (channel: string, data: any) => void;
+  sendMessage: (channel: string, data: unknown) => void;
   /** 返回取消订阅函数，避免热重载或重复注册 */
-  onMessage: (channel: string, func: (...args: any[]) => void) => () => void;
+  onMessage: (channel: string, func: (...args: unknown[]) => void) => () => void;
   callModel: (
     messages: Message[],
     config: ModelConfig,
     options?: { locale?: 'zh' | 'en'; temperature?: number }
-  ) => Promise<any>;
+  ) => Promise<{ content: string; reasoning?: string }>;
   /** OpenAI/兼容 与 Ollama：使用 subscribeModelStream 流式，须配合 closeModelStream 与事件监听 */
   subscribeModelStream: (
     messages: Message[],
@@ -58,7 +58,12 @@ export interface ElectronAPI {
   }>;
   getClipboardText: () => Promise<string>;
   setClipboardText: (t: string) => Promise<boolean>;
-  uploadFile: (fileData: any) => Promise<FileInfo & { preview?: string }>;
+  uploadFile: (fileData: {
+    name: string;
+    buffer: number[];
+    type: string;
+    size: number;
+  }) => Promise<FileInfo & { preview?: string }>;
   launchApp: (appName: string) => Promise<boolean>;
   getInstalledApps: () => Promise<string[]>;
   /** 返回 1 张或多张（如火山 sequential / 多 URL）；界面按顺序展示 */
@@ -67,13 +72,13 @@ export interface ElectronAPI {
     handlers?: {
       onImage?: (p: {
         requestId: string;
-        image: { url: string; path: string; width: number; height: number };
+        image: { url: string; path: string; width: number; height: number; size?: number };
         index: number;
         total: number;
       }) => void;
     }
   ) => Promise<
-    Array<{ url: string; path: string; width: number; height: number }>
+    Array<{ url: string; path: string; width: number; height: number; size?: number }>
   >;
   webSearch: (params: WebSearchRequest) => Promise<WebSearchResponse>;
   /** 从本地已上传路径提取文档正文（xlsx / docx / md / txt 等） */

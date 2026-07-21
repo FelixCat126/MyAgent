@@ -7,23 +7,35 @@
 
 import type { ModelConfig } from '../../../../src/types';
 
+/**
+ * adapter 模型名解析统一：结构化 config.model 优先 → envKeys 顺序探测 → fallback。
+ * envKeys 由各 adapter 显式给出（厂商间候选集不同：ollama 不含通用 key）。
+ */
+function resolveAdapterImageModel(opts: {
+  config: NonNullable<ModelConfig['imageGeneratorConfig']>;
+  env: Record<string, string> | undefined;
+  envKeys: string[];
+  fallback?: string;
+}): string {
+  const structured = typeof opts.config.model === 'string' ? opts.config.model.trim() : '';
+  if (structured) return structured;
+  for (const k of opts.envKeys) {
+    const v = typeof opts.env?.[k] === 'string' ? String(opts.env[k]).trim() : '';
+    if (v) return v;
+  }
+  return opts.fallback ?? '';
+}
+
 function resolveOpenAiCompatibleImageModel(
   config: NonNullable<ModelConfig['imageGeneratorConfig']>,
   env: Record<string, string> | undefined,
   volcArk: boolean
 ): string {
-  /** 结构化 config.model 优先（新）；其次 env 厂商候选 key（向后兼容） */
-  const structured = typeof config.model === 'string' ? config.model.trim() : '';
-  if (structured) return structured;
-
-  const modelEnv =
-    env?.REMOTE_IMAGE_MODEL ||
-    env?.IMAGE_MODEL ||
-    env?.ARK_IMAGE_MODEL ||
-    env?.DOUBAO_IMAGE_MODEL ||
-    '';
-  const model =
-    typeof modelEnv === 'string' ? modelEnv.trim() : String(modelEnv ?? '').trim();
+  const model = resolveAdapterImageModel({
+    config,
+    env,
+    envKeys: ['REMOTE_IMAGE_MODEL', 'IMAGE_MODEL', 'ARK_IMAGE_MODEL', 'DOUBAO_IMAGE_MODEL'],
+  });
   if (!model) {
     const example = volcArk ? 'doubao-seedream-4-5-251128' : 'gpt-image-1';
     throw new Error(
@@ -33,4 +45,4 @@ function resolveOpenAiCompatibleImageModel(
   return model;
 }
 
-export { resolveOpenAiCompatibleImageModel };
+export { resolveAdapterImageModel, resolveOpenAiCompatibleImageModel };

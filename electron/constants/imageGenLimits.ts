@@ -34,3 +34,16 @@ export const BASE64_MIN_LENGTH = 32;
 export const BINARY_MIN_LENGTH = 64;
 /** 兜底接收的最小二进长度 */
 export const FALLBACK_BINARY_MIN_LENGTH = 320;
+
+/**
+ * 各生图后端单次请求图片数上限（超出部分由 image-gen.ts 串行循环补齐）。
+ * 依据：百炼 wan2.6 文档单批 4；MiniMax image-01 n≤9；OpenAI Images n≤10；
+ * SD WebUI batch_size 经验上限 8；CLI 单命令重复执行上限 12（防脚本侧失控）。
+ */
+export const VENDOR_IMAGE_COUNT_LIMITS = {
+  bailianWanx: 4,
+  minimax: 9,
+  openAiImages: 10,
+  sdWebUi: 8,
+  cli: 12,
+} as const;

@@ -1,6 +1,6 @@
-import { pathToFileURL } from 'url';
 import type { Message } from '../types';
 import { attachmentImageDisplaySrc } from './attachmentDisplaySrc';
+import { localFileProtocolUrl } from './localFileUrl';
 
 /** 当前会话内可串联预览的附件图片（按消息时间顺序、每则消息内文件顺序） */
 export type ConversationImageGalleryItem = {
@@ -52,7 +52,7 @@ export function conversationGallerySlidesFromPaths(
   return absolutePaths.map((absolutePath, fileIndex) => ({
     messageId: '__library__',
     fileIndex,
-    src: pathToFileURL(absolutePath).href.replace(/^file:/i, 'local-file:'),
+    src: localFileProtocolUrl(absolutePath),
     localPath: absolutePath,
     defaultFileName: fileBasename(absolutePath),
   }));

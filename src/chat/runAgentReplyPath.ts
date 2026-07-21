@@ -1,19 +1,13 @@
 import type { Message, ModelConfig } from '../types';
 import { useChatStore } from '../store/chatStore';
-import { StreamingSpeechReader } from '../utils/streamingSpeech';
 import { runAgentLoop } from '@/agent/agentRunner';
 import { shouldEnterAgentReply } from '@/agent/shouldEnterAgentReply';
-import { extractGenerateImageCalls, stripGenerateImageArtifactsForDisplay } from '../utils/toolCalls';
-import { planImageIntent } from '../utils/imageIntentPlanner';
 import {
-  postProcessAssistantContent,
-  imageReferencePathsFromFiles,
-} from './imageGenAssist';
-import { makeImageGenHooks } from './makeImageGenHooks';
-import {
-  syncImgGenUi,
-  appendGeneratedImageToAssistant,
+  createAnimStream,
+  beginAssistantStream,
   mergeAssistantFiles,
+  runImagePostProcess,
+  speakVoiceWakeReplyOnce,
 } from './runModelReplyShared';
 import type { RunModelReplyUi } from './runModelReplyTypes';
 
@@ -38,7 +32,6 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
     userMessage,
     activeModel,
     chainForModel,
-    exportHint,
     isLocalImageFind,
     isWebBrowseTask,
   } = args;
@@ -46,62 +39,31 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
   if (
     !shouldEnterAgentReply({
       userText: userMessage.content,
-      exportDocument: Boolean(exportHint?.document),
+      exportDocument: Boolean(args.exportHint?.document),
     }).enter
   ) {
     return false;
   }
 
   const assistantId = `${Date.now() + 1}-a`;
-  ui.streamingAssistantIdRef.current = assistantId;
-  ui.streamingSessionIdRef.current = sendSessionId;
-  ui.setStreamingTargetAssistantId(assistantId);
-  ui.setIsStreaming(true);
-  ui.addMessage(sendSessionId, {
-    id: assistantId,
-    role: 'assistant',
-    content: '',
-    timestamp: Date.now(),
-    model: activeModel.name,
-  });
+  beginAssistantStream(ui, sendSessionId, { assistantId, modelName: activeModel.name });
 
-  let pendingReasoningDelta = '';
-  let reasoningFlushRaf = 0;
-  const drainAgentReasoning = (): void => {
-    if (reasoningFlushRaf !== 0) {
-      window.cancelAnimationFrame(reasoningFlushRaf);
-      reasoningFlushRaf = 0;
-    }
-    const merged = pendingReasoningDelta;
-    pendingReasoningDelta = '';
-    if (!merged) return;
-    ui.appendReasoningToMessage(sendSessionId, assistantId, merged);
-  };
-  const queueAgentReasoning = (th: string): void => {
-    if (!th) return;
-    pendingReasoningDelta += th;
-    if (reasoningFlushRaf !== 0) return;
-    reasoningFlushRaf = window.requestAnimationFrame(() => {
-      reasoningFlushRaf = 0;
-      drainAgentReasoning();
-    });
-  };
+  const reasoningStream = createAnimStream(sendSessionId, assistantId, ui.appendReasoningToMessage);
 
   try {
-    ui.streamCancelledByUserRef.current = false;
     const agentOut = await runAgentLoop({
       chatSessionId: sendSessionId,
       chainMessages: chainForModel,
       model: activeModel,
       userText: userMessage.content,
       locale: ui.locale,
-      onThinkingDelta: queueAgentReasoning,
+      onThinkingDelta: reasoningStream.push,
       shouldCancel: () => ui.streamCancelledByUserRef.current,
       onReplyContent: (text) => {
         ui.updateMessage(sendSessionId, assistantId, { content: text });
       },
     });
-    drainAgentReasoning();
+    reasoningStream.flush();
     if (agentOut.handled && agentOut.displayText !== undefined) {
       if (agentOut.reasoning) {
         const sess = useChatStore.getState().sessions.find((s) => s.id === sendSessionId);
@@ -111,33 +73,7 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
           ui.appendReasoningToMessage(sendSessionId, assistantId, agentOut.reasoning);
         }
       }
-      if (ui.consumeVoiceWakeReply()) {
-        ui.speechReaderRef.current?.cancel();
-        const reader = new StreamingSpeechReader(ui.locale, {
-          onSpeakingChange: ui.setVoiceReplySpeaking,
-        });
-        ui.speechReaderRef.current = reader;
-        void (async () => {
-          await reader.start();
-          const speakBody = stripGenerateImageArtifactsForDisplay(agentOut.displayText!).trim();
-          if (speakBody) {
-            reader.push(speakBody);
-            reader.finish();
-          }
-        })();
-      }
-      const imageHooks = makeImageGenHooks({
-        assistantId,
-        syncImgGenUi: (v) => syncImgGenUi(ui, sendSessionId, v),
-        imageGenCancelledRef: ui.imageGenCancelledRef,
-        onImage: (image) => appendGeneratedImageToAssistant(ui, sendSessionId, assistantId, image),
-      });
-      const plannedIntent = planImageIntent({
-        userText: userMessage.content,
-        historyBeforeUser,
-        assistantText: agentOut.displayText,
-        toolCallCount: extractGenerateImageCalls(agentOut.displayText).length,
-      });
+      speakVoiceWakeReplyOnce(ui, agentOut.displayText);
       if (isLocalImageFind || isWebBrowseTask) {
         ui.updateMessage(sendSessionId, assistantId, {
           content: agentOut.displayText ?? '',
@@ -145,19 +81,15 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
           imageGenProgress: undefined,
         });
       } else {
-        const { content: c, files } = await postProcessAssistantContent(
-          agentOut.displayText,
+        const { content: c, files } = await runImagePostProcess({
+          ui,
+          sendSessionId,
+          assistantId,
+          rawText: agentOut.displayText,
+          userMessage,
           activeModel,
-          ui.inlineImageIndexRef.current,
-          ui.setInlineImageIndex,
-          {
-            imageGenHooks: imageHooks,
-            referenceImages: imageReferencePathsFromFiles(userMessage.files),
-            userPromptContext: userMessage.content,
-            plannedIntent,
-            shouldCancel: () => ui.imageGenCancelledRef.current,
-          }
-        );
+          historyBeforeUser,
+        });
         ui.updateMessage(sendSessionId, assistantId, {
           content: c,
           files: mergeAssistantFiles(sendSessionId, assistantId, [
@@ -176,7 +108,7 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
     }
   } catch (agentErr) {
     console.error('[Agent]', agentErr);
-    drainAgentReasoning();
+    reasoningStream.flush();
     const cancelled =
       ui.streamCancelledByUserRef.current ||
       (agentErr instanceof Error &&

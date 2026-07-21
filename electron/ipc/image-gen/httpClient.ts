@@ -15,7 +15,13 @@ function nodeRawPostJsonBody(
   timeoutMs: number,
   extraHeaders?: Record<string, string>
 ): Promise<{ statusCode: number; headers: IncomingHttpHeaders; body: Buffer }> {
-  const u = new NodeURL(endpoint);
+  let u: NodeURL;
+  try {
+    u = new NodeURL(endpoint);
+  } catch (e) {
+    /** 非法 URL 统一走 Promise reject，保持「返回 Promise」的契约 */
+    return Promise.reject(e instanceof Error ? e : new Error(String(e)));
+  }
   const isHttps = u.protocol === 'https:';
   const lib = isHttps ? https : http;
   const port = u.port ? Number(u.port) : isHttps ? 443 : 80;

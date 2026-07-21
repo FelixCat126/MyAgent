@@ -45,6 +45,6 @@ export type HttpImageProviderAdapter = {
   }) => Promise<BuiltImageHttpRequest> | BuiltImageHttpRequest;
 };
 
-export type GeneratedImage = { url: string; path: string; width: number; height: number };
+export type GeneratedImage = { url: string; path: string; width: number; height: number; size?: number };
 export type ImageGeneratedCallback = (image: GeneratedImage, index: number, total: number) => void;
-export type CliGeneratedImage = { url: string; path: string; width: number; height: number };
+export type CliGeneratedImage = { url: string; path: string; width: number; height: number; size?: number };

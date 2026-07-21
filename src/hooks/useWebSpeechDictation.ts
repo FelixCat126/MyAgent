@@ -3,7 +3,7 @@
  * 实现见 ./useWebSpeechDictation/ 目录；外部导入路径保持不变。
  */
 export { useWebSpeechDictation } from './useWebSpeechDictation/index';
-export { hasVolcAsrStack, volcCredsConfigured } from './useWebSpeechDictation/stacks';
+export { getRecognitionCtor, hasVolcAsrStack, volcCredsConfigured } from './useWebSpeechDictation/stacks';
 export {
   addVolcPcmTapWorklet,
   VOLC_CHUNK_SAMPLES,

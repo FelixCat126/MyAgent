@@ -2,6 +2,7 @@ import type { FileInfo, Message, ModelConfig } from '../types';
 import { useChatStore } from '../store/chatStore';
 import { useWorkspaceStore } from '../store/workspaceStore';
 import { useKnowledgeStore } from '../store/knowledgeStore';
+import { newId } from '../utils/newId';
 import { FULL_TEXT_DOWNLOAD_BYPASS_REPLY } from './fullTextDownloadBypass';
 import { shouldBypassModelForFullTextDownload } from '../utils/documentExportIntent';
 import { ensureContextBeforeSend } from './ensureContextBeforeSend';
@@ -126,10 +127,7 @@ export async function commitUserMessageAndReply(opts: {
 
   const files = opts.files?.length ? opts.files : undefined;
   const userMessage: Message = {
-    id:
-      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-        ? crypto.randomUUID()
-        : Date.now().toString(),
+    id: newId(),
     role: 'user',
     content: opts.textContent,
     files,

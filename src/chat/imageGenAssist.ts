@@ -335,7 +335,7 @@ export async function postProcessAssistantContent(
     inferRequestedImageCount(g.prompt, g.count, opts?.userPromptContext) ?? 1
   );
   const expectedTotal = expectedCounts.reduce((sum, n) => sum + Math.max(1, n), 0);
-  const generatedFiles: Array<{ path: string; url: string; width: number; height: number }> = [];
+  const generatedFiles: Array<{ path: string; url: string; width: number; height: number; size?: number }> = [];
   if (toGenerate.length > 0) {
     hooks?.onBegin?.({ total: expectedTotal });
   }
@@ -413,18 +413,13 @@ export async function postProcessAssistantContent(
 
   let files: FileInfo[] | undefined;
   if (generatedFiles.length > 0) {
-    const fs = await import('fs');
-    const fileInfos: FileInfo[] = await Promise.all(
-      generatedFiles.map(async (f, i) => {
-        const fsStats = await fs.promises.stat(f.path);
-        return {
-          name: `generated_${imageIndexBase + i + 1}.png`,
-          path: f.path,
-          type: 'image/png',
-          size: fsStats.size,
-        };
-      })
-    );
+    /** 主进程写盘时已带回 size，渲染层无需再触 fs */
+    const fileInfos: FileInfo[] = generatedFiles.map((f, i) => ({
+      name: `generated_${imageIndexBase + i + 1}.png`,
+      path: f.path,
+      type: 'image/png',
+      size: f.size ?? 0,
+    }));
     setInlineImageIndex((prev) => prev + generatedFiles.length);
     files = fileInfos;
   }

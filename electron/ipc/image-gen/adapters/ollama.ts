@@ -1,5 +1,6 @@
 import { isUnsetImageProvider } from '../../../shared/imageProviderPresets';
 import { effectiveImageProvider } from '../auth';
+import { resolveAdapterImageModel } from './shared';
 import type { HttpImageProviderAdapter } from './types';
 
 const ollamaAdapter: HttpImageProviderAdapter = {
@@ -9,11 +10,12 @@ const ollamaAdapter: HttpImageProviderAdapter = {
     (isUnsetImageProvider(config.provider) && mode === 'ollama'),
   build({ endpoint, config, env, request }) {
     /** config.model 优先（新），其次 env（向后兼容） */
-    const model =
-      (typeof config.model === 'string' ? config.model.trim() : '') ||
-      env?.OLLAMA_MODEL ||
-      env?.ollama_model ||
-      'flux';
+    const model = resolveAdapterImageModel({
+      config,
+      env,
+      envKeys: ['OLLAMA_MODEL', 'ollama_model'],
+      fallback: 'flux',
+    });
     const body: Record<string, unknown> = {
       model,
       prompt: request.prompt,

@@ -184,9 +184,9 @@ function autoSearchSystemMessage(
     id: `agent-auto-search-${Date.now()}`,
     role: 'system',
     content:
-      (locale === 'en'
+      locale === 'en'
         ? `[System ran local_search]\nQuery: ${query}\n${body}\n\nAnswer the user from these hits. Do NOT ask for filenames or uploads.${candidateBlock}${emptyHint}`
-        : `【系统已自动执行 local_search】\n查询：${query}\n${body}\n\n请直接根据以上结果回答用户，禁止再要求提供文档名或上传文件。${candidateBlock}${emptyHint}`) + '',
+        : `【系统已自动执行 local_search】\n查询：${query}\n${body}\n\n请直接根据以上结果回答用户，禁止再要求提供文档名或上传文件。${candidateBlock}${emptyHint}`,
     timestamp: Date.now(),
     model: 'agent-auto-search',
   };
@@ -304,9 +304,9 @@ async function runAutoImageSearch(
       id: `agent-auto-image-${Date.now()}`,
       role: 'system',
       content:
-        (locale === 'en'
+        locale === 'en'
           ? `[System ran local_search image]\nQuery: ${query}\n${body}${hint}`
-          : `【系统已自动执行本机图片检索】\n关键词：${query}\n${body}${hint}`) + '',
+          : `【系统已自动执行本机图片检索】\n关键词：${query}\n${body}${hint}`,
       timestamp: Date.now(),
       model: 'agent-auto-image',
     },
@@ -549,17 +549,16 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
   }
 
   if (looksLikeLocalImageFindRequest(args.userText) && !looksLikeWebBrowseRequest(args.userText)) {
-    if (!localEnabled) {
-      /* 本机工具关闭时不做预取 */
-    } else {
-    const imgPrefetch = await runAutoImageSearch(args.userText, toolCtx, args.locale);
-    if (imgPrefetch) {
-      messages = [...messages, imgPrefetch.message];
-      collectedAttachFiles = imgPrefetch.files;
-      autoSearchDone = true;
-      autoSearchEmpty = imgPrefetch.empty;
-      autoSearchQuery = extractLocalSearchQuery(args.userText);
-    }
+    /* 本机工具关闭时不做预取 */
+    if (localEnabled) {
+      const imgPrefetch = await runAutoImageSearch(args.userText, toolCtx, args.locale);
+      if (imgPrefetch) {
+        messages = [...messages, imgPrefetch.message];
+        collectedAttachFiles = imgPrefetch.files;
+        autoSearchDone = true;
+        autoSearchEmpty = imgPrefetch.empty;
+        autoSearchQuery = extractLocalSearchQuery(args.userText);
+      }
     }
   } else if (!looksLikeWebBrowseRequest(args.userText) && localEnabled) {
     const prefetch = await runAutoSearch(args.userText, toolCtx, embed, args.locale);
@@ -668,7 +667,7 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
               '禁止评论。用户只要求"从文章里挑一句原文"，请只输出那一句原文，**不要**评价、建议、改进、总结、解释、加引号、加前缀。整条回答应是一句原文，不超过用户指定的字数。';
           } else if (drifted) {
             nudgeContent =
-              '回答偏离用户主题（勿续写会话里无关内容如地役权）。请对检索命中的文件 local_read，再摘录不超过 30 字的原文。';
+              '回答偏离用户主题，勿续写会话中的无关内容。请对检索命中的文件 local_read，再摘录不超过 30 字的原文。';
           } else {
             nudgeContent = '用户要求摘录，但你尚未 local_read 读文件。请先输出 local_read JSON 读取文件正文。';
           }
@@ -685,17 +684,14 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
       }
 
       if (
-        !isWebTask &&
-        autoSearchDone &&
-        autoSearchEmpty &&
-        !didReadSource &&
-        looksLikeLocalFileAgentRequest(args.userText)
+        (!isWebTask &&
+          autoSearchDone &&
+          autoSearchEmpty &&
+          !didReadSource &&
+          looksLikeLocalFileAgentRequest(args.userText)) ||
+        drifted ||
+        excerptWithoutRead
       ) {
-        displayText = buildEmptyLocalSearchFallbackDisplay(
-          autoSearchQuery || extractLocalSearchQuery(args.userText),
-          args.locale
-        );
-      } else if (drifted || excerptWithoutRead) {
         displayText = buildEmptyLocalSearchFallbackDisplay(
           autoSearchQuery || extractLocalSearchQuery(args.userText),
           args.locale

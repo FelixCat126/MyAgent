@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useParticleStore } from '../store/particleStore';
 import { OneEuroFilter } from '../utils/oneEuroFilter';
+import { createVisionFileset, toModelBuffer } from '../utils/mediapipeLoader';
 
 /**
  * 复用 useGestureControl 暴露的 <video> 元素跑 MediaPipe FaceLandmarker：
@@ -15,11 +16,6 @@ import { OneEuroFilter } from '../utils/oneEuroFilter';
  * - 模型字节流通过 IPC 获取，与 gesture_recognizer 同一通道范式；
  * - face_landmarker 输出 blendshapes 与 facialTransformationMatrixes，前者足以满足注视/眨眼。
  */
-export interface FaceTrackingStatus {
-  kind: 'idle' | 'loading-model' | 'ready' | 'model-missing' | 'error';
-  message?: string;
-}
-
 const TICK_INTERVAL_MS = 33;
 const BLINK_CLOSE_THRESHOLD = 0.55;
 const BLINK_OPEN_THRESHOLD = 0.35;
@@ -43,6 +39,15 @@ const BASELINE_ALPHA_SLOW = 0.0015;
 const BASELINE_FAST_DURATION_MS = 2000;
 /** raw gaze 强度放大；blendshape 单值很少超过 0.5，乘 2.4 后落到 ±1 区间 */
 const GAZE_SENSITIVITY = 2.4;
+/** 闭眼瞬间的注视冻结时长（与睁眼后的 GAZE_RECOVERY_AFTER_BLINK_MS 衔接） */
+const GAZE_HOLD_AFTER_BLINK_CLOSE_MS = 450;
+/** 无人脸时的输出衰减系数（blink 快速归零、gaze 缓慢回中） */
+const NO_FACE_BLINK_DECAY = 0.7;
+const NO_FACE_GAZE_DECAY = 0.85;
+/** OneEuroFilter 参数：minCutoff 越低越平滑，beta 控制速度响应 */
+const EURO_MIN_CUTOFF = 1.0;
+const EURO_BETA = 0.018;
+const EURO_DERIVATIVE_CUTOFF = 1.0;
 
 interface BlendshapeCategory {
   index: number;
@@ -132,8 +137,8 @@ export function useFaceTracking(
     let gazeHoldUntil = 0;
     /** 闭眼瞬间锁定的光标位置，供单眨点击使用 */
     let blinkClickPos: { x: number; y: number } | null = null;
-    const euroGx = new OneEuroFilter(1.0, 0.018, 1.0);
-    const euroGy = new OneEuroFilter(1.0, 0.018, 1.0);
+    const euroGx = new OneEuroFilter(EURO_MIN_CUTOFF, EURO_BETA, EURO_DERIVATIVE_CUTOFF);
+    const euroGy = new OneEuroFilter(EURO_MIN_CUTOFF, EURO_BETA, EURO_DERIVATIVE_CUTOFF);
     let euroPrimed = false;
 
     const cancelPendingSingle = () => {
@@ -163,28 +168,13 @@ export function useFaceTracking(
       st.setGazeScreenPos(null);
     };
 
-    const tick = () => {
-      if (isStale() || !landmarker || !video) return;
-      if (video.readyState < 2) return;
-      let res: FaceLandmarkerResult;
-      try {
-        res = landmarker.detectForVideo(video, performance.now());
-      } catch {
-        return;
-      }
-      const cats = res.faceBlendshapes?.[0]?.categories;
-      if (!cats || cats.length === 0) {
-        const st = useParticleStore.getState();
-        st.setBlinkAmount(st.blinkAmount * 0.7);
-        if (!blinkOnly) {
-          const g = st.gazeTarget;
-          st.setGazeTarget({ x: g.x * 0.85, y: g.y * 0.85 });
-          st.setGazeRaw(null);
-          euroPrimed = false;
-        }
-        return;
-      }
-
+    /** 注视管线：blendshape 四向强度 → 基线扣除 → Euro 滤波 → 写 store */
+    const updateGaze = (
+      cats: BlendshapeCategory[],
+      res: FaceLandmarkerResult,
+      blink: number,
+      now: number
+    ) => {
       const lookInL = findScore(cats, 'eyeLookInLeft');
       const lookOutL = findScore(cats, 'eyeLookOutLeft');
       const lookUpL = findScore(cats, 'eyeLookUpLeft');
@@ -205,53 +195,47 @@ export function useFaceTracking(
       const gxRaw = ((lookInL - lookOutL) + (lookOutR - lookInR)) / 2;
       const gyRaw = ((lookDownL - lookUpL) + (lookDownR - lookUpR)) / 2;
 
-      const now = performance.now();
-      if (firstDetectAt === 0) firstDetectAt = now;
-
-      const blinkL = findScore(cats, 'eyeBlinkLeft');
-      const blinkR = findScore(cats, 'eyeBlinkRight');
-      const blink = (blinkL + blinkR) / 2;
-
       const gazeOk = !blinkOnly && blink <= GAZE_UPDATE_MAX_BLINK && now >= gazeHoldUntil;
+      if (!gazeOk) return;
 
-      if (gazeOk) {
-        const alpha =
-          now - firstDetectAt < BASELINE_FAST_DURATION_MS ? BASELINE_ALPHA_FAST : BASELINE_ALPHA_SLOW;
-        gxBaseline += (gxRaw - gxBaseline) * alpha;
-        gyBaseline += (gyRaw - gyBaseline) * alpha;
+      const alpha =
+        now - firstDetectAt < BASELINE_FAST_DURATION_MS ? BASELINE_ALPHA_FAST : BASELINE_ALPHA_SLOW;
+      gxBaseline += (gxRaw - gxBaseline) * alpha;
+      gyBaseline += (gyRaw - gyBaseline) * alpha;
 
-        const gxAdj = gxRaw - gxBaseline;
-        const gyAdj = gyRaw - gyBaseline;
-        const gxRawNorm = Math.max(-1, Math.min(1, gxAdj * GAZE_SENSITIVITY));
-        const gyRawNorm = Math.max(-1, Math.min(1, gyAdj * GAZE_SENSITIVITY));
-        let gx: number;
-        let gy: number;
-        if (!euroPrimed) {
-          euroGx.reset(gxRawNorm, now);
-          euroGy.reset(gyRawNorm, now);
-          gx = gxRawNorm;
-          gy = gyRawNorm;
-          euroPrimed = true;
-        } else {
-          gx = euroGx.filter(gxRawNorm, now);
-          gy = euroGy.filter(gyRawNorm, now);
-        }
-
-        const headMat = res.facialTransformationMatrixes?.[0]?.data;
-        const { yaw, pitch } = headMat ? extractYawPitch(headMat) : { yaw: 0, pitch: 0 };
-
-        const st = useParticleStore.getState();
-        st.setGazeTarget({ x: gx, y: gy });
-        st.setGazeRaw({ gx, gy, yaw, pitch });
+      const gxAdj = gxRaw - gxBaseline;
+      const gyAdj = gyRaw - gyBaseline;
+      const gxRawNorm = Math.max(-1, Math.min(1, gxAdj * GAZE_SENSITIVITY));
+      const gyRawNorm = Math.max(-1, Math.min(1, gyAdj * GAZE_SENSITIVITY));
+      let gx: number;
+      let gy: number;
+      if (!euroPrimed) {
+        euroGx.reset(gxRawNorm, now);
+        euroGy.reset(gyRawNorm, now);
+        gx = gxRawNorm;
+        gy = gyRawNorm;
+        euroPrimed = true;
+      } else {
+        gx = euroGx.filter(gxRawNorm, now);
+        gy = euroGy.filter(gyRawNorm, now);
       }
 
+      const headMat = res.facialTransformationMatrixes?.[0]?.data;
+      const { yaw, pitch } = headMat ? extractYawPitch(headMat) : { yaw: 0, pitch: 0 };
+
+      const st = useParticleStore.getState();
+      st.setGazeTarget({ x: gx, y: gy });
+      st.setGazeRaw({ gx, gy, yaw, pitch });
+    };
+
+    /** 眨眼状态机：写 blinkAmount；双眨优先，单眨睁眼后短延迟确认（再闭眼取消） */
+    const updateBlink = (blink: number, now: number) => {
       const st = useParticleStore.getState();
       st.setBlinkAmount(blink);
 
-      // 眨眼：双眨优先；单眨在睁眼后短延迟确认（第二次开始闭眼会取消待触发的单击）
       if (blinkPhase === 'open' && blink >= BLINK_CLOSE_THRESHOLD) {
         blinkPhase = 'closing';
-        gazeHoldUntil = now + 450;
+        gazeHoldUntil = now + GAZE_HOLD_AFTER_BLINK_CLOSE_MS;
         /** 待确认的单击期间又闭眼 → 视为双眨序列，取消单击 */
         if (pendingSingleTimer != null) cancelPendingSingle();
         const snapSt = useParticleStore.getState();
@@ -306,24 +290,51 @@ export function useFaceTracking(
       }
     };
 
+    const tick = () => {
+      if (isStale() || !landmarker || !video) return;
+      if (video.readyState < 2) return;
+      let res: FaceLandmarkerResult;
+      try {
+        res = landmarker.detectForVideo(video, performance.now());
+      } catch {
+        return;
+      }
+      const cats = res.faceBlendshapes?.[0]?.categories;
+      if (!cats || cats.length === 0) {
+        const st = useParticleStore.getState();
+        st.setBlinkAmount(st.blinkAmount * NO_FACE_BLINK_DECAY);
+        if (!blinkOnly) {
+          const g = st.gazeTarget;
+          st.setGazeTarget({ x: g.x * NO_FACE_GAZE_DECAY, y: g.y * NO_FACE_GAZE_DECAY });
+          st.setGazeRaw(null);
+          euroPrimed = false;
+        }
+        return;
+      }
+
+      const now = performance.now();
+      if (firstDetectAt === 0) firstDetectAt = now;
+
+      const blinkL = findScore(cats, 'eyeBlinkLeft');
+      const blinkR = findScore(cats, 'eyeBlinkRight');
+      const blink = (blinkL + blinkR) / 2;
+
+      updateGaze(cats, res, blink, now);
+      updateBlink(blink, now);
+    };
+
     const start = async () => {
       if (typeof window === 'undefined' || !window.electron?.getFaceModelData) return;
       const modelInfo = await window.electron.getFaceModelData();
       if (isStale()) return;
-      if (!modelInfo.ok) return;
+      if (!modelInfo.ok) {
+        console.warn('[useFaceTracking] 面部模型加载失败，视线/眨眼功能不可用', modelInfo.error ?? '');
+        return;
+      }
 
-      const raw = modelInfo.data as unknown;
-      const modelBuffer: Uint8Array =
-        raw instanceof Uint8Array
-          ? raw
-          : raw && typeof raw === 'object' && 'buffer' in (raw as { buffer?: ArrayBuffer })
-            ? new Uint8Array((raw as { buffer: ArrayBuffer }).buffer)
-            : new Uint8Array(raw as ArrayBuffer);
+      const modelBuffer = toModelBuffer(modelInfo.data);
 
-      const wasmBaseUrl = new URL('./mediapipe-wasm/', window.location.href).href;
-      const visionMod = await import('@mediapipe/tasks-vision');
-      if (isStale()) return;
-      const fileset = await visionMod.FilesetResolver.forVisionTasks(wasmBaseUrl);
+      const { visionMod, fileset } = await createVisionFileset();
       if (isStale()) return;
       const fl = await visionMod.FaceLandmarker.createFromOptions(fileset, {
         baseOptions: { modelAssetBuffer: modelBuffer },

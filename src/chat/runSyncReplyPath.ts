@@ -1,22 +1,9 @@
 import type { Message, ModelConfig } from '../types';
-import { StreamingSpeechReader } from '../utils/streamingSpeech';
-import { extractGenerateImageCalls, stripGenerateImageArtifactsForDisplay } from '../utils/toolCalls';
-import { planImageIntent } from '../utils/imageIntentPlanner';
 import {
-  documentArtifactBaseName,
-  documentArtifactBaseNameFromContent,
-  documentExportFormatsFromHint,
-} from '../utils/documentExportIntent';
-import {
-  postProcessAssistantContent,
-  imageReferencePathsFromFiles,
-  createDocumentArtifactsFromMarkdown,
-} from './imageGenAssist';
-import { makeImageGenHooks } from './makeImageGenHooks';
-import {
-  syncImgGenUi,
-  appendGeneratedImageToAssistant,
+  fulfillDocumentArtifact,
   mergeAssistantFiles,
+  runImagePostProcess,
+  speakVoiceWakeReplyOnce,
 } from './runModelReplyShared';
 import type { RunModelReplyUi } from './runModelReplyTypes';
 
@@ -57,27 +44,16 @@ export async function runSyncReplyPath(args: RunSyncReplyPathArgs): Promise<void
     }
     const response = await window.electron.callModel(plainMessages, plainModel, { locale: ui.locale });
     const content0 = response.content || ui.t('chat.fallbackReply');
-    const reasoningIn =
-      typeof (response as { reasoning?: unknown }).reasoning === 'string'
-        ? String((response as { reasoning?: string }).reasoning).trim()
-        : '';
+    const reasoningIn = typeof response.reasoning === 'string' ? response.reasoning.trim() : '';
     if (exportHint?.document) {
-      const artifactBody = stripGenerateImageArtifactsForDisplay(content0).trim();
-      const artifactFiles = await createDocumentArtifactsFromMarkdown(
-        artifactBody,
-        documentExportFormatsFromHint(exportHint),
-        documentArtifactBaseNameFromContent(
-          artifactBody,
-          documentArtifactBaseName(userMessage.content)
-        )
-      );
-      ui.updateMessage(sendSessionId, documentArtifactAssistantId, {
-        content: artifactFiles.length
-          ? ui.t('chat.documentReady')
-          : ui.t('chat.documentWriteFailed'),
-        ...(reasoningIn ? { reasoning: reasoningIn } : {}),
+      await fulfillDocumentArtifact({
+        ui,
+        sendSessionId,
+        assistantId: documentArtifactAssistantId,
+        rawText: content0,
+        userText: userMessage.content,
         exportHint,
-        files: artifactFiles.length ? artifactFiles : undefined,
+        extraUpdate: reasoningIn ? { reasoning: reasoningIn } : undefined,
       });
       return;
     }
@@ -91,46 +67,16 @@ export async function runSyncReplyPath(args: RunSyncReplyPathArgs): Promise<void
       timestamp: Date.now(),
       model: activeModel.name,
     });
-    if (ui.consumeVoiceWakeReply()) {
-      ui.speechReaderRef.current?.cancel();
-      const reader = new StreamingSpeechReader(ui.locale, {
-        onSpeakingChange: ui.setVoiceReplySpeaking,
-      });
-      ui.speechReaderRef.current = reader;
-      void (async () => {
-        await reader.start();
-        const speakBody = stripGenerateImageArtifactsForDisplay(content0).trim();
-        if (speakBody) {
-          reader.push(speakBody);
-          reader.finish();
-        }
-      })();
-    }
-    const imageHooks = makeImageGenHooks({
+    speakVoiceWakeReplyOnce(ui, content0);
+    const { content: c, files } = await runImagePostProcess({
+      ui,
+      sendSessionId,
       assistantId,
-      syncImgGenUi: (v) => syncImgGenUi(ui, sendSessionId, v),
-      imageGenCancelledRef: ui.imageGenCancelledRef,
-      onImage: (image) => appendGeneratedImageToAssistant(ui, sendSessionId, assistantId, image),
-    });
-    const plannedIntent = planImageIntent({
-      userText: userMessage.content,
-      historyBeforeUser,
-      assistantText: content0,
-      toolCallCount: extractGenerateImageCalls(content0).length,
-    });
-    const { content: c, files } = await postProcessAssistantContent(
-      content0,
+      rawText: content0,
+      userMessage,
       activeModel,
-      ui.inlineImageIndexRef.current,
-      ui.setInlineImageIndex,
-      {
-        imageGenHooks: imageHooks,
-        referenceImages: imageReferencePathsFromFiles(userMessage.files),
-        userPromptContext: userMessage.content,
-        plannedIntent,
-        shouldCancel: () => ui.imageGenCancelledRef.current,
-      }
-    );
+      historyBeforeUser,
+    });
     ui.updateMessage(sendSessionId, assistantId, {
       content: c,
       ...(reasoningIn ? { reasoning: reasoningIn } : {}),

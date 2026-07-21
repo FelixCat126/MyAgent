@@ -86,6 +86,32 @@ async function invokeBridge(runner: string): Promise<unknown> {
   })()`);
 }
 
+/** 把 payload 安全内联进桥接脚本：双层 JSON 转义只此一处，避免少一层即成注入 */
+function inlineBridgeArg(value: unknown): string {
+  return `JSON.parse(${JSON.stringify(JSON.stringify(value))})`;
+}
+
+/** JSON body 读取样板：collectBody + parse；返回 null 时已回 400 */
+async function readJsonBody(
+  req: IncomingMessage,
+  res: http.ServerResponse
+): Promise<Record<string, unknown> | null> {
+  const raw = await collectBody(req, BODY_JSON_CAP);
+  try {
+    return JSON.parse(raw.toString('utf-8')) as Record<string, unknown>;
+  } catch {
+    sendJson(res, 400, { error: 'Invalid JSON' });
+    return null;
+  }
+}
+
+/** 远端入参 id 归一化：string→trim，number→String，其余为空 */
+function coerceId(v: unknown): string {
+  if (typeof v === 'string') return v.trim();
+  if (typeof v === 'number') return String(v);
+  return '';
+}
+
 async function handleRequest(req: IncomingMessage, res: http.ServerResponse): Promise<void> {
   try {
     const url = new URL(req.url ?? '/', 'http://0.0.0.0');
@@ -183,7 +209,7 @@ async function handleRequest(req: IncomingMessage, res: http.ServerResponse): Pr
     const publicShellGet = publicRemoteGatewayGet(method, pathNorm);
 
     const token = activeConfig.token;
-    if (!publicShellGet && !authorize(req, url, token)) {
+    if (!publicShellGet && !authorize(req, token)) {
       sendJson(res, 401, { error: 'Unauthorized' });
       return;
     }
@@ -276,27 +302,16 @@ async function handleRequest(req: IncomingMessage, res: http.ServerResponse): Pr
     }
 
     if (method === 'POST' && pathNorm === '/remote/api/model/active') {
-      const raw = await collectBody(req, BODY_JSON_CAP);
-      let body: Record<string, unknown>;
-      try {
-        body = JSON.parse(raw.toString('utf-8'));
-      } catch {
-        sendJson(res, 400, { error: 'Invalid JSON' });
-        return;
-      }
-      const modelId =
-        typeof body.modelId === 'string'
-          ? body.modelId.trim()
-          : typeof body.modelId === 'number'
-            ? String(body.modelId)
-            : '';
+      const body = await readJsonBody(req, res);
+      if (!body) return;
+      const modelId = coerceId(body.modelId);
       if (!modelId) {
         sendJson(res, 400, { error: 'modelId required' });
         return;
       }
       await invokeBridge(`async () => {
         const bridge = window.__MYAGENT_REMOTE_BRIDGE__;
-        const id = JSON.parse(${JSON.stringify(JSON.stringify(modelId))});
+        const id = ${inlineBridgeArg(modelId)};
         await bridge.setActiveModelId(id);
       }`);
       sendJson(res, 200, { ok: true });
@@ -339,20 +354,9 @@ async function handleRequest(req: IncomingMessage, res: http.ServerResponse): Pr
     }
 
     if (method === 'POST' && pathNorm === '/remote/api/messages/remove') {
-      const raw = await collectBody(req, BODY_JSON_CAP);
-      let body: Record<string, unknown>;
-      try {
-        body = JSON.parse(raw.toString('utf-8'));
-      } catch {
-        sendJson(res, 400, { error: 'Invalid JSON' });
-        return;
-      }
-      const sessionId =
-        typeof body.sessionId === 'string'
-          ? body.sessionId.trim()
-          : typeof body.sessionId === 'number'
-            ? String(body.sessionId)
-            : '';
+      const body = await readJsonBody(req, res);
+      if (!body) return;
+      const sessionId = coerceId(body.sessionId);
       const idsRaw = body.messageIds;
       const messageIds = Array.isArray(idsRaw)
         ? idsRaw
@@ -365,7 +369,7 @@ async function handleRequest(req: IncomingMessage, res: http.ServerResponse): Pr
       }
       await invokeBridge(`async () => {
           const bridge = window.__MYAGENT_REMOTE_BRIDGE__;
-          const payload = JSON.parse(${JSON.stringify(JSON.stringify({ sessionId: sessionId as string, messageIds }))});
+          const payload = ${inlineBridgeArg({ sessionId: sessionId as string, messageIds })};
           await bridge.removeChatMessagesRemote(payload);
         }`);
       sendJson(res, 200, { ok: true });
@@ -373,26 +377,10 @@ async function handleRequest(req: IncomingMessage, res: http.ServerResponse): Pr
     }
 
     if (method === 'POST' && pathNorm === '/remote/api/messages/patch') {
-      const raw = await collectBody(req, BODY_JSON_CAP);
-      let body: Record<string, unknown>;
-      try {
-        body = JSON.parse(raw.toString('utf-8'));
-      } catch {
-        sendJson(res, 400, { error: 'Invalid JSON' });
-        return;
-      }
-      const sessionId =
-        typeof body.sessionId === 'string'
-          ? body.sessionId.trim()
-          : typeof body.sessionId === 'number'
-            ? String(body.sessionId)
-            : '';
-      const messageId =
-        typeof body.messageId === 'string'
-          ? body.messageId.trim()
-          : typeof body.messageId === 'number'
-            ? String(body.messageId)
-            : '';
+      const body = await readJsonBody(req, res);
+      if (!body) return;
+      const sessionId = coerceId(body.sessionId);
+      const messageId = coerceId(body.messageId);
       const content = typeof body.content === 'string' ? body.content : '';
       if (!sessionId || !messageId) {
         sendJson(res, 400, { error: 'sessionId and messageId required' });
@@ -400,7 +388,7 @@ async function handleRequest(req: IncomingMessage, res: http.ServerResponse): Pr
       }
       await invokeBridge(`async () => {
           const bridge = window.__MYAGENT_REMOTE_BRIDGE__;
-          const payload = JSON.parse(${JSON.stringify(JSON.stringify({ sessionId, messageId, content }))});
+          const payload = ${inlineBridgeArg({ sessionId, messageId, content })};
           await bridge.patchChatMessageRemote(payload);
         }`);
       sendJson(res, 200, { ok: true });
@@ -408,26 +396,10 @@ async function handleRequest(req: IncomingMessage, res: http.ServerResponse): Pr
     }
 
     if (method === 'POST' && pathNorm === '/remote/api/messages/resubmit') {
-      const raw = await collectBody(req, BODY_JSON_CAP);
-      let body: Record<string, unknown>;
-      try {
-        body = JSON.parse(raw.toString('utf-8'));
-      } catch {
-        sendJson(res, 400, { error: 'Invalid JSON' });
-        return;
-      }
-      const sessionId =
-        typeof body.sessionId === 'string'
-          ? body.sessionId.trim()
-          : typeof body.sessionId === 'number'
-            ? String(body.sessionId)
-            : '';
-      const messageId =
-        typeof body.messageId === 'string'
-          ? body.messageId.trim()
-          : typeof body.messageId === 'number'
-            ? String(body.messageId)
-            : '';
+      const body = await readJsonBody(req, res);
+      if (!body) return;
+      const sessionId = coerceId(body.sessionId);
+      const messageId = coerceId(body.messageId);
       const content = typeof body.content === 'string' ? body.content : '';
       if (!sessionId || !messageId) {
         sendJson(res, 400, { error: 'sessionId and messageId required' });
@@ -435,7 +407,7 @@ async function handleRequest(req: IncomingMessage, res: http.ServerResponse): Pr
       }
       await invokeBridge(`async () => {
           const bridge = window.__MYAGENT_REMOTE_BRIDGE__;
-          const payload = JSON.parse(${JSON.stringify(JSON.stringify({ sessionId, messageId, content }))});
+          const payload = ${inlineBridgeArg({ sessionId, messageId, content })};
           await bridge.resubmitEditedUserMessageRemote(payload);
         }`);
       sendJson(res, 200, { ok: true });
@@ -443,14 +415,8 @@ async function handleRequest(req: IncomingMessage, res: http.ServerResponse): Pr
     }
 
     if (method === 'POST' && pathNorm === '/remote/api/media-library/delete') {
-      const raw = await collectBody(req, BODY_JSON_CAP);
-      let body: Record<string, unknown>;
-      try {
-        body = JSON.parse(raw.toString('utf-8'));
-      } catch {
-        sendJson(res, 400, { error: 'Invalid JSON' });
-        return;
-      }
+      const body = await readJsonBody(req, res);
+      if (!body) return;
       const p =
         typeof body.path === 'string'
           ? body.path.trim()
@@ -471,27 +437,16 @@ async function handleRequest(req: IncomingMessage, res: http.ServerResponse): Pr
     }
 
     if (method === 'POST' && pathNorm === '/remote/api/session/active') {
-      const raw = await collectBody(req, BODY_JSON_CAP);
-      let body: Record<string, unknown>;
-      try {
-        body = JSON.parse(raw.toString('utf-8'));
-      } catch {
-        sendJson(res, 400, { error: 'Invalid JSON' });
-        return;
-      }
-      const sessionId =
-        typeof body.sessionId === 'string'
-          ? body.sessionId.trim()
-          : typeof body.sessionId === 'number'
-            ? String(body.sessionId)
-            : '';
+      const body = await readJsonBody(req, res);
+      if (!body) return;
+      const sessionId = coerceId(body.sessionId);
       if (!sessionId) {
         sendJson(res, 400, { error: 'sessionId required' });
         return;
       }
       await invokeBridge(`async () => {
         const bridge = window.__MYAGENT_REMOTE_BRIDGE__;
-        const sid = JSON.parse(${JSON.stringify(JSON.stringify(sessionId))});
+        const sid = ${inlineBridgeArg(sessionId)};
         await bridge.switchToSession(sid);
       }`);
       sendJson(res, 200, { ok: true });
@@ -510,22 +465,15 @@ async function handleRequest(req: IncomingMessage, res: http.ServerResponse): Pr
     }
 
     if (method === 'POST' && pathNorm === '/remote/api/chat') {
-      const raw = await collectBody(req, BODY_JSON_CAP);
-      let body: Record<string, unknown>;
-      try {
-        body = JSON.parse(raw.toString('utf-8'));
-      } catch {
-        sendJson(res, 400, { error: 'Invalid JSON' });
-        return;
-      }
-      const sessionId =
-        typeof body.sessionId === 'string' ? body.sessionId.trim() : typeof body.sessionId === 'number' ? String(body.sessionId) : '';
+      const body = await readJsonBody(req, res);
+      if (!body) return;
+      const sessionId = coerceId(body.sessionId);
       const content = typeof body.content === 'string' ? body.content : '';
       const attachments = Array.isArray(body.attachments) ? body.attachments : [];
       /** 异步执行：即刻返回；桌面端沿用流式 SSE，远端通过轮询 /state 拉取增量内容 */
       await invokeBridge(`async () => {
         const bridge = window.__MYAGENT_REMOTE_BRIDGE__;
-        const payload = JSON.parse(${JSON.stringify(JSON.stringify({ sessionId, content, attachments }))});
+        const payload = ${inlineBridgeArg({ sessionId, content, attachments })};
         void bridge.sendChat(payload).catch(function (err) {
           console.warn('[remote-gateway] sendChat failed', err);
         });
@@ -605,7 +553,8 @@ async function handleRequest(req: IncomingMessage, res: http.ServerResponse): Pr
       return;
     }
     console.warn('[remote-gateway]', msg);
-    sendJson(res, 500, { error: msg || 'internal' });
+    /** 对外不回传内部错误明细（可能含文件路径等），仅写本地日志 */
+    sendJson(res, 500, { error: 'internal' });
   }
 }
 
@@ -635,10 +584,11 @@ export async function applyRemoteGatewayListening(cfg: RemoteGatewayFileConfig):
     });
 
     await new Promise<void>((resolve, reject) => {
-      if (!inst) return reject(new Error('no server'));
-      inst.once('error', reject);
-      inst.listen(cfg.port, '0.0.0.0', () => {
-        inst!.off('error', reject);
+      const s = inst;
+      if (!s) return reject(new Error('no server'));
+      s.once('error', reject);
+      s.listen(cfg.port, '0.0.0.0', () => {
+        s.off('error', reject);
         server = inst;
         lastListenError = null;
         console.log(`[RemoteGateway] listening 0.0.0.0:${cfg.port}`);

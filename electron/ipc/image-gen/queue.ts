@@ -19,6 +19,16 @@ export function enqueueSerializedImageGeneration<T>(job: () => Promise<T>): Prom
   return run;
 }
 
+/** env 毫秒配置统一解析：读 env → parseInt → isFinite → clamp(min, max)；非法/缺省回 fallback */
+function envDurationMs(name: string, min: number, max: number, fallback: number): number {
+  const raw = process.env[name];
+  if (raw !== undefined && String(raw).trim() !== '') {
+    const n = parseInt(String(raw).trim(), 10);
+    if (Number.isFinite(n)) return Math.min(Math.max(n, min), max);
+  }
+  return fallback;
+}
+
 /**
  * 本机 diffusers + `enable_model_cpu_offload` 等路径下，实测 512² / 4 步可超 10 分钟；
  * 默认 15 分钟；更大分辨率或首包下载请用环境变量调大。
@@ -26,15 +36,12 @@ export function enqueueSerializedImageGeneration<T>(job: () => Promise<T>): Prom
  * @see MYAGENT_IMAGE_GEN_FALLBACK_MS（Node 兜底 POST 单独限时，默认 min(主超时,3min)）
  */
 export function resolveImageGenTimeoutMs(): number {
-  const raw = process.env.MYAGENT_IMAGE_GEN_TIMEOUT_MS;
-  if (raw !== undefined && String(raw).trim() !== '') {
-    const n = parseInt(String(raw).trim(), 10);
-    if (Number.isFinite(n)) {
-      const clamped = Math.min(Math.max(n, IMAGE_GEN_MIN_TIMEOUT_MS), IMAGE_GEN_MAX_TIMEOUT_MS);
-      return clamped;
-    }
-  }
-  return IMAGE_GEN_DEFAULT_TIMEOUT_MS;
+  return envDurationMs(
+    'MYAGENT_IMAGE_GEN_TIMEOUT_MS',
+    IMAGE_GEN_MIN_TIMEOUT_MS,
+    IMAGE_GEN_MAX_TIMEOUT_MS,
+    IMAGE_GEN_DEFAULT_TIMEOUT_MS
+  );
 }
 
 export const IMAGE_GEN_TIMEOUT_MS = resolveImageGenTimeoutMs();
@@ -44,25 +51,23 @@ export const IMAGE_GEN_TIMEOUT_MS = resolveImageGenTimeoutMs();
  * @see MYAGENT_IMAGE_GEN_FALLBACK_MS（毫秒，不小于 30s、不超过主超时）
  */
 export function resolveImageGenFallbackMs(mainMs: number): number {
-  const raw = process.env.MYAGENT_IMAGE_GEN_FALLBACK_MS;
-  if (raw !== undefined && String(raw).trim() !== '') {
-    const n = parseInt(String(raw).trim(), 10);
-    if (Number.isFinite(n)) {
-      return Math.min(Math.max(n, IMAGE_GEN_FALLBACK_MIN_MS), mainMs);
-    }
-  }
-  return Math.min(mainMs, IMAGE_GEN_FALLBACK_DEFAULT_MS);
+  return envDurationMs(
+    'MYAGENT_IMAGE_GEN_FALLBACK_MS',
+    IMAGE_GEN_FALLBACK_MIN_MS,
+    mainMs,
+    Math.min(mainMs, IMAGE_GEN_FALLBACK_DEFAULT_MS)
+  );
 }
 
 export const IMAGE_GEN_FALLBACK_MS = resolveImageGenFallbackMs(IMAGE_GEN_TIMEOUT_MS);
 
 export function resolveOllamaEmptyProbeMs(): number {
-  const raw = process.env.MYAGENT_OLLAMA_EMPTY_PROBE_MS;
-  if (raw !== undefined && String(raw).trim() !== '') {
-    const n = parseInt(String(raw).trim(), 10);
-    if (Number.isFinite(n)) return Math.min(Math.max(n, 5_000), IMAGE_GEN_TIMEOUT_MS);
-  }
-  return Math.min(IMAGE_GEN_TIMEOUT_MS, OLLAMA_EMPTY_PROBE_DEFAULT_MS);
+  return envDurationMs(
+    'MYAGENT_OLLAMA_EMPTY_PROBE_MS',
+    5_000,
+    IMAGE_GEN_TIMEOUT_MS,
+    Math.min(IMAGE_GEN_TIMEOUT_MS, OLLAMA_EMPTY_PROBE_DEFAULT_MS)
+  );
 }
 
 export const OLLAMA_EMPTY_PROBE_MS = resolveOllamaEmptyProbeMs();

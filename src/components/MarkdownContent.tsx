@@ -40,7 +40,7 @@ function FencedCodeBlock(props: {
   const [copied, setCopied] = useState(false);
   const lang = /\blanguage-([^\s]+)\b/i.exec(String(props.className || ''))?.[1] ?? '';
   return (
-    <div className="group/code relative my-2 overflow-hidden rounded-lg border border-stone-300/65 bg-[#faf8f5] shadow-sm dark:border-slate-600/60 dark:bg-slate-900/95">
+    <div className="group/code relative my-2 overflow-hidden rounded-lg border border-stone-300/65 bg-codeLight shadow-sm dark:border-slate-600/60 dark:bg-slate-900/95">
       <div className="flex items-center justify-between gap-2 border-b border-stone-300/55 bg-stone-200/85 px-2 py-1 text-[11px] text-stone-600 dark:border-slate-600/50 dark:bg-slate-800/90 dark:text-slate-400">
         <span className="font-mono tabular-nums opacity-85">{lang || 'text'}</span>
         <button

@@ -70,7 +70,7 @@ const SettingsPanel: React.FC = () => {
     'mx-3 rounded-xl border border-stone-300/45 bg-white/88 shadow-sm dark:border-white/10 dark:bg-slate-900/55 dark:shadow-none';
 
   return (
-    <div className="flex h-full flex-col bg-stone-100/95 backdrop-blur-xl dark:bg-[#0B1120]/80">
+    <div className="flex h-full flex-col bg-stone-100/95 backdrop-blur-xl dark:bg-darkChrome/80">
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-2.5 scrollbar-hide" data-gesture-scroll-target="settings">
         {/* 模型配置：独立卡片 */}
         <ModelsSection cardShell={cardShell} t={t} />

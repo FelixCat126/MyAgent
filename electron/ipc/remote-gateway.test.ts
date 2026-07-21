@@ -113,31 +113,21 @@ describe('mimeForPath / pickRemoteStandaloneAsset / publicRemoteGatewayGet', () 
 
 describe('authorize（鉴权）', () => {
   it('Authorization: Bearer <token> 通过', () => {
-    const ok = authorize(
-      fakeReq({ authorization: 'Bearer abc123' }),
-      new URL('http://x/remote/api/state'),
-      'abc123'
-    );
+    const ok = authorize(fakeReq({ authorization: 'Bearer abc123' }), 'abc123');
     expect(ok).toBe(true);
   });
 
   it('?t=<token> 不再被接受（已移除 query token 鉴权）', () => {
-    const ok = authorize(
-      fakeReq({}),
-      new URL('http://x/remote/api/state?t=tk'),
-      'tk'
-    );
+    const ok = authorize(fakeReq({}), 'tk');
     expect(ok).toBe(false);
   });
 
   it('token 不匹配返回 false', () => {
-    expect(
-      authorize(
-        fakeReq({ authorization: 'Bearer wrong' }),
-        new URL('http://x/remote/api/state'),
-        'abc123'
-      )
-    ).toBe(false);
+    expect(authorize(fakeReq({ authorization: 'Bearer wrong' }), 'abc123')).toBe(false);
+  });
+
+  it('长度不同的 Bearer 直接拒绝（timingSafeEqual 前置长度检查）', () => {
+    expect(authorize(fakeReq({ authorization: 'Bearer a' }), 'abc123')).toBe(false);
   });
 });
 

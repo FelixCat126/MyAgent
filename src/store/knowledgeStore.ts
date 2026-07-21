@@ -31,16 +31,22 @@ interface KnowledgeStore {
   getEmbedConfigForIpc: () => KnowledgeEmbedConfig | null;
 }
 
+/** 嵌入服务默认值表（'off' 与未知值回落 openai，与原行为一致） */
+const PROVIDER_DEFAULTS: Record<Exclude<EmbeddingProviderKey, 'off'>, { url: string; model: string }> = {
+  ollama: { url: DEFAULT_OLLAMA_URL, model: 'nomic-embed-text' },
+  openai: { url: DEFAULT_OPENAI_URL, model: 'text-embedding-3-small' },
+};
+
+function defaultsForProvider(p: EmbeddingProviderKey): { url: string; model: string } {
+  return p === 'ollama' ? PROVIDER_DEFAULTS.ollama : PROVIDER_DEFAULTS.openai;
+}
+
 function defaultUrlForProvider(p: EmbeddingProviderKey): string {
-  if (p === 'ollama') return DEFAULT_OLLAMA_URL;
-  if (p === 'openai') return DEFAULT_OPENAI_URL;
-  return DEFAULT_OPENAI_URL;
+  return defaultsForProvider(p).url;
 }
 
 function defaultModelForProvider(p: EmbeddingProviderKey): string {
-  if (p === 'ollama') return 'nomic-embed-text';
-  if (p === 'openai') return 'text-embedding-3-small';
-  return 'text-embedding-3-small';
+  return defaultsForProvider(p).model;
 }
 
 export const useKnowledgeStore = create<KnowledgeStore>()(

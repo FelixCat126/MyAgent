@@ -30,8 +30,8 @@ class AppLauncher {
       await execAsync(command);
       console.log(`已启动应用: ${appName}`);
       return true;
-    } catch (error: any) {
-      console.error(`启动应用失败: ${appName}`, error.message);
+    } catch (error: unknown) {
+      console.error(`启动应用失败: ${appName}`, error instanceof Error ? error.message : String(error));
       return false;
     }
   }

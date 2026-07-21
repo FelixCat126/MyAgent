@@ -27,15 +27,15 @@ function cloneForIpc(v) {
 })();
 
 window.electron = {
-  sendMessage: (channel, data) =>
-    ipcRenderer.send(channel, data == null ? null : cloneForIpc(data)),
+  /** 注：invoke/send 已在上方 patch 中统一 cloneForIpc，各方法无需再克隆 */
+  sendMessage: (channel, data) => ipcRenderer.send(channel, data),
   onMessage: (channel, func) => {
     const handler = (_event, ...args) => func(...args);
     ipcRenderer.on(channel, handler);
     return () => ipcRenderer.removeListener(channel, handler);
   },
   callModel: (messages, config, options) =>
-    ipcRenderer.invoke('call-model', cloneForIpc(messages), cloneForIpc(config), cloneForIpc(options ?? null)),
+    ipcRenderer.invoke('call-model', messages, config, options ?? null),
   subscribeModelStream: (messages, config, handlers) => {
     const d = (_e, t) => handlers.onDelta(t);
     const think = (_e, t) => {
@@ -59,30 +59,17 @@ window.electron = {
     ipcRenderer.on('model-stream-thinking-delta', think);
     ipcRenderer.on('model-stream-error', err);
     ipcRenderer.on('model-stream-end', end);
-    ipcRenderer.send(
-      'model-stream-start',
-      cloneForIpc({
-        messages,
-        config,
-        locale: handlers.locale || 'zh',
-        ...(typeof handlers.temperature === 'number' ? { temperature: handlers.temperature } : {}),
-      })
-    );
+    ipcRenderer.send('model-stream-start', {
+      messages,
+      config,
+      locale: handlers.locale || 'zh',
+      ...(typeof handlers.temperature === 'number' ? { temperature: handlers.temperature } : {}),
+    });
     return () => {
       ipcRenderer.send('model-stream-abort');
     };
   },
   closeModelStream: () => ipcRenderer.send('model-stream-abort'),
-  saveTextFile: (arg) => ipcRenderer.invoke('save-text-file', cloneForIpc(arg)),
-  saveLocalFileCopy: (arg) => ipcRenderer.invoke('save-local-file-copy', cloneForIpc(arg)),
-  importTextFile: () => ipcRenderer.invoke('import-text-file'),
-  readTextFileAbsolute: (p) => ipcRenderer.invoke('read-text-file-absolute', cloneForIpc(p)),
-  readWorkspaceHint: (arg) => ipcRenderer.invoke('read-workspace-hint', cloneForIpc(arg)),
-  getClipboardText: () => ipcRenderer.invoke('get-clipboard-text'),
-  setClipboardText: (t) => ipcRenderer.invoke('set-clipboard-text', cloneForIpc(t)),
-  uploadFile: (fileData) => ipcRenderer.invoke('upload-file', cloneForIpc(fileData)),
-  launchApp: (appName) => ipcRenderer.invoke('launch-app', cloneForIpc(appName)),
-  getInstalledApps: () => ipcRenderer.invoke('get-installed-apps'),
   generateImage: (params, handlers) => {
     const requestId =
       (params && typeof params.streamRequestId === 'string' && params.streamRequestId) ||
@@ -96,30 +83,16 @@ window.electron = {
       };
       ipcRenderer.on('image-generation-image', imageHandler);
     }
-    return ipcRenderer.invoke('generate-image', cloneForIpc(payload)).finally(() => {
+    return ipcRenderer.invoke('generate-image', payload).finally(() => {
       if (imageHandler) ipcRenderer.removeListener('image-generation-image', imageHandler);
     });
   },
-  webSearch: (params) => ipcRenderer.invoke('web-search', cloneForIpc(params)),
-  extractDocumentText: (arg) => ipcRenderer.invoke('extract-document-text', cloneForIpc(arg)),
-  saveAssistantExport: (arg) => ipcRenderer.invoke('save-assistant-export', cloneForIpc(arg)),
-  createDocumentArtifact: (arg) => ipcRenderer.invoke('create-document-artifact', cloneForIpc(arg)),
-  agentLocalList: (arg) => ipcRenderer.invoke('agent-local-list', cloneForIpc(arg)),
-  agentLocalFindByName: (arg) => ipcRenderer.invoke('agent-local-find-by-name', cloneForIpc(arg)),
-  agentLocalRead: (arg) => ipcRenderer.invoke('agent-local-read', cloneForIpc(arg)),
-  agentWebOpen: (arg) => ipcRenderer.invoke('agent-web-open', cloneForIpc(arg)),
-  agentWebRead: (arg) => ipcRenderer.invoke('agent-web-read', cloneForIpc(arg ?? null)),
-  agentWebEval: (arg) => ipcRenderer.invoke('agent-web-eval', cloneForIpc(arg)),
-  agentWebClose: () => ipcRenderer.invoke('agent-web-close'),
-  agentWebSaveRemoteImage: (arg) =>
-    ipcRenderer.invoke('agent-web-save-remote-image', cloneForIpc(arg)),
-  knowledgeIndexWorkspace: (arg) => ipcRenderer.invoke('knowledge-index-workspace', cloneForIpc(arg)),
-  knowledgeSearch: (arg) => ipcRenderer.invoke('knowledge-search', cloneForIpc(arg)),
-  knowledgeGetIndexStatus: () => ipcRenderer.invoke('knowledge-index-status'),
+  webSearch: (params) => ipcRenderer.invoke('web-search', params),
+  agentWebRead: (arg) => ipcRenderer.invoke('agent-web-read', arg ?? null),
+  listMediaLibraryImages: (arg) =>
+    ipcRenderer.invoke('list-media-library-images', arg ?? null),
   persistGet: (name) => ipcRenderer.invoke('persist-state-get', name),
-  persistSet: (name, value) => ipcRenderer.invoke('persist-state-set', cloneForIpc({ name, value })),
-  persistRemove: (name) => ipcRenderer.invoke('persist-state-remove', name),
-  persistClearAll: () => ipcRenderer.invoke('persist-state-clear-all'),
+  persistSet: (name, value) => ipcRenderer.invoke('persist-state-set', { name, value }),
   persistGetSync: (name) => {
     const v = ipcRenderer.sendSync('persist-state-get-sync', name);
     return v === undefined || v === null ? null : String(v);
@@ -127,23 +100,6 @@ window.electron = {
   persistSetSync: (name, value) => {
     ipcRenderer.send('persist-state-set-sync', name, value);
   },
-  transcribeAudio: (arg) => ipcRenderer.invoke('transcribe-audio-openai', cloneForIpc(arg)),
-  volcAsrStart: (arg) => ipcRenderer.invoke('volc-asr-start', cloneForIpc(arg)),
-  volcAsrPushChunk: (arr) => ipcRenderer.invoke('volc-asr-chunk', cloneForIpc(arr)),
-  volcAsrFinish: () => ipcRenderer.invoke('volc-asr-finish'),
-  volcAsrAbort: () => ipcRenderer.invoke('volc-asr-abort'),
-  listMediaLibraryImages: (arg) =>
-    ipcRenderer.invoke('list-media-library-images', cloneForIpc(arg ?? null)),
-  deleteMediaLibraryImage: (arg) =>
-    ipcRenderer.invoke('delete-media-library-image', cloneForIpc(arg)),
-  remoteGatewayGetConfig: () => ipcRenderer.invoke('remote-gateway-get-config'),
-  remoteGatewaySetConfig: (patch) =>
-    ipcRenderer.invoke('remote-gateway-set-config', cloneForIpc(patch)),
-  getGestureModelData: () => ipcRenderer.invoke('get-gesture-model-data'),
-  getFaceModelData: () => ipcRenderer.invoke('get-face-model-data'),
-  simulateGazeMove: (x, y) => ipcRenderer.invoke('simulate-gaze-move', x, y),
-  simulateGazeClick: (x, y) => ipcRenderer.invoke('simulate-gaze-click', x, y),
-  simulateGazeWheel: (x, y, deltaY) => ipcRenderer.invoke('simulate-gaze-wheel', x, y, deltaY),
   capturePageToClipboard: () => ipcRenderer.invoke('capture-page-to-clipboard'),
   onWindowFocusChanged: (func) => {
     const handler = (_event, focused) => func(Boolean(focused));
@@ -151,3 +107,49 @@ window.electron = {
     return () => ipcRenderer.removeListener('window-focus-changed', handler);
   },
 };
+
+/** 纯转发 invoke 通道表：方法名 → 通道名（含事件逻辑/参数整形的已在上文手写） */
+const INVOKE_CHANNELS = {
+  saveTextFile: 'save-text-file',
+  saveLocalFileCopy: 'save-local-file-copy',
+  importTextFile: 'import-text-file',
+  readTextFileAbsolute: 'read-text-file-absolute',
+  readWorkspaceHint: 'read-workspace-hint',
+  getClipboardText: 'get-clipboard-text',
+  setClipboardText: 'set-clipboard-text',
+  uploadFile: 'upload-file',
+  launchApp: 'launch-app',
+  getInstalledApps: 'get-installed-apps',
+  extractDocumentText: 'extract-document-text',
+  saveAssistantExport: 'save-assistant-export',
+  createDocumentArtifact: 'create-document-artifact',
+  agentLocalList: 'agent-local-list',
+  agentLocalFindByName: 'agent-local-find-by-name',
+  agentLocalRead: 'agent-local-read',
+  agentWebOpen: 'agent-web-open',
+  agentWebEval: 'agent-web-eval',
+  agentWebClose: 'agent-web-close',
+  agentWebSaveRemoteImage: 'agent-web-save-remote-image',
+  knowledgeIndexWorkspace: 'knowledge-index-workspace',
+  knowledgeSearch: 'knowledge-search',
+  knowledgeGetIndexStatus: 'knowledge-index-status',
+  persistRemove: 'persist-state-remove',
+  persistClearAll: 'persist-state-clear-all',
+  transcribeAudio: 'transcribe-audio-openai',
+  volcAsrStart: 'volc-asr-start',
+  volcAsrPushChunk: 'volc-asr-chunk',
+  volcAsrFinish: 'volc-asr-finish',
+  volcAsrAbort: 'volc-asr-abort',
+  deleteMediaLibraryImage: 'delete-media-library-image',
+  remoteGatewayGetConfig: 'remote-gateway-get-config',
+  remoteGatewaySetConfig: 'remote-gateway-set-config',
+  getGestureModelData: 'get-gesture-model-data',
+  getFaceModelData: 'get-face-model-data',
+  simulateGazeMove: 'simulate-gaze-move',
+  simulateGazeClick: 'simulate-gaze-click',
+  simulateGazeWheel: 'simulate-gaze-wheel',
+};
+
+for (const [method, channel] of Object.entries(INVOKE_CHANNELS)) {
+  window.electron[method] = (...args) => ipcRenderer.invoke(channel, ...args);
+}

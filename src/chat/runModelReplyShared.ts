@@ -1,5 +1,19 @@
-import type { FileInfo } from '../types';
+import type { FileInfo, Message, ModelConfig } from '../types';
 import { useChatStore } from '../store/chatStore';
+import { StreamingSpeechReader } from '../utils/streamingSpeech';
+import { extractGenerateImageCalls, stripGenerateImageArtifactsForDisplay } from '../utils/toolCalls';
+import { planImageIntent, type ImageIntent } from '../utils/imageIntentPlanner';
+import {
+  documentArtifactBaseName,
+  documentArtifactBaseNameFromContent,
+  documentExportFormatsFromHint,
+} from '../utils/documentExportIntent';
+import {
+  postProcessAssistantContent,
+  imageReferencePathsFromFiles,
+  createDocumentArtifactsFromMarkdown,
+} from './imageGenAssist';
+import { makeImageGenHooks } from './makeImageGenHooks';
 import type { RunModelReplyUi } from './runModelReplyTypes';
 
 export function syncImgGenUi(
@@ -166,4 +180,143 @@ export function createAnimStream(
     },
     flush,
   };
+}
+
+/* =====================================================================
+ * 三条回复路径（SSE 流式 / 文档流式 / Agent / 同步）共享的编排 helper。
+ * 以下每个函数都曾是三处逐字复制的样板，统一后行为单点维护。
+ * ===================================================================*/
+
+/** 流式启动样板：复位错误/取消标记 → 登记流式 ref → 置 UI 流式态 → 插入空气泡 */
+export function beginAssistantStream(
+  ui: RunModelReplyUi,
+  sendSessionId: string,
+  opts: { assistantId: string; modelName: string; exportHint?: Message['exportHint'] }
+): string {
+  ui.streamHadErrorRef.current = false;
+  ui.streamCancelledByUserRef.current = false;
+  ui.streamingAssistantIdRef.current = opts.assistantId;
+  ui.streamingSessionIdRef.current = sendSessionId;
+  ui.setStreamingTargetAssistantId(opts.assistantId);
+  ui.setIsStreaming(true);
+  ui.addMessage(sendSessionId, {
+    id: opts.assistantId,
+    role: 'assistant',
+    content: '',
+    ...(opts.exportHint ? { exportHint: opts.exportHint } : {}),
+    timestamp: Date.now(),
+    model: opts.modelName,
+  });
+  return opts.assistantId;
+}
+
+/** 流式收尾清理（onFinalize 统一实现） */
+export function resetStreamingUi(ui: RunModelReplyUi, sendSessionId: string): void {
+  ui.setIsStreaming(false);
+  ui.clearLoadingForSession(sendSessionId);
+  ui.streamingAssistantIdRef.current = null;
+  ui.streamingSessionIdRef.current = null;
+  ui.setStreamingTargetAssistantId(null);
+}
+
+/** 语音唤醒回复：消费一次性标记并创建 reader；调用方负责 start/push/finish */
+export function createVoiceWakeReplyReader(ui: RunModelReplyUi): StreamingSpeechReader | null {
+  if (!ui.consumeVoiceWakeReply()) return null;
+  ui.speechReaderRef.current?.cancel();
+  const reader = new StreamingSpeechReader(ui.locale, {
+    onSpeakingChange: ui.setVoiceReplySpeaking,
+  });
+  ui.speechReaderRef.current = reader;
+  return reader;
+}
+
+/** 语音唤醒一次性播报：剥离生图残留后整段 push + finish（Agent/同步路径共用） */
+export function speakVoiceWakeReplyOnce(ui: RunModelReplyUi, rawText: string): void {
+  const reader = createVoiceWakeReplyReader(ui);
+  if (!reader) return;
+  void (async () => {
+    await reader.start();
+    const speakBody = stripGenerateImageArtifactsForDisplay(rawText).trim();
+    if (speakBody) {
+      reader.push(speakBody);
+      reader.finish();
+    }
+  })();
+}
+
+/** 生图意图规划（SSE 路径需提前用于取消判断，故独立导出） */
+export function planAssistantImageIntent(
+  userMessage: Message,
+  historyBeforeUser: Message[],
+  rawText: string
+): ImageIntent {
+  return planImageIntent({
+    userText: userMessage.content,
+    historyBeforeUser,
+    assistantText: rawText,
+    toolCallCount: extractGenerateImageCalls(rawText).length,
+  });
+}
+
+/** 生图后处理：hooks 装配 + （可选复用预计算的意图）+ postProcessAssistantContent */
+export async function runImagePostProcess(opts: {
+  ui: RunModelReplyUi;
+  sendSessionId: string;
+  assistantId: string;
+  rawText: string;
+  userMessage: Message;
+  activeModel: ModelConfig;
+  historyBeforeUser: Message[];
+  /** 已预计算的意图；缺省时内部计算 */
+  plannedIntent?: ImageIntent;
+}): Promise<{ content: string; files: FileInfo[] | undefined; plannedIntent: ImageIntent }> {
+  const { ui, sendSessionId, assistantId, rawText, userMessage, activeModel, historyBeforeUser } = opts;
+  const plannedIntent =
+    opts.plannedIntent ?? planAssistantImageIntent(userMessage, historyBeforeUser, rawText);
+  const imageGenHooks = makeImageGenHooks({
+    assistantId,
+    syncImgGenUi: (v) => syncImgGenUi(ui, sendSessionId, v),
+    imageGenCancelledRef: ui.imageGenCancelledRef,
+    onImage: (image) => appendGeneratedImageToAssistant(ui, sendSessionId, assistantId, image),
+  });
+  const { content, files } = await postProcessAssistantContent(
+    rawText,
+    activeModel,
+    ui.inlineImageIndexRef.current,
+    ui.setInlineImageIndex,
+    {
+      imageGenHooks,
+      referenceImages: imageReferencePathsFromFiles(userMessage.files),
+      userPromptContext: userMessage.content,
+      plannedIntent,
+      shouldCancel: () => ui.imageGenCancelledRef.current,
+    }
+  );
+  return { content, files, plannedIntent };
+}
+
+/** 文档产物生成：strip → createDocumentArtifactsFromMarkdown → ready/failed 更新 */
+export async function fulfillDocumentArtifact(opts: {
+  ui: RunModelReplyUi;
+  sendSessionId: string;
+  assistantId: string;
+  rawText: string;
+  userText: string;
+  exportHint: NonNullable<Message['exportHint']>;
+  /** 随最终 updateMessage 一并写入的额外字段（如 reasoning） */
+  extraUpdate?: Record<string, unknown>;
+}): Promise<void> {
+  const { ui, sendSessionId, assistantId, rawText, userText, exportHint, extraUpdate } = opts;
+  const artifactBody = stripGenerateImageArtifactsForDisplay(rawText).trim();
+  const artifactFiles = await createDocumentArtifactsFromMarkdown(
+    artifactBody,
+    documentExportFormatsFromHint(exportHint),
+    documentArtifactBaseNameFromContent(artifactBody, documentArtifactBaseName(userText))
+  );
+  ui.updateMessage(sendSessionId, assistantId, {
+    content: artifactFiles.length ? ui.t('chat.documentReady') : ui.t('chat.documentWriteFailed'),
+    ...(extraUpdate ?? {}),
+    exportHint,
+    files: artifactFiles.length ? artifactFiles : undefined,
+  });
 }

@@ -36,22 +36,23 @@ async function persistNow(name: string, value: string): Promise<void> {
  * 在页面卸载或切应用前尽最大努力落盘，减少 debounce 期间的数据丢失窗口
  */
 export async function flushZustandFilePersist(): Promise<void> {
-  if (!pinnedPersistApi) return;
+  const api = pinnedPersistApi;
+  if (!api) return;
   const pairs = [...pendingValues.entries()];
   for (const [name] of pairs) {
     const tmr = pendingTimers.get(name);
     if (tmr) clearTimeout(tmr);
     pendingTimers.delete(name);
   }
-  const syncSave = pinnedPersistApi.persistSetSync;
+  const syncSave = api.persistSetSync;
   await Promise.all(
     pairs.map(([name, value]) => {
       if (typeof syncSave === 'function') {
-        syncSave.call(pinnedPersistApi!, name, value);
+        syncSave.call(api, name, value);
         pendingValues.delete(name);
         return Promise.resolve();
       }
-      return pinnedPersistApi!.persistSet(name, value).then(() => {
+      return api.persistSet(name, value).then(() => {
         pendingValues.delete(name);
       });
     })

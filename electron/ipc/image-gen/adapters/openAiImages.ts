@@ -1,4 +1,5 @@
 import { effectiveImageProvider } from '../auth';
+import { VENDOR_IMAGE_COUNT_LIMITS } from '../../../constants';
 import type { HttpImageProviderAdapter } from './types';
 import { resolveOpenAiCompatibleImageModel } from './shared';
 
@@ -32,7 +33,7 @@ const openAiImagesAdapter: HttpImageProviderAdapter = {
       size,
       response_format: rf === 'url' ? 'url' : 'b64_json',
     };
-    if (request.count > 1) body.n = Math.max(1, Math.min(10, request.count));
+    if (request.count > 1) body.n = Math.max(1, Math.min(VENDOR_IMAGE_COUNT_LIMITS.openAiImages, request.count));
     return { provider: isZhipu ? 'zhipu-cogview' : 'openai-images', mode: 'openai_images', endpoint, body };
   },
 };

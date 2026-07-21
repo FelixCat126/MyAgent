@@ -154,10 +154,13 @@ function waitWebviewLoad(
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     let done = false;
+    /** 超时句柄需在 finish 中清理，否则 resolve 后闭包仍挂到 timeoutMs 才释放 */
+    let loadTimer = 0;
     const finish = (err?: Error) => {
       if (done) return;
       done = true;
       window.clearInterval(cancelPoll);
+      window.clearTimeout(loadTimer);
       wv.removeEventListener('did-finish-load', onLoad);
       wv.removeEventListener('did-fail-load', onFail as EventListener);
       if (err) reject(err);
@@ -185,7 +188,7 @@ function waitWebviewLoad(
     const cancelPoll = window.setInterval(() => {
       if (shouldCancel?.()) finish(createAgentCancelledError());
     }, 120);
-    window.setTimeout(() => finish(new Error('页面加载超时')), timeoutMs);
+    loadTimer = window.setTimeout(() => finish(new Error('页面加载超时')), timeoutMs);
   });
 }
 

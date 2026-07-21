@@ -60,8 +60,9 @@ import {
   findConversationGalleryIndex,
   type ConversationImageGalleryItem,
 } from '../utils/conversationImageGallery';
+import { FOOTER_H_PX } from '../constants/layout';
 
-const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
+const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) => {
   const {
     currentSessionId,
     sessions,
@@ -190,6 +191,17 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     return { apiUrl: m.apiUrl, apiKey: key, provider: m.provider };
   }, []);
 
+  /** 火山 ASR 配置读取（听写与唤醒共用，曾逐字重复两份） */
+  const getVolcAsrConfig = useCallback(() => {
+    const s = useSettingStore.getState();
+    if (!s.speechInputEnabled) return null;
+    return {
+      appKey: s.volcAsrAppKey,
+      accessKey: s.volcAsrAccessKey,
+      resourceId: s.volcAsrResourceId,
+    };
+  }, []);
+
   const speechDictation = useWebSpeechDictation({
     inputValueRef: inputSyncRef,
     textareaRef: inputAreaRef,
@@ -198,15 +210,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     disabled: isSessionBusy || !speechInputEnabled,
     isImeComposing: () => imeComposingRef.current,
     labels: speechLabels,
-    getVolcAsrConfig: () => {
-      const s = useSettingStore.getState();
-      if (!s.speechInputEnabled) return null;
-      return {
-        appKey: s.volcAsrAppKey,
-        accessKey: s.volcAsrAccessKey,
-        resourceId: s.volcAsrResourceId,
-      };
-    },
+    getVolcAsrConfig,
     getApiTranscribeConfig,
     onDictationEnded,
   });
@@ -223,15 +227,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
       speechDictation.starting ||
       voiceReplySpeaking ||
       !windowFocused,
-    getVolcAsrConfig: () => {
-      const s = useSettingStore.getState();
-      if (!s.speechInputEnabled) return null;
-      return {
-        appKey: s.volcAsrAppKey,
-        accessKey: s.volcAsrAccessKey,
-        resourceId: s.volcAsrResourceId,
-      };
-    },
+    getVolcAsrConfig,
     onWake: () => {
       setVoiceAwake(true);
       /** TTS 期间仅预拉麦克风；火山 WebSocket 在 TTS 结束后立即建连并推流 */
@@ -365,7 +361,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
   useEffect(() => {
     const api = typeof window !== 'undefined' ? window.electron : undefined;
     if (!api?.onMessage) return;
-    const off = api.onMessage('myagent-clipboard-paste', (clip: string) => {
+    const off = api.onMessage('myagent-clipboard-paste', (clip: unknown) => {
       const c = String(clip ?? '');
       if (!c) return;
       setInput((prev) => (prev ? `${prev}\n${c}` : c));
@@ -550,10 +546,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         webEnabled: webOn,
         runModelReply,
       });
-      if (!result.ok) {
-        if (result.reason === 'busy') return;
-        return;
-      }
+      if (!result.ok) return;
       setEditingMessageId(null);
     } catch (e) {
       clearLoadingForSession(sendSessionId);
@@ -597,17 +590,21 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
     isCurrentSessionLoading &&
     (lastMsg?.role === 'user' || (assistantNeedsDots && !thinkingVisibleWhileWaiting));
 
-  // ===== 上下文进度（computed） =====
+  // ===== 上下文进度（computed；estimateSessionChars 遍历全部消息，memo 避免击键/流式期间重算） =====
   const activeModel = getActiveModel();
-  const fullAt = resolveContextProgressFullChars(activeModel ?? null);
-  const softLimit = resolveContextSoftLimitChars(activeModel ?? null);
-  const webOnForCtx = currentSession
-    ? effectiveWebEnabled(currentSession, webSearchEnabled)
-    : webSearchEnabled;
-  const extras = resolveInjectExtras({ webEnabled: webOnForCtx });
-  const overhead = estimateInjectedPayloadOverheadChars(extras);
-  const stored = estimateSessionChars(messages, input);
-  const truncateRisk = messagesExceedSanitizeLimit(messages);
+  const { fullAt, softLimit, overhead, stored, truncateRisk } = useMemo(() => {
+    const webOnForCtx = currentSession
+      ? effectiveWebEnabled(currentSession, webSearchEnabled)
+      : webSearchEnabled;
+    const extras = resolveInjectExtras({ webEnabled: webOnForCtx });
+    return {
+      fullAt: resolveContextProgressFullChars(activeModel ?? null),
+      softLimit: resolveContextSoftLimitChars(activeModel ?? null),
+      overhead: estimateInjectedPayloadOverheadChars(extras),
+      stored: estimateSessionChars(messages, input),
+      truncateRisk: messagesExceedSanitizeLimit(messages),
+    };
+  }, [activeModel, currentSession, webSearchEnabled, messages, input]);
 
   // ===== 渲染 =====
   return (
@@ -665,6 +662,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = 76 }) => {
         onSubmitEdit={handleSubmitEditedMessage}
         onCancelEdit={cancelEdit}
         imageGenProgress={imageGenProgress}
+        conversationGallery={conversationGallery}
         onOpenConversationGallery={(messageId, fileIndex) => {
           const idx = findConversationGalleryIndex(conversationGallery, messageId, fileIndex);
           if (idx >= 0) {

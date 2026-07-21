@@ -1,5 +1,7 @@
 import { ImageGenerationParams } from '../../../../src/types';
 import { hasExplicitAuthorizationHeader, effectiveImageProvider } from '../auth';
+import { VENDOR_IMAGE_COUNT_LIMITS } from '../../../constants';
+import { resolveAdapterImageModel } from './shared';
 import type { HttpImageProviderAdapter } from './types';
 
 /**
@@ -24,15 +26,15 @@ function extractImagesFromBailianResponse(data: unknown): { urls: string[]; b64s
   const output = j.output as Record<string, unknown> | undefined;
 
   /** wan2.6 同步：output.choices[].message.content[].image */
-  const choices = Array.isArray(output?.choices) ? output!.choices : undefined;
-  if (Array.isArray(choices)) {
-    for (const choice of choices) {
+  const choicesRaw: unknown = output?.choices;
+  if (Array.isArray(choicesRaw)) {
+    for (const choice of choicesRaw) {
       if (!choice || typeof choice !== 'object') continue;
       const c = choice as Record<string, unknown>;
       const message = c.message as Record<string, unknown> | undefined;
-      const content = Array.isArray(message?.content) ? message!.content : undefined;
-      if (Array.isArray(content)) {
-        for (const item of content) {
+      const contentRaw: unknown = message?.content;
+      if (Array.isArray(contentRaw)) {
+        for (const item of contentRaw) {
           if (!item || typeof item !== 'object') continue;
           const ci = item as Record<string, unknown>;
           pushUrl(ci.image);
@@ -43,9 +45,9 @@ function extractImagesFromBailianResponse(data: unknown): { urls: string[]; b64s
   }
 
   /** 兼容旧版异步轮询：output.results[].url */
-  const results = Array.isArray(output?.results) ? output!.results : undefined;
-  if (Array.isArray(results)) {
-    for (const item of results) {
+  const resultsRaw: unknown = output?.results;
+  if (Array.isArray(resultsRaw)) {
+    for (const item of resultsRaw) {
       if (!item || typeof item !== 'object') continue;
       const r = item as Record<string, unknown>;
       pushUrl(r.url);
@@ -94,12 +96,11 @@ const bailianWanxAdapter: HttpImageProviderAdapter = {
       );
     }
     /** config.model 优先（新），其次 env（向后兼容） */
-    const model =
-      (typeof config.model === 'string' ? config.model.trim() : '') ||
-      env?.REMOTE_IMAGE_MODEL ||
-      env?.IMAGE_MODEL ||
-      env?.WANX_MODEL ||
-      '';
+    const model = resolveAdapterImageModel({
+      config,
+      env,
+      envKeys: ['REMOTE_IMAGE_MODEL', 'IMAGE_MODEL', 'WANX_MODEL'],
+    });
     if (!model) {
       throw new Error(
         '百炼/万相请填写模型名（设置中的「模型名」或环境变量 `REMOTE_IMAGE_MODEL`/`IMAGE_MODEL`，例：wan2.6-t2i）。'
@@ -108,7 +109,7 @@ const bailianWanxAdapter: HttpImageProviderAdapter = {
     const size = inferBailianWanxSize(request.params, env);
     const n =
       typeof request.count === 'number' && request.count > 0
-        ? Math.max(1, Math.min(4, Math.round(request.count)))
+        ? Math.max(1, Math.min(VENDOR_IMAGE_COUNT_LIMITS.bailianWanx, Math.round(request.count)))
         : 1;
     /** wan2.6 同步协议请求体：input.messages[].content[].text + parameters */
     const body: Record<string, unknown> = {

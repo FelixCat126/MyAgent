@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { pathToFileURL } from 'url';
 import { FiImage, FiTrash2, FiX } from 'react-icons/fi';
 import { ChatSession } from '../types';
 import { useI18n } from '../hooks/useI18n';
+import { localFileProtocolUrl } from '../utils/localFileUrl';
 import { ConversationImageGalleryModal } from './MessageItem';
 import {
   type ConversationImageGalleryItem,
@@ -200,7 +200,7 @@ const ImageLibraryDrawer: React.FC<Props> = ({ open, sessions, onClose }) => {
           onClick={() => onClose()}
         />
         <aside
-          className={`pointer-events-auto absolute right-0 top-0 flex h-full w-[min(100%,520px)] max-w-[100vw] flex-col border-l border-stone-500/35 bg-[#faf8f5]/98 shadow-[-12px_0_40px_rgba(0,0,0,0.14)] backdrop-blur-md transition-transform duration-300 ease-out dark:border-white/15 dark:bg-[#141418]/98 ${
+          className={`pointer-events-auto absolute right-0 top-0 flex h-full w-[min(100%,520px)] max-w-[100vw] flex-col border-l border-stone-500/35 bg-codeLight/98 shadow-[-12px_0_40px_rgba(0,0,0,0.14)] backdrop-blur-md transition-transform duration-300 ease-out dark:border-white/15 dark:bg-[#141418]/98 ${
             entered ? 'translate-x-0' : 'translate-x-full'
           }`}
           role="dialog"
@@ -257,7 +257,7 @@ const ImageLibraryDrawer: React.FC<Props> = ({ open, sessions, onClose }) => {
             {thumbs.length > 0 ? (
               <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                 {thumbs.map((p, i) => {
-                  const href = pathToFileURL(p).href.replace(/^file:/i, 'local-file:');
+                  const href = localFileProtocolUrl(p);
                   const name =
                     p.replace(/\\/g, '/').split('/').pop() || `${i + 1}`;
                   return (

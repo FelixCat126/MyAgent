@@ -7,6 +7,7 @@ import {
   getGestureUiPhase,
 } from '@/utils/gestureUiContext';
 import { GESTURE_PALM_VEL_SMOOTH } from '@/utils/gestureMomentum';
+import { createVisionFileset, toModelBuffer } from '@/utils/mediapipeLoader';
 
 /**
  * 摄像头 + MediaPipe GestureRecognizer：
@@ -495,26 +496,38 @@ export function useGestureControl(enabled: boolean): UseGestureControlResult {
       stopCheer();
     };
 
-    const applyDecay = () => {
+    /** motion 衰减回基线（三处共用；scale 由调用方先叠加手势目标后传入） */
+    const decayMotion = (scale: number) => {
       const st = palmStore.getState();
       const m = st.motion;
       st.setMotion({
-        scale: m.scale + (1 - m.scale) * SCALE_DECAY,
+        scale,
         rotateX: m.rotateX * (1 - ROTATE_DECAY),
         rotateY: m.rotateY * (1 - ROTATE_DECAY),
         rotateZ: m.rotateZ * (1 - ROTATE_DECAY),
         depthZ: m.depthZ * (1 - DEPTH_DECAY),
       });
+    };
+
+    /** 手势瞬态复位（衰减路径与无人手路径共用；now 由调用方按帧/实时语义给） */
+    const resetGestureTransient = (now: number) => {
       lastLibraryGesture = '';
-      lastLibraryGestureSince = performance.now();
+      lastLibraryGestureSince = now;
       resetPreviewGestureEdges();
       resetSwipe();
       resetPalmScroll();
       stopCheer();
       lastPointerPos = null;
       lastPointerAt = 0;
+      const st = palmStore.getState();
       st.setPointerTarget(null);
       st.setPointerOperationActive(false);
+    };
+
+    const applyDecay = () => {
+      const m = palmStore.getState().motion;
+      decayMotion(m.scale + (1 - m.scale) * SCALE_DECAY);
+      resetGestureTransient(performance.now());
     };
 
     const applyResult = (result: GestureResult | null, now: number) => {
@@ -536,24 +549,9 @@ export function useGestureControl(enabled: boolean): UseGestureControlResult {
         handIdx >= 0 ? result?.gestures?.[handIdx]?.[0]?.categoryName ?? '' : '';
 
       if (!landmarks || landmarks.length < 21) {
-        st.setMotion({
-          scale: nextScale,
-          rotateX: m.rotateX * (1 - ROTATE_DECAY),
-          rotateY: m.rotateY * (1 - ROTATE_DECAY),
-          rotateZ: m.rotateZ * (1 - ROTATE_DECAY),
-          depthZ: m.depthZ * (1 - DEPTH_DECAY),
-        });
+        decayMotion(nextScale);
         if (useSettingStore.getState().gestureControlEnabled) {
-          lastLibraryGesture = '';
-          lastLibraryGestureSince = now;
-          resetPreviewGestureEdges();
-          resetSwipe();
-          resetPalmScroll();
-          stopCheer();
-          lastPointerPos = null;
-          lastPointerAt = 0;
-          palmStore.getState().setPointerTarget(null);
-          palmStore.getState().setPointerOperationActive(false);
+          resetGestureTransient(now);
         }
         return;
       }
@@ -586,13 +584,7 @@ export function useGestureControl(enabled: boolean): UseGestureControlResult {
         }
       }
 
-      st.setMotion({
-        scale: nextScale,
-        rotateX: m.rotateX * (1 - ROTATE_DECAY),
-        rotateY: m.rotateY * (1 - ROTATE_DECAY),
-        rotateZ: m.rotateZ * (1 - ROTATE_DECAY),
-        depthZ: m.depthZ * (1 - DEPTH_DECAY),
-      });
+      decayMotion(nextScale);
     };
 
     const start = async () => {
@@ -608,18 +600,9 @@ export function useGestureControl(enabled: boolean): UseGestureControlResult {
           setStatus({ kind: 'model-missing' });
           return;
         }
-        const raw = modelInfo.data as unknown;
-        const modelBuffer: Uint8Array =
-          raw instanceof Uint8Array
-            ? raw
-            : raw && typeof raw === 'object' && 'buffer' in (raw as { buffer?: ArrayBuffer })
-              ? new Uint8Array((raw as { buffer: ArrayBuffer }).buffer)
-              : new Uint8Array(raw as ArrayBuffer);
+        const modelBuffer = toModelBuffer(modelInfo.data);
 
-        const wasmBaseUrl = new URL('./mediapipe-wasm/', window.location.href).href;
-        const visionMod = await import('@mediapipe/tasks-vision');
-        if (isStale()) return;
-        const fileset = await visionMod.FilesetResolver.forVisionTasks(wasmBaseUrl);
+        const { visionMod, fileset } = await createVisionFileset();
         if (isStale()) return;
         const gr = await visionMod.GestureRecognizer.createFromOptions(fileset, {
           baseOptions: { modelAssetBuffer: modelBuffer },

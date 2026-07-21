@@ -1,4 +1,4 @@
-import { pathToFileURL } from 'url';
+import { localFileProtocolUrl } from './localFileUrl';
 
 /** 会话附件图片展示地址：支持 data: / http(s) / 本机路径 */
 export function attachmentImageDisplaySrc(file: {
@@ -11,7 +11,7 @@ export function attachmentImageDisplaySrc(file: {
   if (!p) return '';
   if (/^https?:\/\//i.test(p) || p.startsWith('data:')) return p;
   try {
-    return pathToFileURL(p).href.replace(/^file:/i, 'local-file:');
+    return localFileProtocolUrl(p);
   } catch {
     return '';
   }

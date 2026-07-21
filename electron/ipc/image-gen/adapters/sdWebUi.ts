@@ -1,5 +1,6 @@
 import { isUnsetImageProvider } from '../../../shared/imageProviderPresets';
 import { effectiveImageProvider } from '../auth';
+import { VENDOR_IMAGE_COUNT_LIMITS } from '../../../constants';
 import type { HttpImageProviderAdapter } from './types';
 
 const sdWebUiAdapter: HttpImageProviderAdapter = {
@@ -21,7 +22,7 @@ const sdWebUiAdapter: HttpImageProviderAdapter = {
         cfg_scale: 7,
         sampler_index: 'Euler a',
         n_iter: 1,
-        batch_size: Math.max(1, Math.min(8, request.count)),
+        batch_size: Math.max(1, Math.min(VENDOR_IMAGE_COUNT_LIMITS.sdWebUi, request.count)),
       },
     };
   },

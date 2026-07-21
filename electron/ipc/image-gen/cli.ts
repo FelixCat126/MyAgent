@@ -3,8 +3,10 @@ import { join } from 'path';
 import { randomUUID } from 'crypto';
 import fs from 'fs/promises';
 import type { ModelConfig, ImageGenerationParams } from '../../../src/types';
-import { MAX_CLI_COMBINED_LOG_CHARS } from '../../constants';
+import { MAX_CLI_COMBINED_LOG_CHARS, VENDOR_IMAGE_COUNT_LIMITS } from '../../constants';
 import { IMAGE_GEN_TIMEOUT_MS } from './queue';
+import { imgGenDebug } from './debug';
+import { readImageSizeWithFallback, resolveImageOutputDir } from './buffers';
 import type {
   CliGeneratedImage,
   GeneratedImage,
@@ -83,7 +85,7 @@ async function generateImageCliOneShot(
     .map((line) => applyCliPlaceholders(line.trim(), params, outputPath))
     .filter((line) => line.length > 0);
 
-  console.info('[生图 CLI] 启动', {
+  imgGenDebug('[生图 CLI] 启动', {
     command: exe,
     argv,
     isolatedPrompt: Boolean(params.isolatedPrompt),
@@ -138,38 +140,18 @@ async function generateImageCliOneShot(
           console.warn('[生图 CLI] 进程退出码非 0，但输出文件已存在:', code);
         }
 
-        let stats: Promise<{ width: number; height: number }>;
-        try {
-          const sharp = require('sharp');
-          stats = sharp(outputPath)
-            .metadata()
-            .then((m: { width?: number; height?: number }) => ({
-              width: m.width ?? NaN,
-              height: m.height ?? NaN,
-            }));
-        } catch {
-          stats = Promise.resolve({ width: NaN, height: NaN });
-        }
-
-        stats
-          .then(({ width, height }) =>
-          resolve({
-            url: `file://${outputPath}`,
-            path: outputPath,
-              width:
-                Number.isInteger(width) && width > 0 ? width : Number(params.width) || 512,
-              height:
-                Number.isInteger(height) && height > 0 ? height : Number(params.height) || 512,
-            })
-          )
-          .catch(() =>
-          resolve({
-            url: `file://${outputPath}`,
-            path: outputPath,
-              width: Number(params.width) || 512,
-              height: Number(params.height) || 512,
-            })
-          );
+        const { width, height } = await readImageSizeWithFallback(outputPath, params);
+        const size = await fs
+          .stat(outputPath)
+          .then((s) => s.size)
+          .catch(() => undefined);
+        resolve({
+          url: `file://${outputPath}`,
+          path: outputPath,
+          width,
+          height,
+          size,
+        });
       })();
           });
         });
@@ -180,14 +162,7 @@ async function generateImageCli(
   config: NonNullable<ModelConfig['imageGeneratorConfig']>,
   onImage?: ImageGeneratedCallback
 ): Promise<GeneratedImage[]> {
-  const appModule = await import('electron');
-  const electronApp = appModule.app;
-
-  const outputDir =
-    params.outputDir ||
-    join(electronApp.getPath('documents'), 'MyAgent', 'GeneratedImages');
-
-  await fs.mkdir(outputDir, { recursive: true }).catch(() => {});
+  const outputDir = await resolveImageOutputDir(params);
 
   if (!config.command?.trim()) {
     throw new Error('请填写「命令行程序」路径');
@@ -196,7 +171,7 @@ async function generateImageCli(
   const rawN = params.count;
   const requested =
     typeof rawN === 'number' && Number.isFinite(rawN) && rawN > 0 ? Math.round(rawN) : 1;
-  const n = Math.max(1, Math.min(12, requested));
+  const n = Math.max(1, Math.min(VENDOR_IMAGE_COUNT_LIMITS.cli, requested));
 
   const results: CliGeneratedImage[] = [];
   if (n <= 1) {

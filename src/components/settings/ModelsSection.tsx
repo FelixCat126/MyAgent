@@ -10,7 +10,16 @@
  *  - 表单派生 handler（startAdd / startEdit / handleSave）→ 本组件内部 useCallback
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
+import {
+  FORM_INPUT_LG,
+  FORM_INPUT_SM,
+  FORM_INPUT_SM_MONO,
+  FORM_INPUT_SM_MONO_TIGHT,
+  FORM_LABEL,
+  FORM_LABEL_SM,
+  FORM_SELECT_SM,
+} from './styleConstants';
 import {
   FiCpu,
   FiChevronUp,
@@ -152,6 +161,17 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState<EditingFormData>(defaultFormData);
 
+  /** 生图厂商解析：formData 三要素派生一次，表单内多处提示复用（曾每渲染重复调用 4 次） */
+  const resolvedImageProvider = useMemo(
+    () =>
+      resolveImageProviderId(
+        formData.imageGenProvider,
+        formData.imageGenEndpoint,
+        formData.imageGenHttpFormat
+      ),
+    [formData.imageGenProvider, formData.imageGenEndpoint, formData.imageGenHttpFormat]
+  );
+
   const startAdd = useCallback(() => {
     setEditingId(null);
     setFormData(defaultFormData);
@@ -292,7 +312,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
               </h3>
 
               <div>
-                <label className="block text-xs font-medium text-stone-700 dark:text-gray-300 mb-1">
+                <label className={FORM_LABEL}>
                   {t('settings.form.name')}
                 </label>
                 <input
@@ -300,18 +320,18 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                   value={formData.name}
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                   placeholder={t('settings.form.namePh')}
-                  className="w-full px-3 py-2 border border-stone-400/35 dark:border-gray-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 bg-stone-100/90 dark:bg-gray-700 text-stone-900 dark:text-white"
+                  className={FORM_INPUT_LG}
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-stone-700 dark:text-gray-300 mb-1">
+                <label className={FORM_LABEL}>
                   {t('settings.form.provider')}
                 </label>
                 <select
                   value={formData.provider}
                   onChange={(e) => setFormData({ ...formData, provider: e.target.value as ModelConfig['provider'] })}
-                  className="w-full px-3 py-2 border border-stone-400/35 dark:border-gray-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 bg-stone-100/90 dark:bg-gray-700 text-stone-900 dark:text-white"
+                  className={FORM_INPUT_LG}
                 >
                   <option value="openai">OpenAI</option>
                   <option value="claude">Claude</option>
@@ -324,7 +344,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                 formData.provider === 'custom' ||
                 formData.provider === 'ollama') && (
                 <div>
-                  <label className="block text-xs font-medium text-stone-700 dark:text-gray-300 mb-1">
+                  <label className={FORM_LABEL}>
                     {t('settings.form.chatApiMode')}
                   </label>
                   <select
@@ -335,7 +355,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                         chatApiMode: e.target.value as EditingFormData['chatApiMode'],
                       })
                     }
-                    className="w-full px-3 py-2 border border-stone-400/35 dark:border-gray-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 bg-stone-100/90 dark:bg-gray-700 text-stone-900 dark:text-white"
+                    className={FORM_INPUT_LG}
                   >
                     <option value="auto">{t('settings.form.chatApiMode.auto')}</option>
                     <option value="openai">{t('settings.form.chatApiMode.openai')}</option>
@@ -348,7 +368,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
               )}
 
               <div>
-                <label className="block text-xs font-medium text-stone-700 dark:text-gray-300 mb-1">
+                <label className={FORM_LABEL}>
                   {t('settings.form.apiUrl')}
                 </label>
                 <input
@@ -358,12 +378,12 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                   placeholder={
                     formData.provider === 'ollama' ? t('settings.form.apiUrlPh.ollama') : t('settings.form.apiUrlPh.default')
                   }
-                  className="w-full px-3 py-2 border border-stone-400/35 dark:border-gray-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 bg-stone-100/90 dark:bg-gray-700 text-stone-900 dark:text-white"
+                  className={FORM_INPUT_LG}
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-stone-700 dark:text-gray-300 mb-1">
+                <label className={FORM_LABEL}>
                   {t('settings.form.apiKey')}
                   {formData.provider !== 'ollama' && ' *'}
                 </label>
@@ -372,12 +392,12 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                   value={formData.apiKey}
                   onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
                   placeholder={t('settings.form.apiKeyPh')}
-                  className="w-full px-3 py-2 border border-stone-400/35 dark:border-gray-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 bg-stone-100/90 dark:bg-gray-700 text-stone-900 dark:text-white"
+                  className={FORM_INPUT_LG}
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-stone-700 dark:text-gray-300 mb-1">
+                <label className={FORM_LABEL}>
                   {t('settings.form.modelName')}
                 </label>
                 <input
@@ -387,19 +407,23 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                   placeholder={
                     formData.provider === 'openai' ? t('settings.form.modelNamePh.openai') : t('settings.form.modelNamePh.other')
                   }
-                  className="w-full px-3 py-2 border border-stone-400/35 dark:border-gray-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 bg-stone-100/90 dark:bg-gray-700 text-stone-900 dark:text-white"
+                  className={FORM_INPUT_LG}
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-stone-700 dark:text-gray-300 mb-1">
+                <label className={FORM_LABEL}>
                   {t('settings.form.maxTokens')}
                 </label>
                 <input
                   type="number"
                   value={formData.maxTokens}
-                  onChange={(e) => setFormData({ ...formData, maxTokens: parseInt(e.target.value) })}
-                  className="w-full px-3 py-2 border border-stone-400/35 dark:border-gray-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 bg-stone-100/90 dark:bg-gray-700 text-stone-900 dark:text-white"
+                  onChange={(e) => {
+                    /** 空值/非法输入回落 0（下游按 falsy 走默认 4096），避免 NaN 写入持久化 JSON 变 null */
+                    const n = Math.floor(Number(e.target.value));
+                    setFormData({ ...formData, maxTokens: Number.isFinite(n) && n > 0 ? n : 0 });
+                  }}
+                  className={FORM_INPUT_LG}
                 />
               </div>
 
@@ -428,13 +452,13 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                     <>
                       {/* ===== 工具类型：HTTP 优先 ===== */}
                       <div>
-                        <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                        <label className={FORM_LABEL_SM}>
                           {t('settings.form.toolType')}
                         </label>
                         <select
                           value={formData.imageGenType}
                           onChange={(e) => setFormData({ ...formData, imageGenType: e.target.value })}
-                          className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-medium focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
+                          className={FORM_SELECT_SM}
                         >
                           <option value="http">{t('settings.form.httpServer')}</option>
                           <option value="cli">{t('settings.form.cliTool')}</option>
@@ -445,7 +469,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                         <>
                           {/* ===== Endpoint 优先：粘贴地址即可自适配 ===== */}
                           <div>
-                            <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                            <label className={FORM_LABEL_SM}>
                               {t('settings.form.httpEndpoint')}
                             </label>
                             <input
@@ -476,14 +500,10 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                                 });
                               }}
                               placeholder={t('settings.form.httpEndpointPh')}
-                              className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-medium focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
+                              className={FORM_SELECT_SM}
                             />
                             {(() => {
-                              const inferred = resolveImageProviderId(
-                                formData.imageGenProvider,
-                                formData.imageGenEndpoint,
-                                formData.imageGenHttpFormat
-                              );
+                              const inferred = resolvedImageProvider;
                               if (!inferred || !formData.imageGenEndpoint.trim()) return null;
                               const preset = getImageProviderPreset(inferred);
                               return (
@@ -504,7 +524,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                           ) ? (
                             <div className="space-y-2">
                               <div>
-                                <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                                <label className={FORM_LABEL_SM}>
                                   {t('settings.form.imageApiKey')}
                                 </label>
                                 <input
@@ -515,11 +535,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                                     setFormData({ ...formData, imageGenApiKey: e.target.value })
                                   }
                                   placeholder={(() => {
-                                    const id = resolveImageProviderId(
-                                      formData.imageGenProvider,
-                                      formData.imageGenEndpoint,
-                                      formData.imageGenHttpFormat
-                                    );
+                                    const id = resolvedImageProvider;
                                     const ph = id
                                       ? getImageProviderPreset(id)?.apiKeyPlaceholderKey
                                       : undefined;
@@ -529,7 +545,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                                 />
                               </div>
                               <div>
-                                <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                                <label className={FORM_LABEL_SM}>
                                   {t('settings.form.imageModel')}
                                 </label>
                                 <input
@@ -539,11 +555,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                                     setFormData({ ...formData, imageGenModel: e.target.value })
                                   }
                                   placeholder={(() => {
-                                    const id = resolveImageProviderId(
-                                      formData.imageGenProvider,
-                                      formData.imageGenEndpoint,
-                                      formData.imageGenHttpFormat
-                                    );
+                                    const id = resolvedImageProvider;
                                     return (
                                       (id && getImageProviderPreset(id)?.defaultModel) ||
                                       t('settings.form.imageModelPh')
@@ -555,7 +567,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                             </div>
                           ) : (
                             <div>
-                              <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                              <label className={FORM_LABEL_SM}>
                                 {t('settings.form.imageModel')}
                               </label>
                               <input
@@ -566,11 +578,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                                 }
                                 placeholder={
                                   getImageProviderPreset(
-                                    resolveImageProviderId(
-                                      formData.imageGenProvider,
-                                      formData.imageGenEndpoint,
-                                      formData.imageGenHttpFormat
-                                    ) || undefined
+                                    resolvedImageProvider || undefined
                                   )?.defaultModel || t('settings.form.imageModelPh')
                                 }
                                 className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
@@ -580,7 +588,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
 
                           {/* ===== 可选：快捷预设（仅回填，非必选） ===== */}
                           <div>
-                            <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                            <label className={FORM_LABEL_SM}>
                               {t('settings.form.imageProviderOptional')}
                             </label>
                             <select
@@ -605,13 +613,14 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                                       ? formData.imageGenHttpFormat
                                       : defaults.httpFormat ?? formData.imageGenHttpFormat,
                                   imageGenApiKey:
-                                    id && switching ? formData.imageGenApiKey : formData.imageGenApiKey,
+                                    // 切换厂商时清空密钥：旧厂商的 Key 不应被带往新厂商站点
+                                    switching ? '' : formData.imageGenApiKey,
                                   imageGenModel: switching
                                     ? defaults.model ?? formData.imageGenModel
                                     : formData.imageGenModel,
                                 });
                               }}
-                              className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-medium focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
+                              className={FORM_SELECT_SM}
                             >
                               <option value="">{t('settings.form.imageProviderPh')}</option>
                               {IMAGE_PROVIDER_PRESETS.map((p) => (
@@ -630,7 +639,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                       {formData.imageGenType === 'cli' ? (
                         <div className="space-y-2">
                           <div>
-                            <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                            <label className={FORM_LABEL_SM}>
                               {t('settings.form.cliCommand')}
                             </label>
                             <input
@@ -640,11 +649,11 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                                 setFormData({ ...formData, imageGenCommand: e.target.value })
                               }
                               placeholder={t('settings.form.cliCommandPh')}
-                              className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-medium focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
+                              className={FORM_SELECT_SM}
                             />
                           </div>
                           <div>
-                            <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                            <label className={FORM_LABEL_SM}>
                               {t('settings.form.cliArgs')}
                             </label>
                             <textarea
@@ -654,7 +663,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                               }
                               placeholder={t('settings.form.cliArgsPh')}
                               rows={5}
-                              className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-[10px] font-mono leading-snug bg-stone-50/90 dark:bg-slate-800 text-stone-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary-500"
+                              className={FORM_INPUT_SM_MONO}
                             />
                           </div>
                         </div>
@@ -673,7 +682,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                         <div className="mt-2 space-y-3 border-t border-stone-300/35 pt-2 dark:border-white/8">
                           {formData.imageGenType === 'http' ? (
                             <div>
-                              <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                              <label className={FORM_LABEL_SM}>
                                 {t('settings.form.responseFormat')}
                               </label>
                               <select
@@ -685,7 +694,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                                       .value as EditingFormData['imageGenHttpFormat'],
                                   })
                                 }
-                                className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
+                                className={FORM_INPUT_SM}
                               >
                                 <option value="auto">{t('settings.form.format.auto')}</option>
                                 <option value="sdwebui">{t('settings.form.format.sdwebui')}</option>
@@ -698,14 +707,14 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                             </div>
                           ) : null}
                           <div>
-                            <label className="block text-[10px] font-medium text-stone-700 dark:text-gray-400 mb-1">
+                            <label className={FORM_LABEL_SM}>
                               {t('settings.form.envVars')}
                             </label>
                             <textarea
                               value={formData.imageGenEnv}
                               onChange={(e) => setFormData({ ...formData, imageGenEnv: e.target.value })}
                               placeholder={t('settings.form.envPh')}
-                              className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-[10px] font-mono leading-tight bg-stone-50/90 dark:bg-slate-800 text-stone-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary-500"
+                              className={FORM_INPUT_SM_MONO_TIGHT}
                               rows={2}
                             />
                             <p className="mt-1 text-[10px] text-stone-500 dark:text-slate-500">

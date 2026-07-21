@@ -22,10 +22,14 @@ import { flushZustandFilePersist } from './utils/zustandFileStorage';
 import { installGestureScrollMomentum } from './utils/gestureScrollMomentum';
 import { getGestureUiPhase, setGestureUiPhase } from './utils/gestureUiContext';
 import { ImageLibraryContext } from './context/ImageLibraryContext';
+import { FOOTER_H_PX, SIDEBAR_W_PX, TITLEBAR_H_PX } from './constants/layout';
 
-const TITLEBAR_H = 44;
+const TITLEBAR_H = TITLEBAR_H_PX;
 /** 底部输入区：输入条（内含模型）+ 发送，单行紧凑高度 */
-const FOOTER_H = 76;
+const FOOTER_H = FOOTER_H_PX;
+
+/** Electron 窗口拖拽区样式：React.CSSProperties 未收录 WebkitAppRegion，显式扩展替代 as any */
+type AppRegionStyle = React.CSSProperties & { WebkitAppRegion?: 'drag' | 'no-drag' };
 
 const App: React.FC = () => {
   const { createSession, currentSessionId, sessions } = useChatStore();
@@ -191,7 +195,7 @@ const App: React.FC = () => {
           background: resolved === 'dark' ? '#1e1e24' : 'var(--shell-chrome)',
           backdropFilter: 'blur(20px)',
           WebkitAppRegion: 'drag',
-        } as any}
+        } as AppRegionStyle}
       />
 
       {/* 行1右：顶部横线，完全相同颜色贯穿；手势/视觉识别开启后在右侧嵌入识别状态 */}
@@ -201,7 +205,7 @@ const App: React.FC = () => {
           background: resolved === 'dark' ? '#1e1e24' : 'var(--shell-chrome)',
           backdropFilter: 'blur(20px)',
           WebkitAppRegion: 'drag',
-        } as any}
+        } as AppRegionStyle}
       >
         {gestureControlEnabled ? (
           <div
@@ -211,7 +215,7 @@ const App: React.FC = () => {
                 ? 'bg-white/10 text-slate-200'
                 : 'bg-stone-500/15 text-stone-700')
             }
-            style={{ WebkitAppRegion: 'no-drag' } as any}
+            style={{ WebkitAppRegion: 'no-drag' } as AppRegionStyle}
             title={gestureStatusLabel}
           >
             <span className="relative inline-flex h-2 w-2 items-center justify-center">
@@ -281,12 +285,12 @@ const App: React.FC = () => {
 
       {/* 行3左：底部操作栏 */}
       <div
-        className="flex items-center justify-between gap-2 overflow-x-auto border-t border-r border-stone-600/38 px-5 dark:border-white/10"
+        className="flex items-center justify-between gap-1.5 overflow-hidden border-t border-r border-stone-600/38 px-3 dark:border-white/10"
         style={{ background: resolved === 'dark' ? '#1c1c22' : 'var(--shell-chrome)' }}
       >
         <button
           onClick={handleNewChat}
-          className="flex shrink-0 items-center gap-2 whitespace-nowrap rounded-xl bg-gradient-to-r from-primary-500 to-teal-500 px-4 py-2 text-sm font-medium text-white shadow-md shadow-primary-500/20 transition-all hover:from-primary-600 hover:to-teal-600"
+          className="flex shrink-0 items-center gap-2 whitespace-nowrap rounded-xl bg-gradient-to-r from-primary-500 to-teal-500 px-3 py-2 text-sm font-medium text-white shadow-md shadow-primary-500/20 transition-all hover:from-primary-600 hover:to-teal-600"
         >
           <FiPlus size={18} className="shrink-0" />
           <span className="whitespace-nowrap">{t('app.newChat')}</span>
@@ -327,7 +331,7 @@ const App: React.FC = () => {
         className={`fixed z-40 bg-stone-900/15 transition-opacity duration-300 ease-in-out dark:bg-black/35 ${
           showSettings ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'
         }`}
-        style={{ top: TITLEBAR_H, bottom: FOOTER_H, left: 256, right: 0 }}
+        style={{ top: TITLEBAR_H, bottom: FOOTER_H, left: SIDEBAR_W_PX, right: 0 }}
         aria-hidden={!showSettings}
         onClick={() => setShowSettings(false)}
       />

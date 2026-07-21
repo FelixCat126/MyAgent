@@ -3,6 +3,7 @@ import './utils/userDataPath';
 import './ipc/knowledge';
 import { app, BrowserWindow, clipboard, globalShortcut, ipcMain, protocol, session } from 'electron';
 import path from 'path';
+import os from 'os';
 import fsSync from 'fs';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
@@ -66,18 +67,26 @@ function focusMainWindowOrCreate(): void {
   createWindow();
 }
 
+/** 主窗口初始/最小尺寸 */
+const MAIN_WINDOW_SIZE = { width: 1400, height: 900, minWidth: 1000 } as const;
+
 function createWindow() {
   const iconPath = path.join(__dirname, '../resources/icon.png');
   const icon = fsSync.existsSync(iconPath) ? iconPath : undefined;
 
   mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
-    minWidth: 1000,
+    width: MAIN_WINDOW_SIZE.width,
+    height: MAIN_WINDOW_SIZE.height,
+    minWidth: MAIN_WINDOW_SIZE.minWidth,
     ...(icon ? { icon } : {}),
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     title: 'MyAgent - AI助手',
     webPreferences: {
+      /**
+       * 注意：contextIsolation:false + nodeIntegration:true 是 window.electron 直接注入模型的前提，
+       * 迁移到 contextBridge 需重写 preload 全部 60+ 方法（onMessage 返回函数无法跨桥），
+       * 故保持现状；第三方内容隔离由 webview 显式 webpreferences 与 local-file 白名单承担。
+       */
       contextIsolation: false,
       nodeIntegration: true,
       webSecurity: false,
@@ -169,50 +178,48 @@ function sendGazePointerMove(win: BrowserWindow, ix: number, iy: number) {
   win.webContents.sendInputEvent({ type: 'mouseMove', x: ix, y: iy });
 }
 
-/** 视线跟随：持续同步指针位置以触发 hover（仅当主窗口已聚焦时由渲染端调用，避免抢其它应用焦点） */
-ipcMain.handle('simulate-gaze-move', async (_evt, x: number, y: number) => {
+type GazeIpcResult = { ok: true } | { ok: false; error: string };
+
+/** gaze IPC 统一前置：窗口校验 → 聚焦校验 → 坐标解析 → 错误包装（三个 handler 共用） */
+async function withGazeCoords(
+  x: number,
+  y: number,
+  fn: (win: BrowserWindow, ix: number, iy: number) => void | Promise<void>
+): Promise<GazeIpcResult> {
   try {
     const win = mainWindow;
     if (!win || win.isDestroyed()) return { ok: false as const, error: 'no-window' };
     if (!win.isFocused()) return { ok: false as const, error: 'window-unfocused' };
     const coords = parseGazeCoords(x, y);
     if (!coords) return { ok: false as const, error: 'invalid-coords' };
-    sendGazePointerMove(win, coords.ix, coords.iy);
+    await fn(win, coords.ix, coords.iy);
     return { ok: true as const };
   } catch (e) {
     return { ok: false as const, error: (e as Error)?.message || String(e) };
   }
-});
+}
+
+/** 视线跟随：持续同步指针位置以触发 hover（仅当主窗口已聚焦时由渲染端调用，避免抢其它应用焦点） */
+ipcMain.handle('simulate-gaze-move', async (_evt, x: number, y: number) =>
+  withGazeCoords(x, y, (win, ix, iy) => {
+    sendGazePointerMove(win, ix, iy);
+  })
+);
 
 /** 视线单眨：在渲染端给出的视口坐标处模拟左键点击（仅作用于本窗口 webContents） */
-ipcMain.handle('simulate-gaze-click', async (_evt, x: number, y: number) => {
-  try {
-    const win = mainWindow;
-    if (!win || win.isDestroyed()) return { ok: false as const, error: 'no-window' };
-    if (!win.isFocused()) return { ok: false as const, error: 'window-unfocused' };
-    const coords = parseGazeCoords(x, y);
-    if (!coords) return { ok: false as const, error: 'invalid-coords' };
-    const { ix, iy } = coords;
+ipcMain.handle('simulate-gaze-click', async (_evt, x: number, y: number) =>
+  withGazeCoords(x, y, (win, ix, iy) => {
     sendGazePointerMove(win, ix, iy);
     win.webContents.sendInputEvent({ type: 'mouseDown', x: ix, y: iy, button: 'left', clickCount: 1 });
     win.webContents.sendInputEvent({ type: 'mouseUp', x: ix, y: iy, button: 'left', clickCount: 1 });
-    return { ok: true as const };
-  } catch (e) {
-    return { ok: false as const, error: (e as Error)?.message || String(e) };
-  }
-});
+  })
+);
 
 /** 剪刀手上下划：在视口坐标处模拟滚轮（仅主窗口聚焦时） */
 ipcMain.handle('simulate-gaze-wheel', async (_evt, x: number, y: number, deltaY: number) => {
-  try {
-    const win = mainWindow;
-    if (!win || win.isDestroyed()) return { ok: false as const, error: 'no-window' };
-    if (!win.isFocused()) return { ok: false as const, error: 'window-unfocused' };
-    const coords = parseGazeCoords(x, y);
-    if (!coords) return { ok: false as const, error: 'invalid-coords' };
-    const dy = Math.round(Number(deltaY));
-    if (!Number.isFinite(dy) || dy === 0) return { ok: false as const, error: 'invalid-delta' };
-    const { ix, iy } = coords;
+  const dy = Math.round(Number(deltaY));
+  if (!Number.isFinite(dy) || dy === 0) return { ok: false as const, error: 'invalid-delta' };
+  return withGazeCoords(x, y, (win, ix, iy) => {
     sendGazePointerMove(win, ix, iy);
     win.webContents.sendInputEvent({
       type: 'mouseWheel',
@@ -227,10 +234,7 @@ ipcMain.handle('simulate-gaze-wheel', async (_evt, x: number, y: number, deltaY:
       hasPreciseScrollingDeltas: true,
       canScroll: true,
     });
-    return { ok: true as const };
-  } catch (e) {
-    return { ok: false as const, error: (e as Error)?.message || String(e) };
-  }
+  });
 });
 
 /**
@@ -240,7 +244,6 @@ ipcMain.handle('simulate-gaze-wheel', async (_evt, x: number, y: number, deltaY:
  */
 ipcMain.handle('capture-page-to-clipboard', async () => {
   try {
-    const { BrowserWindow, clipboard } = await import('electron');
     const target = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
     if (!target) return { ok: false as const, error: 'no-window' };
     const image = await target.webContents.capturePage();
@@ -289,7 +292,30 @@ if (PRIMARY_INSTANCE) {
         if (!fsSync.existsSync(filePath)) {
           return new Response(null, { status: 404 });
         }
-        const data = await fs.readFile(filePath);
+        /** 路径白名单：仅放行应用数据/文档/用户内容目录，拒绝任意绝对路径读取（如 /etc、~/.ssh）。
+         *  realpath 解析符号链接（macOS /var→/private/var），与 remote-gateway shellServe 同标准 */
+        const realTarget = fsSync.realpathSync(filePath);
+        const allowedRoots = [
+          app.getPath('userData'),
+          os.tmpdir(),
+          path.join(app.getPath('documents'), 'MyAgent'),
+          app.getPath('desktop'),
+          app.getPath('downloads'),
+          app.getPath('pictures'),
+        ].map((r) => {
+          try {
+            return fsSync.realpathSync(r);
+          } catch {
+            return path.resolve(r);
+          }
+        });
+        const underRoot = allowedRoots.some(
+          (root) => realTarget === root || realTarget.startsWith(root + path.sep)
+        );
+        if (!underRoot) {
+          return new Response(null, { status: 403 });
+        }
+        const data = await fs.readFile(realTarget);
         const ext = path.extname(filePath);
         const mimeType = {
           '.png': 'image/png',

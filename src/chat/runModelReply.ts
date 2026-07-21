@@ -46,6 +46,18 @@ export async function runModelReply(
   });
   /** 本机/网页 Agent 任务均跳过向量注入，避免无关 RAG 干扰工具链 */
   const skipContextInject = agentGate.enter;
+  /** 链路构建失败的统一收尾：插入错误气泡 + 清 loading（id 后缀区分两个阶段） */
+  const failWith = (idSuffix: string, e: unknown): void => {
+    console.error(e);
+    ui.addMessage(sendSessionId, {
+      id: `${Date.now()}-${idSuffix}`,
+      role: 'assistant',
+      content: ui.t('chat.buildFailed') + (e instanceof Error ? e.message : String(e)),
+      timestamp: Date.now(),
+      model: activeModel.name,
+    });
+    ui.clearLoadingForSession(sendSessionId);
+  };
   try {
     const built = await buildOutgoingChain(
       historyBeforeUser,
@@ -62,15 +74,7 @@ export async function runModelReply(
       : prependImageGenCapabilitySystem(built.chain, ui.locale, useModelStore.getState().getEffectiveImageGenModel());
     ragHint = built.ragHint;
   } catch (e) {
-    console.error(e);
-    ui.addMessage(sendSessionId, {
-      id: `${Date.now()}-err`,
-      role: 'assistant',
-      content: ui.t('chat.buildFailed') + (e instanceof Error ? e.message : String(e)),
-      timestamp: Date.now(),
-      model: activeModel.name,
-    });
-    ui.clearLoadingForSession(sendSessionId);
+    failWith('err', e);
     return;
   }
 
@@ -91,15 +95,7 @@ export async function runModelReply(
       ];
     }
   } catch (e) {
-    console.error(e);
-    ui.addMessage(sendSessionId, {
-      id: `${Date.now()}-err2`,
-      role: 'assistant',
-      content: ui.t('chat.buildFailed') + (e instanceof Error ? e.message : String(e)),
-      timestamp: Date.now(),
-      model: activeModel.name,
-    });
-    ui.clearLoadingForSession(sendSessionId);
+    failWith('err2', e);
     return;
   }
 

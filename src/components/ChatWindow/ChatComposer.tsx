@@ -4,6 +4,7 @@ import { ComposerInput } from './ComposerInput';
 import { ContextMeter } from './ContextMeter';
 import { MicButton, VoiceBanner } from './VoiceBar';
 import { SendBar } from './SendBar';
+import { SIDEBAR_W_PX } from '../../constants/layout';
 
 export interface ChatComposerProps {
   /** 附件 */
@@ -113,8 +114,8 @@ export const ChatComposer: React.FC<ChatComposerProps> = (p) => {
 
   return (
     <div
-      className="fixed bottom-0 right-0 z-30 flex w-[calc(100%-256px)] min-w-0 flex-col border-t border-stone-600/38 bg-stone-200/92 backdrop-blur-xl dark:border-white/10 dark:bg-[#0B1120]/80"
-      style={{ left: 256, paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+      className="fixed bottom-0 right-0 z-30 flex w-[calc(100%-256px)] min-w-0 flex-col border-t border-stone-600/38 bg-stone-200/92 backdrop-blur-xl dark:border-white/10 dark:bg-darkChrome/80"
+      style={{ left: SIDEBAR_W_PX, paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
     >
       <AttachmentStrip
         attachments={p.attachments}
