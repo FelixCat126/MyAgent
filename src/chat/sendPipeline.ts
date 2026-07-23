@@ -7,6 +7,7 @@ import { FULL_TEXT_DOWNLOAD_BYPASS_REPLY } from './fullTextDownloadBypass';
 import { shouldBypassModelForFullTextDownload } from '../utils/documentExportIntent';
 import { ensureContextBeforeSend } from './ensureContextBeforeSend';
 import { isAttachmentPlaceholder } from '../utils/attachmentPlaceholder';
+import { getActiveMessages } from '../utils/branchTree';
 
 export type InjectExtras = {
   webEnabled?: boolean;
@@ -100,8 +101,8 @@ export async function commitUserMessageAndReply(opts: {
   onDidCompress?: () => void;
 }): Promise<CommitUserMessageResult> {
   const chat = useChatStore.getState();
-  let priorMessages =
-    chat.sessions.find((s) => s.id === opts.sessionId)?.messages?.slice() ?? [];
+  const sess = chat.sessions.find((s) => s.id === opts.sessionId);
+  let priorMessages = getActiveMessages(sess?.messages ?? [], sess?.activeLeafId);
 
   const ensured = await ensureContextBeforeSend({
     sessionId: opts.sessionId,

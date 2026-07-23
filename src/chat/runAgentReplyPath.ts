@@ -45,8 +45,10 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
     return false;
   }
 
-  const assistantId = `${Date.now() + 1}-a`;
-  beginAssistantStream(ui, sendSessionId, { assistantId, modelName: activeModel.name });
+  const assistantId = beginAssistantStream(ui, sendSessionId, {
+    assistantId: `${Date.now() + 1}-a`,
+    modelName: activeModel.name,
+  });
 
   const reasoningStream = createAnimStream(sendSessionId, assistantId, ui.appendReasoningToMessage);
 

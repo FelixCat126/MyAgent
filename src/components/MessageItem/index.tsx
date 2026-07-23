@@ -1,6 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Message } from '../../types';
-import { FiMessageSquare, FiCopy, FiDownload, FiEdit2, FiCheckSquare, FiSquare, FiCheck } from 'react-icons/fi';
+import {
+  FiMessageSquare,
+  FiCopy,
+  FiDownload,
+  FiEdit2,
+  FiCheckSquare,
+  FiSquare,
+  FiCheck,
+  FiChevronLeft,
+  FiChevronRight,
+  FiRefreshCw,
+} from 'react-icons/fi';
 import { useI18n } from '../../hooks/useI18n';
 import { showError } from '../../store/errorStore';
 import MarkdownContent from '../MarkdownContent';
@@ -26,6 +37,16 @@ import {
 interface MessageItemProps {
   message: Message;
   onEdit?: (message: Message) => void;
+  onRegenerate?: (message: Message) => void;
+  regenerateLabel?: string;
+  branchNav?: {
+    index: number;
+    total: number;
+    onPrev: () => void;
+    onNext: () => void;
+    prevLabel: string;
+    nextLabel: string;
+  } | null;
   editing?: boolean;
   onSubmitEdit?: (message: Message, content: string) => void;
   onCancelEdit?: () => void;
@@ -105,6 +126,9 @@ function formatMessageTime(ts: number) {
 const MessageItemBase: React.FC<MessageItemProps> = ({
   message,
   onEdit,
+  onRegenerate,
+  regenerateLabel,
+  branchNav = null,
   editing = false,
   onSubmitEdit,
   onCancelEdit,
@@ -409,6 +433,33 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
                       </button>
                     ) : null}
                   </div>
+                  {branchNav ? (
+                    <div className="flex shrink-0 items-center gap-0.5 tabular-nums">
+                      <button
+                        type="button"
+                        disabled={branchNav.index <= 1}
+                        onClick={branchNav.onPrev}
+                        className="inline-flex h-5 w-5 items-center justify-center rounded disabled:opacity-35"
+                        title={branchNav.prevLabel}
+                        aria-label={branchNav.prevLabel}
+                      >
+                        <FiChevronLeft size={12} />
+                      </button>
+                      <span>
+                        {branchNav.index}/{branchNav.total}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={branchNav.index >= branchNav.total}
+                        onClick={branchNav.onNext}
+                        className="inline-flex h-5 w-5 items-center justify-center rounded disabled:opacity-35"
+                        title={branchNav.nextLabel}
+                        aria-label={branchNav.nextLabel}
+                      >
+                        <FiChevronRight size={12} />
+                      </button>
+                    </div>
+                  ) : null}
                   <span className="shrink-0 tabular-nums text-right">{formatMessageTime(message.timestamp)}</span>
                 </div>
               </div>
@@ -545,7 +596,7 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
                   <span className="shrink-0 tabular-nums">{formatMessageTime(message.timestamp)}</span>
                   {message.model && <span className="opacity-80"> · {message.model}</span>}
                 </div>
-                <div className="opacity-0 transition-opacity group-hover:opacity-100">
+                <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                   <button
                     onClick={handleCopy}
                     className="inline-flex h-6 w-6 items-center justify-center rounded-md hover:bg-stone-200/80 hover:text-primary-500 dark:hover:bg-slate-800"
@@ -555,10 +606,21 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
                   >
                     {copied ? <FiCheck size={13} className="text-emerald-500" /> : <FiCopy size={12} />}
                   </button>
+                  {onRegenerate && !selectionMode ? (
+                    <button
+                      onClick={() => onRegenerate(message)}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-md hover:bg-stone-200/80 hover:text-primary-500 dark:hover:bg-slate-800"
+                      type="button"
+                      title={regenerateLabel || t('chat.regenerate')}
+                      aria-label={regenerateLabel || t('chat.regenerate')}
+                    >
+                      <FiRefreshCw size={12} />
+                    </button>
+                  ) : null}
                   {!selectionMode ? (
                     <button
                       onClick={() => onStartSelect?.(message.id)}
-                      className="ml-1 inline-flex h-6 w-6 items-center justify-center rounded-md hover:bg-stone-200/80 hover:text-primary-500 dark:hover:bg-slate-800"
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-md hover:bg-stone-200/80 hover:text-primary-500 dark:hover:bg-slate-800"
                       type="button"
                       title={t('message.selectTitle')}
                       aria-label={t('message.selectTitle')}
@@ -567,6 +629,33 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
                     </button>
                   ) : null}
                 </div>
+                {branchNav ? (
+                  <div className="ml-auto flex shrink-0 items-center gap-0.5 tabular-nums">
+                    <button
+                      type="button"
+                      disabled={branchNav.index <= 1}
+                      onClick={branchNav.onPrev}
+                      className="inline-flex h-5 w-5 items-center justify-center rounded disabled:opacity-35"
+                      title={branchNav.prevLabel}
+                      aria-label={branchNav.prevLabel}
+                    >
+                      <FiChevronLeft size={12} />
+                    </button>
+                    <span>
+                      {branchNav.index}/{branchNav.total}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={branchNav.index >= branchNav.total}
+                      onClick={branchNav.onNext}
+                      className="inline-flex h-5 w-5 items-center justify-center rounded disabled:opacity-35"
+                      title={branchNav.nextLabel}
+                      aria-label={branchNav.nextLabel}
+                    >
+                      <FiChevronRight size={12} />
+                    </button>
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>
@@ -600,6 +689,9 @@ const MessageItem = React.memo(MessageItemBase, (prev, next) => {
   if (prev.showInlineStreamPlaceholder !== next.showInlineStreamPlaceholder) return false;
   if (prev.imageGenProgress !== next.imageGenProgress) return false;
   if (prev.conversationGallery !== next.conversationGallery) return false;
+  if (prev.branchNav?.index !== next.branchNav?.index) return false;
+  if (prev.branchNav?.total !== next.branchNav?.total) return false;
+  if (Boolean(prev.onRegenerate) !== Boolean(next.onRegenerate)) return false;
   return true;
 });
 

@@ -11,6 +11,8 @@ import {
   tryClaimSessionSend,
 } from './sendPipeline';
 import { resubmitEditedUserMessage } from './resubmitEditedUserMessage';
+import { getActiveMessages } from '../utils/branchTree';
+import { resolveSendModel } from '../agent/resolveSendModel';
 
 async function ensureModelsReady(): Promise<void> {
   await useModelStore.persist?.rehydrate?.();
@@ -188,8 +190,9 @@ export function installRemoteChatBridge(opts: {
           )
         : [];
       const locale = useSettingStore.getState().locale;
-      const activeModel = useModelStore.getState().getActiveModel();
-      if (!activeModel) {
+      const modelState = useModelStore.getState();
+      const fallbackModel = modelState.getActiveModel();
+      if (!fallbackModel) {
         throw new Error(tUi(locale, 'chat.configureModel'));
       }
       const chat = useChatStore.getState();
@@ -209,6 +212,15 @@ export function installRemoteChatBridge(opts: {
       }
 
       try {
+        const history = getActiveMessages(sess.messages, sess.activeLeafId);
+        const activeModel = resolveSendModel({
+          models: modelState.models,
+          activeModel: fallbackModel,
+          routingRules: modelState.routingRules,
+          history,
+          userText: textContent,
+          hasImages: attachments.some((f) => f.type?.startsWith('image/')),
+        });
         const webOn = effectiveWebEnabled(sess, useWebSearchStore.getState().enabled);
         await commitUserMessageAndReply({
           sessionId,

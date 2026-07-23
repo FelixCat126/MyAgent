@@ -16,13 +16,14 @@ export interface ChatToolbarProps {
   onDeleteSelected: () => void;
   onCancelSelection: () => void;
   onStartSelection: () => void;
-  onExport: (kind: 'md' | 'html') => void;
+  onExport: (kind: 'md' | 'html' | 'zip') => void;
   selectedCountLabel: string;
   deleteSelectedLabel: string;
   cancelSelectLabel: string;
   selectMessagesLabel: string;
   exportMdTitle: string;
   exportHtmlTitle: string;
+  exportZipTitle: string;
 }
 
 /**
@@ -98,6 +99,14 @@ export const ChatToolbar: React.FC<ChatToolbarProps> = (p) => {
           title={p.exportHtmlTitle}
         >
           <FiDownload size={14} className="shrink-0" /> HTML
+        </button>
+        <button
+          type="button"
+          onClick={() => p.onExport('zip')}
+          className={`${btn} text-stone-600 hover:bg-stone-200/80 dark:text-slate-300 dark:hover:bg-slate-800`}
+          title={p.exportZipTitle}
+        >
+          <FiDownload size={14} className="shrink-0" /> ZIP
         </button>
       </div>
     </div>

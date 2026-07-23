@@ -106,6 +106,10 @@ window.electron = {
     ipcRenderer.on('window-focus-changed', handler);
     return () => ipcRenderer.removeListener('window-focus-changed', handler);
   },
+  log: (payload) => ipcRenderer.invoke('app:log', payload),
+  getHealth: () => ipcRenderer.invoke('app:get-health'),
+  getStats: () => ipcRenderer.invoke('app:get-stats'),
+  exportSession: (arg) => ipcRenderer.invoke('session:export', arg),
 };
 
 /** 纯转发 invoke 通道表：方法名 → 通道名（含事件逻辑/参数整形的已在上文手写） */

@@ -1,4 +1,7 @@
 import './utils/userDataPath';
+/** 观测层必须早于业务 IPC 注册（其它模块 import 时即建立 logger） */
+import { bootstrapLogging } from './utils/loggerBootstrap';
+bootstrapLogging(app.getVersion());
 /** 须尽早注册：若置于其它 ipc 之后，同目录其它模块在 import 阶段抛错会导致本段 handler 未执行 */
 import './ipc/knowledge';
 import { app, BrowserWindow, clipboard, globalShortcut, ipcMain, protocol, session } from 'electron';

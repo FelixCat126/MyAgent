@@ -25,6 +25,15 @@ export interface Message {
   files?: FileInfo[];
   timestamp: number;
   model: string;
+  /**
+   * 分支树：parentId 指向其父消息；children 是其衍生消息 id 列表。
+   * 老 v2 持久化（线性 messages）迁移时由 chatStore.migrate 填充：
+   * - parentId = 数组中前一条 id（首条除外）
+   * - children = []
+   * - activePath = [首条 id, ..., 末条 id]
+   */
+  parentId?: string;
+  children?: string[];
 }
 
 // 文件信息类型

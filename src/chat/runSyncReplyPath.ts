@@ -2,6 +2,7 @@ import type { Message, ModelConfig } from '../types';
 import {
   fulfillDocumentArtifact,
   mergeAssistantFiles,
+  resolveOrCreateAssistantBubble,
   runImagePostProcess,
   speakVoiceWakeReplyOnce,
 } from './runModelReplyShared';
@@ -30,17 +31,18 @@ export async function runSyncReplyPath(args: RunSyncReplyPathArgs): Promise<void
     exportHint,
   } = args;
 
-  const documentArtifactAssistantId = exportHint?.document ? `${Date.now()}-doc` : '';
+  let documentArtifactAssistantId = '';
   try {
-    if (documentArtifactAssistantId) {
-      ui.addMessage(sendSessionId, {
-        id: documentArtifactAssistantId,
-        role: 'assistant',
-        content: '',
-        exportHint: { ...exportHint!, status: 'generating' },
-        timestamp: Date.now(),
-        model: activeModel.name,
-      });
+    if (exportHint?.document) {
+      documentArtifactAssistantId = resolveOrCreateAssistantBubble(
+        ui,
+        sendSessionId,
+        `${Date.now()}-doc`,
+        {
+          modelName: activeModel.name,
+          exportHint: { ...exportHint, status: 'generating' },
+        }
+      );
     }
     const response = await window.electron.callModel(plainMessages, plainModel, { locale: ui.locale });
     const content0 = response.content || ui.t('chat.fallbackReply');
@@ -57,15 +59,11 @@ export async function runSyncReplyPath(args: RunSyncReplyPathArgs): Promise<void
       });
       return;
     }
-    const assistantId = `${Date.now() + 1}-a`;
-    ui.addMessage(sendSessionId, {
-      id: assistantId,
-      role: 'assistant',
+    const assistantId = resolveOrCreateAssistantBubble(ui, sendSessionId, `${Date.now() + 1}-a`, {
+      modelName: activeModel.name,
       content: content0,
       ...(reasoningIn ? { reasoning: reasoningIn } : {}),
       ...(exportHint ? { exportHint } : {}),
-      timestamp: Date.now(),
-      model: activeModel.name,
     });
     speakVoiceWakeReplyOnce(ui, content0);
     const { content: c, files } = await runImagePostProcess({
@@ -92,12 +90,9 @@ export async function runSyncReplyPath(args: RunSyncReplyPathArgs): Promise<void
       });
       return;
     }
-    ui.addMessage(sendSessionId, {
-      id: `${Date.now()}-a`,
-      role: 'assistant',
+    resolveOrCreateAssistantBubble(ui, sendSessionId, `${Date.now()}-a`, {
+      modelName: activeModel.name,
       content: ui.t('chat.requestFailed') + msg,
-      timestamp: Date.now(),
-      model: activeModel.name,
     });
   } finally {
     ui.clearLoadingForSession(sendSessionId);

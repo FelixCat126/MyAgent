@@ -187,27 +187,67 @@ export function createAnimStream(
  * 以下每个函数都曾是三处逐字复制的样板，统一后行为单点维护。
  * ===================================================================*/
 
-/** 流式启动样板：复位错误/取消标记 → 登记流式 ref → 置 UI 流式态 → 插入空气泡 */
+/**
+ * 若当前叶是「空助手气泡」（重新生成 fork 预置），复用其 id；否则新建。
+ * 避免 fork 后再 beginAssistantStream 又挂一层子气泡。
+ */
+export function resolveOrCreateAssistantBubble(
+  ui: RunModelReplyUi,
+  sendSessionId: string,
+  preferredId: string,
+  patch: {
+    modelName: string;
+    content?: string;
+    reasoning?: string;
+    exportHint?: Message['exportHint'];
+  }
+): string {
+  const sess = useChatStore.getState().sessions.find((s) => s.id === sendSessionId);
+  const leafId = sess?.activeLeafId ?? null;
+  const leaf = leafId ? sess?.messages.find((m) => m.id === leafId) : undefined;
+  const reusable =
+    leaf?.role === 'assistant' &&
+    !(leaf.content ?? '').trim() &&
+    !(leaf.reasoning ?? '').trim();
+  if (reusable && leaf) {
+    ui.updateMessage(sendSessionId, leaf.id, {
+      content: patch.content ?? '',
+      ...(patch.reasoning !== undefined ? { reasoning: patch.reasoning } : {}),
+      ...(patch.exportHint ? { exportHint: patch.exportHint } : {}),
+      timestamp: Date.now(),
+      model: patch.modelName,
+    });
+    return leaf.id;
+  }
+  ui.addMessage(sendSessionId, {
+    id: preferredId,
+    role: 'assistant',
+    content: patch.content ?? '',
+    ...(patch.reasoning ? { reasoning: patch.reasoning } : {}),
+    ...(patch.exportHint ? { exportHint: patch.exportHint } : {}),
+    timestamp: Date.now(),
+    model: patch.modelName,
+  });
+  return preferredId;
+}
+
+/** 流式启动样板：复位错误/取消标记 → 登记流式 ref → 置 UI 流式态 → 插入/复用空气泡 */
 export function beginAssistantStream(
   ui: RunModelReplyUi,
   sendSessionId: string,
   opts: { assistantId: string; modelName: string; exportHint?: Message['exportHint'] }
 ): string {
+  const assistantId = resolveOrCreateAssistantBubble(ui, sendSessionId, opts.assistantId, {
+    modelName: opts.modelName,
+    ...(opts.exportHint ? { exportHint: opts.exportHint } : {}),
+  });
   ui.streamHadErrorRef.current = false;
   ui.streamCancelledByUserRef.current = false;
-  ui.streamingAssistantIdRef.current = opts.assistantId;
+  ui.streamingAssistantIdRef.current = assistantId;
   ui.streamingSessionIdRef.current = sendSessionId;
-  ui.setStreamingTargetAssistantId(opts.assistantId);
+  ui.setStreamingTargetAssistantId(assistantId);
   ui.setIsStreaming(true);
-  ui.addMessage(sendSessionId, {
-    id: opts.assistantId,
-    role: 'assistant',
-    content: '',
-    ...(opts.exportHint ? { exportHint: opts.exportHint } : {}),
-    timestamp: Date.now(),
-    model: opts.modelName,
-  });
-  return opts.assistantId;
+  return assistantId;
 }
 
 /** 流式收尾清理（onFinalize 统一实现） */

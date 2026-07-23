@@ -33,6 +33,12 @@ interface ModelStore {
   activeModelId: string | null;
   /** 独立生图模型 ID；null = 自动选择第一个可用的生图模型（向后兼容） */
   imageGenModelId: string | null;
+  /**
+   * 路由规则（v3 持久化）：按数组顺序求值，首条命中即生效；落选回 activeModelId。
+   * 内置三条：长上下文走便宜模型、含代码走代码模型、含图片走 vision 模型。
+   * 用户可在 settings 编辑（v1 不做 UI，先用 defaultModels 占位）。
+   */
+  routingRules: import('../agent/modelRouting').RoutingRule[];
 
   // Actions
   addModel: (config: ModelConfig) => void;
@@ -44,6 +50,8 @@ interface ModelStore {
   initializeDefaultModels: () => void;
   /** 生效的生图模型：优先 imageGenModelId，否则自动找第一个可用生图模型 */
   getEffectiveImageGenModel: () => ModelConfig | undefined;
+  /** 设置路由规则（v1 仅支持整组覆盖；UI 接入后再加 add/remove/toggle） */
+  setRoutingRules: (rules: import('../agent/modelRouting').RoutingRule[]) => void;
 }
 
 // 默认 Ollama 模型配置
@@ -89,6 +97,7 @@ export const useModelStore = create<ModelStore>()(
       models: [],
       activeModelId: null,
       imageGenModelId: null,
+      routingRules: [],
 
       initializeDefaultModels: () => {
         const { models } = get();
@@ -131,6 +140,8 @@ export const useModelStore = create<ModelStore>()(
       },
 
       setActiveModel: (id: string) => {
+        /** 校验 id 存在避免 setState 一个不存在的 activeModelId（getActiveModel 会返 null） */
+        if (!get().models.some((m) => m.id === id)) return;
         set({ activeModelId: id });
       },
 
@@ -153,11 +164,13 @@ export const useModelStore = create<ModelStore>()(
         /** 2) 自动选择第一个配置了可用生图工具的模型 */
         return models.find((m) => modelHasUsableImageGenerator(m));
       },
+
+      setRoutingRules: (rules) => set({ routingRules: rules }),
     }),
     {
       name: PERSIST_KEYS.model,
       storage: zustandPersistJson,
-      version: 2,
+      version: 3,
       migrate: (persistedState, fromVersion) => {
         const state = persistedState as {
           models?: ModelConfig[];
@@ -167,6 +180,10 @@ export const useModelStore = create<ModelStore>()(
         if (!state || !Array.isArray(state.models)) return persistedState as typeof state;
         if (fromVersion < 1) {
           state.models = state.models.map((m) => withSuggestedChatApiMode(m));
+        }
+        /** v2 → v3: 路由规则上线；老数据 routingRules=[]，由调用方在首次请求时按 BUILTIN_ROUTING_RULES 兜底 */
+        if (fromVersion < 3) {
+          (state as { routingRules?: unknown }).routingRules = [];
         }
         return state;
       },

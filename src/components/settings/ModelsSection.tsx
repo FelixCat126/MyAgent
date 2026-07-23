@@ -35,6 +35,7 @@ import { useModelStore, modelHasUsableImageGenerator } from '../../store/modelSt
 import { confirmDestructive } from '../../store/confirmStore';
 import { showError, showWarning } from '../../store/errorStore';
 import { ModelConfig } from '../../types';
+import { BUILTIN_ROUTING_RULES, type RoutingRule } from '../../agent/modelRouting';
 import {
   IMAGE_PROVIDER_PRESETS,
   getImageProviderPreset,
@@ -153,7 +154,34 @@ export interface ModelsSectionProps {
 
 export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) => {
   // store 派生量本组件自己消费
-  const { models, addModel, updateModel, removeModel, imageGenModelId, setImageGenModel } = useModelStore();
+  const {
+    models,
+    addModel,
+    updateModel,
+    removeModel,
+    imageGenModelId,
+    setImageGenModel,
+    routingRules,
+    setRoutingRules,
+  } = useModelStore();
+
+  const effectiveRoutingRules = useMemo(() => {
+    if (routingRules.length > 0) return routingRules;
+    return BUILTIN_ROUTING_RULES;
+  }, [routingRules]);
+
+  const updateRoutingPrefer = useCallback(
+    (ruleId: string, preferModelId: string) => {
+      const base: RoutingRule[] =
+        routingRules.length > 0
+          ? routingRules
+          : BUILTIN_ROUTING_RULES.map((r) => ({ ...r }));
+      setRoutingRules(
+        base.map((r) => (r.id === ruleId ? { ...r, preferModelId } : r))
+      );
+    },
+    [routingRules, setRoutingRules]
+  );
 
   // 本组件内部状态：折叠态 + 编辑表单
   const [modelBlockExpanded, setModelBlockExpanded] = useState(false);
@@ -846,6 +874,37 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                   </div>
                 );
               })()}
+              {models.length > 0 ? (
+                <div className="border-t border-stone-300/38 px-3 pb-3 pt-2.5 dark:border-white/10">
+                  <label className="mb-1 block text-[10px] font-medium text-stone-600 dark:text-gray-400">
+                    {t('settings.routing.title')}
+                  </label>
+                  <p className="mb-2 text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
+                    {t('settings.routing.hint')}
+                  </p>
+                  <div className="space-y-2">
+                    {effectiveRoutingRules.map((rule) => (
+                      <div key={rule.id} className="space-y-1">
+                        <div className="text-[10px] text-stone-600 dark:text-slate-400">
+                          {rule.description}
+                        </div>
+                        <select
+                          value={rule.preferModelId || ''}
+                          onChange={(e) => updateRoutingPrefer(rule.id, e.target.value)}
+                          className="w-full rounded-md border border-stone-400/25 bg-stone-100/90 px-2 py-1.5 text-xs text-stone-900 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-slate-700 dark:text-white"
+                        >
+                          <option value="">{t('settings.routing.none')}</option>
+                          {models.map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </>
           )}
         </div>

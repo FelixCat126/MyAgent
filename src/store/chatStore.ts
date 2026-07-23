@@ -103,12 +103,25 @@ interface ChatStore {
   loadingSessionIds: Set<string>;
   /** 正在自动压缩上下文的会话集合 */
   compressingSessionIds: Set<string>;
+  /**
+   * 当前会话的激活叶镜像（与 sessions[current].activeLeafId 同步）。
+   * 真实权威数据在 ChatSession.activeLeafId；本字段便于旧调用方/测试读取。
+   */
+  activeLeafId: string | null;
 
   // Actions
   createSession: () => string;
   switchSession: (sessionId: string) => void;
   deleteSession: (sessionId: string) => void;
   addMessage: (sessionId: string, message: Message) => void;
+  /**
+   * 在某条消息处分叉出新的子消息：拷贝父消息的 `parentId` → 新 message parentId，
+   * 把新 message id 加入父的 children 列表，并把 activeLeafId 切到新 id。
+   * 用于"这里不好，重新生成"——原分支保留，新分支从这一刻展开。
+   */
+  forkFromMessage: (sessionId: string, parentId: string) => string;
+  /** 切到分支上某个兄弟：把 activeLeafId 换成目标 messageId（前缀公共祖先保留） */
+  switchBranch: (sessionId: string, messageId: string) => void;
   /**
    * 原子编辑重发：updateMessage + removeMessages 在同一 set() 调用内完成。
    * 替代业务模块的 `getState().updateMessage(); getState().removeMessages();` 模式，
@@ -171,6 +184,7 @@ export const useChatStore = create<ChatStore>()(
       currentSessionId: null,
       loadingSessionIds: new Set<string>(),
       compressingSessionIds: new Set<string>(),
+      activeLeafId: null,
 
       createSession: () => {
         const locale = useSettingStore.getState().locale;
@@ -180,23 +194,34 @@ export const useChatStore = create<ChatStore>()(
           messages: [],
           createdAt: Date.now(),
           updatedAt: Date.now(),
+          activeLeafId: null,
         };
         
         set((state: ChatStore) => ({
           sessions: [newSession, ...state.sessions],
           currentSessionId: newSession.id,
+          activeLeafId: null,
         }));
-        
+
         return newSession.id;
       },
 
       switchSession: (sessionId: string) => {
-        set((state: ChatStore) => ({
-          currentSessionId: sessionId,
-          sessions: state.sessions.map((s: ChatSession) =>
-            s.id === sessionId && s.unreadAssistantReply ? { ...s, unreadAssistantReply: false } : s
-          ),
-        }));
+        set((state: ChatStore) => {
+          const target = state.sessions.find((s) => s.id === sessionId);
+          const leaf =
+            target?.activeLeafId ??
+            (target?.messages?.length ? target.messages[target.messages.length - 1]!.id : null);
+          return {
+            currentSessionId: sessionId,
+            activeLeafId: leaf ?? null,
+            sessions: state.sessions.map((s: ChatSession) =>
+              s.id === sessionId && s.unreadAssistantReply
+                ? { ...s, unreadAssistantReply: false }
+                : s
+            ),
+          };
+        });
       },
 
       deleteSession: (sessionId: string) => {
@@ -206,11 +231,24 @@ export const useChatStore = create<ChatStore>()(
           nextLoading.delete(sessionId);
           const nextCompressing = new Set(state.compressingSessionIds);
           nextCompressing.delete(sessionId);
+          const nextCurrent =
+            state.currentSessionId === sessionId
+              ? newSessions.length > 0
+                ? newSessions[0]!.id
+                : null
+              : state.currentSessionId;
+          const nextSess = nextCurrent
+            ? newSessions.find((s) => s.id === nextCurrent)
+            : null;
+          const nextLeaf =
+            nextSess?.activeLeafId ??
+            (nextSess?.messages?.length
+              ? nextSess.messages[nextSess.messages.length - 1]!.id
+              : null);
           return {
             sessions: newSessions,
-            currentSessionId: state.currentSessionId === sessionId
-              ? (newSessions.length > 0 ? newSessions[0].id : null)
-              : state.currentSessionId,
+            currentSessionId: nextCurrent,
+            activeLeafId: nextLeaf ?? null,
             loadingSessionIds: nextLoading,
             compressingSessionIds: nextCompressing,
           };
@@ -218,22 +256,44 @@ export const useChatStore = create<ChatStore>()(
       },
 
       addMessage: (sessionId: string, message: Message) => {
-        set((state: ChatStore) => ({
-          sessions: state.sessions.map((session: ChatSession) =>
-            session.id === sessionId
-              ? {
-                  ...session,
-                  messages: [...session.messages, message],
-                  updatedAt: Date.now(),
-                  ...(message.role === 'assistant'
-                    ? {
-                        unreadAssistantReply: sessionId !== state.currentSessionId,
-                      }
-                    : {}),
-                }
-              : session
-          ),
-        }));
+        /** 默认主线续接：parent 取该会话自己的 activeLeafId（非全局），父 children 推入新 id。 */
+        set((state: ChatStore) => {
+          let nextStoreLeaf = state.activeLeafId;
+          const sessions = state.sessions.map((session: ChatSession) => {
+            if (session.id !== sessionId) return session;
+            const sessionLeaf =
+              session.activeLeafId ??
+              (session.messages.length
+                ? session.messages[session.messages.length - 1]!.id
+                : null);
+            const parentId = message.parentId ?? sessionLeaf;
+            const enriched: Message = {
+              ...message,
+              ...(parentId && !message.parentId ? { parentId } : {}),
+              children: message.children ?? [],
+            };
+            const withParentChildren: Message[] = parentId
+              ? session.messages.map((m) =>
+                  m.id === parentId
+                    ? { ...m, children: [...(m.children ?? []), enriched.id] }
+                    : m
+                )
+              : session.messages;
+            if (sessionId === state.currentSessionId) nextStoreLeaf = enriched.id;
+            return {
+              ...session,
+              messages: [...withParentChildren, enriched],
+              activeLeafId: enriched.id,
+              updatedAt: Date.now(),
+              ...(message.role === 'assistant'
+                ? {
+                    unreadAssistantReply: sessionId !== state.currentSessionId,
+                  }
+                : {}),
+            };
+          });
+          return { sessions, activeLeafId: nextStoreLeaf };
+        });
       },
 
       /**
@@ -251,15 +311,31 @@ export const useChatStore = create<ChatStore>()(
         patch: Partial<Message>,
         staleIds: string[]
       ) => {
-        set((state: ChatStore) => ({
-          sessions: mapSession(state.sessions, sessionId, (session) => ({
-            ...session,
-            updatedAt: Date.now(),
-            messages: session.messages
-              .map((m) => (m.id === messageId ? { ...m, ...patch } : m))
-              .filter((m) => !staleIds.includes(m.id)),
-          })),
-        }));
+        const stale = new Set(staleIds);
+        set((state: ChatStore) => {
+          let nextStoreLeaf = state.activeLeafId;
+          const sessions = mapSession(state.sessions, sessionId, (session) => {
+            const messages = session.messages
+              .map((m) => {
+                if (m.id === messageId) {
+                  return { ...m, ...patch, children: [] as string[] };
+                }
+                if (m.children?.some((c) => stale.has(c))) {
+                  return { ...m, children: (m.children ?? []).filter((c) => !stale.has(c)) };
+                }
+                return m;
+              })
+              .filter((m) => !stale.has(m.id));
+            if (sessionId === state.currentSessionId) nextStoreLeaf = messageId;
+            return {
+              ...session,
+              updatedAt: Date.now(),
+              messages,
+              activeLeafId: messageId,
+            };
+          });
+          return { sessions, activeLeafId: nextStoreLeaf };
+        });
       },
 
       removeMessage: (sessionId: string, messageId: string) => {
@@ -356,6 +432,81 @@ export const useChatStore = create<ChatStore>()(
         }));
       },
 
+      /**
+       * 在某条消息处分叉：生成新空消息（空 content + 空 timestamp 用 newId 标识），
+       * parentId = 给定父，父 children 推入新 id，activeLeafId 切到新 id。
+       * 上层（流式路径）拿到 childId 后会通过 updateMessage 写入实际内容。
+       * @returns 新创建的 child message id
+       */
+      forkFromMessage: (sessionId: string, parentId: string) => {
+        const childId = newId();
+        set((state: ChatStore) => {
+          const session = state.sessions.find((s) => s.id === sessionId);
+          if (!session) return {};
+          const parent = session.messages.find((m) => m.id === parentId);
+          if (!parent) return {};
+          void parent;
+          return {
+            sessions: state.sessions.map((s) => {
+              if (s.id !== sessionId) return s;
+              const newMessage: Message = {
+                id: childId,
+                role: 'assistant',
+                content: '',
+                timestamp: Date.now(),
+                model: '',
+                parentId,
+                children: [],
+              };
+              const withParentChildren = s.messages.map((m) =>
+                m.id === parentId
+                  ? { ...m, children: [...(m.children ?? []), childId] }
+                  : m
+              );
+              return {
+                ...s,
+                messages: [...withParentChildren, newMessage],
+                activeLeafId: childId,
+                updatedAt: Date.now(),
+              };
+            }),
+            activeLeafId:
+              sessionId === state.currentSessionId ? childId : state.activeLeafId,
+          };
+        });
+        return childId;
+      },
+
+      /**
+       * 切到分支上某个兄弟 messageId：更新会话叶；若为目标会话则同步 store 叶。
+       * 若目标不是叶，尽量沿其 children[0] 链走到最深叶，便于切换后看到完整路径。
+       */
+      switchBranch: (sessionId: string, messageId: string) => {
+        set((state: ChatStore) => {
+          const session = state.sessions.find((s) => s.id === sessionId);
+          if (!session) return {};
+          const exists = session.messages.some((m) => m.id === messageId);
+          if (!exists) return {};
+          const byId = new Map(session.messages.map((m) => [m.id, m]));
+          let leaf = messageId;
+          const seen = new Set<string>();
+          while (!seen.has(leaf)) {
+            seen.add(leaf);
+            const node = byId.get(leaf);
+            const kids = node?.children ?? [];
+            if (kids.length === 0) break;
+            leaf = kids[kids.length - 1]!;
+          }
+          return {
+            sessions: state.sessions.map((s) =>
+              s.id === sessionId ? { ...s, activeLeafId: leaf } : s
+            ),
+            activeLeafId:
+              sessionId === state.currentSessionId ? leaf : state.activeLeafId,
+          };
+        });
+      },
+
       setLoadingSession: loadingBusy.add,
 
       clearLoadingForSession: loadingBusy.remove,
@@ -397,13 +548,14 @@ export const useChatStore = create<ChatStore>()(
     {
       name: PERSIST_KEYS.chat,
       storage: zustandPersistJson,
-      version: 3,
+      version: 4,
       partialize: (state) => ({
         sessions: state.sessions.map((s) => ({
           ...s,
           messages: s.messages.map(({ imageGenProgress: _skip, ...rest }) => rest),
         })),
         currentSessionId: state.currentSessionId,
+        activeLeafId: state.activeLeafId,
         /** loading / compressing 为运行时忙态，故意不落盘，避免异常退出后重启一直转圈 */
       }),
       merge: (persistedState, currentState) => {
@@ -430,6 +582,52 @@ export const useChatStore = create<ChatStore>()(
           delete s.compressingSessionIds;
           delete s.loadingSessionId;
           delete s.compressingSessionId;
+        }
+        /** v3 → v4: 分支树上线 —— 填 parentId/children，并给每个会话写 activeLeafId */
+        if (fromVersion < 4) {
+          const sessions = Array.isArray(s.sessions)
+            ? (s.sessions as Array<{
+                id: string;
+                messages?: unknown[];
+                activeLeafId?: string | null;
+              }>)
+            : [];
+          for (const sess of sessions) {
+            if (!Array.isArray(sess.messages)) continue;
+            let prev: string | null = null;
+            const mapped = sess.messages.map((raw: unknown) => {
+              const m = raw as { id?: string };
+              const id = typeof m?.id === 'string' ? m.id : '';
+              if (!id) return raw as Record<string, unknown>;
+              const enriched: Record<string, unknown> = {
+                ...(raw as Record<string, unknown>),
+                children: [] as string[],
+              };
+              if (prev) enriched.parentId = prev;
+              prev = id;
+              return enriched;
+            });
+            for (const raw of mapped) {
+              const m = raw as { id?: string; parentId?: string; children?: string[] };
+              if (!m?.id || !m.parentId) continue;
+              const parent = mapped.find((x) => (x as { id?: string }).id === m.parentId) as
+                | { children?: string[] }
+                | undefined;
+              if (parent) {
+                parent.children = [...(parent.children ?? []), m.id];
+              }
+            }
+            sess.messages = mapped;
+            if (sess.messages.length > 0) {
+              const last = sess.messages[sess.messages.length - 1] as { id?: string };
+              if (typeof last?.id === 'string') sess.activeLeafId = last.id;
+            } else {
+              sess.activeLeafId = null;
+            }
+          }
+          const cur = typeof s.currentSessionId === 'string' ? s.currentSessionId : null;
+          const curSess = cur ? sessions.find((x) => x.id === cur) : null;
+          s.activeLeafId = curSess?.activeLeafId ?? null;
         }
         return state;
       },

@@ -52,10 +52,9 @@ function runDocumentStreamReply(args: RunStreamReplyPathArgs): void {
   const { ui, sendSessionId, userMessage, activeModel, plainMessages, plainModel, exportHint } = args;
   if (!exportHint) return;
 
-  const assistantId = `${Date.now()}-doc`;
   let artifactBuffer = '';
-  beginAssistantStream(ui, sendSessionId, {
-    assistantId,
+  const assistantId = beginAssistantStream(ui, sendSessionId, {
+    assistantId: `${Date.now()}-doc`,
     modelName: activeModel.name,
     exportHint: { ...exportHint, status: 'thinking' },
   });
@@ -129,9 +128,8 @@ function runSseStreamReply(args: RunStreamReplyPathArgs): void {
     exportHint,
   } = args;
 
-  const assistantId = `${Date.now()}-a`;
-  beginAssistantStream(ui, sendSessionId, {
-    assistantId,
+  const assistantId = beginAssistantStream(ui, sendSessionId, {
+    assistantId: `${Date.now()}-a`,
     modelName: activeModel.name,
     ...(exportHint ? { exportHint } : {}),
   });

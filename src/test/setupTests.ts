@@ -77,6 +77,15 @@ const electronStub: ElectronAPI = {
   simulateGazeClick: async () => ({ ok: false, error: 'stub' }),
   simulateGazeWheel: async () => ({ ok: false, error: 'stub' }),
   capturePageToClipboard: async () => ({ ok: false, error: 'stub' }),
+  log: () => {},
+  getHealth: async () => ({
+    version: '0.0.0-test',
+    uptimeSec: 0,
+    totalLogLines: 0,
+    counters: {},
+  }),
+  getStats: async () => ({}),
+  exportSession: async () => ({ ok: false as const, error: 'stub' }),
 };
 
 if (typeof window !== 'undefined') {

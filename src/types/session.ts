@@ -7,6 +7,11 @@ export interface ChatSession {
   messages: Message[];
   createdAt: number;
   updatedAt: number;
+  /**
+   * 本会话分支激活叶节点；渲染/发送均按 getDerivedActivePath(messages, activeLeafId)。
+   * 缺省/迁移前可为 undefined，运行时回退到 messages 末条。
+   */
+  activeLeafId?: string | null;
   /** 非当前会话时收到助手新回复，左侧显示提醒；切回本会话后清除 */
   unreadAssistantReply?: boolean;
   /** 相对全局联网开关：本会话是否强制/关闭联网 */

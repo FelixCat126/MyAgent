@@ -22,6 +22,9 @@ import { speakText } from '@/utils/speakText';
 import { StreamingSpeechReader } from '@/utils/streamingSpeech';
 import { sessionToHtml, sessionToMarkdown } from '../utils/exportChat';
 import { effectiveWebEnabled } from '../utils/chatModelPolicy';
+import { getActiveMessages, getSiblingNav } from '../utils/branchTree';
+import { resolveSendModel } from '../agent/resolveSendModel';
+import { newRequestId, rendererLogger } from '../utils/logger';
 import {
   agentBrowserClose,
   agentBrowserEval,
@@ -72,6 +75,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
     clearLoadingForSession,
     setSessionWebOverride,
     compressingSessionIds,
+    forkFromMessage,
+    switchBranch,
   } = useChatStore();
 
   const webSearchEnabled = useWebSearchStore((s) => s.enabled);
@@ -86,7 +91,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
   const isCompressingCurrent =
     !!currentSessionId && compressingSessionIds.has(currentSessionId);
   const isSessionBusy = isCurrentSessionLoading || isCompressingCurrent;
-  const { getActiveModel } = useModelStore();
+  const { getActiveModel, models, routingRules } = useModelStore();
 
   // ===== 局部 state（保持原顺序） =====
   const [input, setInput] = useState('');
@@ -137,10 +142,30 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
 
   // ===== 业务派生 =====
   const currentSession = sessions.find((s: ChatSession) => s.id === currentSessionId);
-  const messages = currentSession?.messages || [];
+  const allMessages = currentSession?.messages ?? [];
+  const messages = useMemo(
+    () => getActiveMessages(allMessages, currentSession?.activeLeafId),
+    [allMessages, currentSession?.activeLeafId]
+  );
   const conversationGallery: ConversationImageGalleryItem[] = useMemo(
     () => buildConversationImageGallery(messages),
     [messages]
+  );
+
+  const pickModelForTurn = useCallback(
+    (history: Message[], userText: string, hasImages: boolean) => {
+      const active = getActiveModel();
+      if (!active) return null;
+      return resolveSendModel({
+        models,
+        activeModel: active,
+        routingRules,
+        history,
+        userText,
+        hasImages,
+      });
+    },
+    [getActiveModel, models, routingRules]
   );
 
   // ===== 业务逻辑 =====
@@ -415,11 +440,34 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
     });
   };
 
-  const handleExport = async (kind: 'md' | 'html') => {
+  const handleExport = async (kind: 'md' | 'html' | 'zip') => {
     if (!currentSession) return;
+    const safe = (currentSession.title || 'export').replace(/[\\/:"*?<>|]/g, '_');
+    if (kind === 'zip') {
+      const result = await window.electron.exportSession({
+        sessionId: currentSession.id,
+        defaultName: safe,
+        session: {
+          id: currentSession.id,
+          title: currentSession.title,
+          createdAt: currentSession.createdAt,
+          updatedAt: currentSession.updatedAt,
+          messages: currentSession.messages,
+          activeLeafId: currentSession.activeLeafId ?? null,
+        },
+      });
+      if (!result.ok) {
+        if (result.canceled) return;
+        showError('chat.export.zipFailed', { detail: result.error });
+        return;
+      }
+      if (result.warnings.length > 0) {
+        showWarning('chat.export.zipPartial', { count: result.warnings.length });
+      }
+      return;
+    }
     const content = kind === 'md' ? sessionToMarkdown(currentSession) : sessionToHtml(currentSession);
     const ext = kind === 'md' ? 'md' : 'html';
-    const safe = (currentSession.title || 'export').replace(/[\\/:"*?<>|]/g, '_');
     await window.electron.saveTextFile({
       defaultName: `${safe}.${ext}`,
       content,
@@ -430,6 +478,56 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
     });
   };
 
+  const handleRegenerate = async (assistantMessage: Message) => {
+    if (!currentSessionId || !currentSession || isSessionBusy) return;
+    if (assistantMessage.role !== 'assistant') return;
+    const parentId = assistantMessage.parentId;
+    if (!parentId) return;
+    const parent = allMessages.find((m) => m.id === parentId);
+    if (!parent || parent.role !== 'user') return;
+
+    const pathBefore = getActiveMessages(allMessages, parentId);
+    const history = pathBefore.filter((m) => m.id !== parentId);
+    const model = pickModelForTurn(
+      history,
+      parent.content,
+      Boolean(parent.files?.some((f) => f.type?.startsWith('image/')))
+    );
+    if (!model) {
+      showWarning('chat.configureModel');
+      return;
+    }
+    if (!tryClaimSessionSend(currentSessionId)) return;
+
+    const requestId = newRequestId();
+    rendererLogger.info('chat.regenerate.begin', {
+      requestId,
+      sessionId: currentSessionId,
+      parentId,
+      modelId: model.id,
+    });
+
+    try {
+      forkFromMessage(currentSessionId, parentId);
+      stickToBottomRef.current = true;
+      await runModelReply(currentSessionId, history, parent, model);
+    } catch (e) {
+      clearLoadingForSession(currentSessionId);
+      const detail = e instanceof Error ? e.message : String(e);
+      showError('chat.sendFailed', { detail });
+    }
+  };
+
+  const handleSwitchSibling = (messageId: string, direction: -1 | 1) => {
+    if (!currentSessionId) return;
+    const nav = getSiblingNav(allMessages, messageId);
+    if (nav.total <= 1) return;
+    const idx = nav.index - 1;
+    const next = nav.siblingIds[idx + direction];
+    if (!next) return;
+    switchBranch(currentSessionId, next);
+  };
+
   const handleSend = async () => {
     if ((!input.trim() && attachments.attachments.length === 0) || !currentSessionId) return;
 
@@ -438,12 +536,6 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
       voiceWakeLoopRef.current = false;
     }
     sendFromVoiceWakeRef.current = false;
-
-    const activeModel = getActiveModel();
-    if (!activeModel) {
-      showWarning('chat.configureModel');
-      return;
-    }
 
     /** 全程固定会话 id，避免压缩异步期间切会话写串 */
     const sendSessionId = currentSessionId;
@@ -481,6 +573,22 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
 
       const att = t('chat.attachment');
       const textContent = input.trim() || (uploadedFiles.length > 0 ? att : '');
+      const hasImages = uploadedFiles.some((f) => f.type?.startsWith('image/'));
+      const activeModel = pickModelForTurn(messages, textContent, hasImages);
+      if (!activeModel) {
+        showWarning('chat.configureModel');
+        clearLoadingForSession(sendSessionId);
+        return;
+      }
+
+      const requestId = newRequestId();
+      rendererLogger.info('chat.send.begin', {
+        requestId,
+        sessionId: sendSessionId,
+        modelId: activeModel.id,
+        messageCount: messages.length,
+        hasImages,
+      });
 
       stickToBottomRef.current = true;
       const webOn = currentSession
@@ -521,14 +629,20 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
     const textContent = nextContent.trim();
     if (!textContent || !currentSessionId) return;
 
-    const activeModel = getActiveModel();
+    const sendSessionId = currentSessionId;
+    if (messages.findIndex((m) => m.id === sourceMessage.id) < 0) return;
+
+    const pathIdx = messages.findIndex((m) => m.id === sourceMessage.id);
+    const history = pathIdx >= 0 ? messages.slice(0, pathIdx) : [];
+    const activeModel = pickModelForTurn(
+      history,
+      textContent,
+      Boolean(sourceMessage.files?.some((f) => f.type?.startsWith('image/')))
+    );
     if (!activeModel) {
       showWarning('chat.configureModel');
       return;
     }
-
-    const sendSessionId = currentSessionId;
-    if (messages.findIndex((m) => m.id === sourceMessage.id) < 0) return;
 
     const webOn = currentSession
       ? effectiveWebEnabled(currentSession, webSearchEnabled)
@@ -646,11 +760,13 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
         selectMessagesLabel={t('chat.selectMessages')}
         exportMdTitle={t('chat.export.md')}
         exportHtmlTitle={t('chat.export.html')}
+        exportZipTitle={t('chat.export.zip')}
       />
 
       <MessageStream
         scrollContainerRef={scrollContainerRef}
         messages={messages}
+        allMessages={allMessages}
         isStreaming={isStreaming}
         streamingTargetAssistantId={streamingTargetAssistantId}
         selectionMode={selection.selectionMode}
@@ -658,9 +774,14 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
         onToggleSelect={selection.toggleMessageSelection}
         onStartSelect={selection.startSelection}
         onEdit={handleEditMessage}
+        onRegenerate={handleRegenerate}
+        onSwitchSibling={handleSwitchSibling}
         editingMessageId={editingMessageId}
         onSubmitEdit={handleSubmitEditedMessage}
         onCancelEdit={cancelEdit}
+        branchPrevLabel={t('chat.branch.prev')}
+        branchNextLabel={t('chat.branch.next')}
+        regenerateLabel={t('chat.regenerate')}
         imageGenProgress={imageGenProgress}
         conversationGallery={conversationGallery}
         onOpenConversationGallery={(messageId, fileIndex) => {

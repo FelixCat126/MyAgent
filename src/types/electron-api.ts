@@ -276,6 +276,49 @@ export interface ElectronAPI {
   >;
   /** 主窗口获得/失去焦点（Electron 主进程推送，弥补首次 show 时 hasFocus 不准） */
   onWindowFocusChanged?: (handler: (focused: boolean) => void) => () => void;
+  /** 观测层：渲染端日志转发到主进程统一落盘（fire-and-forget，不阻塞调用） */
+  log: (payload: {
+    level: 'debug' | 'info' | 'warn' | 'error' | 'fatal';
+    msg: string;
+    fields?: Record<string, unknown>;
+  }) => void;
+  /** 健康端点：远程网关或外部监控可拉取 */
+  getHealth: () => Promise<{
+    version: string;
+    uptimeSec: number;
+    totalLogLines: number;
+    counters: Record<string, { total: number; lastAt: number }>;
+  }>;
+  getStats: () => Promise<Record<string, { total: number; lastAt: number }>>;
+  /**
+   * 导出会话为 zip：弹出系统保存对话框；返回 zip 路径 + 内部文件清单 + 警告。
+   * ok:false 含 canceled 字段时表示用户取消（与系统 dialog 行为一致）。
+   */
+  exportSession: (arg: {
+    sessionId: string;
+    defaultName?: string;
+    session?: {
+      id: string;
+      title: string;
+      createdAt: number;
+      updatedAt: number;
+      messages: unknown[];
+      activeLeafId?: string | null;
+    };
+  }) => Promise<
+    | {
+        ok: true;
+        zipPath: string;
+        entries: Array<{
+          path: string;
+          kind: 'json' | 'md' | 'attachment' | 'image';
+          size: number;
+          missing?: boolean;
+        }>;
+        warnings: string[];
+      }
+    | { ok: false; error: string; canceled?: boolean }
+  >;
 }
 
 // 全局 Window 接口扩展

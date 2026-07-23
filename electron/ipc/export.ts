@@ -2,6 +2,7 @@ import { clipboard, dialog, ipcMain } from 'electron';
 import fs from 'fs/promises';
 import path from 'path';
 import { expandUserPath } from '../utils/expandUserPath';
+import { buildSessionExportZip, type ExportResult } from '../utils/sessionExport';
 
 const TEXT_LIMIT = 800_000;
 
@@ -132,6 +133,90 @@ ipcMain.handle(
       }
     }
     return { ok: false as const };
+  }
+);
+
+/**
+ * 导出会话为 zip：用户选保存路径；我们读 chatStore 当前会话或传入 sid
+ * 再去磁盘拉完整 session（不走 IPC → 走 chatStore 持久化文件 → 拿到原始 messages 树）
+ */
+ipcMain.handle(
+  'session:export',
+  async (
+    _e,
+    arg: {
+      sessionId: string;
+      defaultName?: string;
+      /** 优先使用渲染进程内存快照，避免读磁盘未刷盘的旧会话 */
+      session?: {
+        id: string;
+        title: string;
+        createdAt: number;
+        updatedAt: number;
+        messages: unknown[];
+        activeLeafId?: string | null;
+      };
+    }
+  ): Promise<ExportResult | { ok: false; error: string; canceled?: boolean }> => {
+    if (!arg?.sessionId) {
+      return { ok: false, error: 'sessionId required' };
+    }
+    let session;
+    if (arg.session && arg.session.id === arg.sessionId && Array.isArray(arg.session.messages)) {
+      session = {
+        id: arg.session.id,
+        title: arg.session.title,
+        createdAt: arg.session.createdAt,
+        updatedAt: arg.session.updatedAt,
+        messages: arg.session.messages as never,
+        activeLeafId: arg.session.activeLeafId,
+      };
+    } else {
+      const persistPath = path.join(
+        (await import('electron')).app.getPath('userData'),
+        'persist',
+        'chat-storage.json'
+      );
+      try {
+        const raw = await fs.readFile(persistPath, 'utf-8');
+        const parsed = JSON.parse(raw) as {
+          state?: {
+            sessions?: Array<{
+              id: string;
+              title: string;
+              createdAt: number;
+              updatedAt: number;
+              messages: unknown[];
+              activeLeafId?: string | null;
+            }>;
+          };
+        };
+        const found = parsed?.state?.sessions?.find((s) => s.id === arg.sessionId);
+        if (!found) return { ok: false, error: 'session not found' };
+        session = {
+          id: found.id,
+          title: found.title,
+          createdAt: found.createdAt,
+          updatedAt: found.updatedAt,
+          messages: found.messages as never,
+          activeLeafId: found.activeLeafId,
+        };
+      } catch (e) {
+        return { ok: false, error: `加载会话失败：${e instanceof Error ? e.message : String(e)}` };
+      }
+    }
+    const safeName = (arg.defaultName || session.title || 'session').replace(/[\\/:*?"<>|]/g, '_');
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      defaultPath: `${safeName}.zip`,
+      filters: [
+        { name: 'Zip', extensions: ['zip'] },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+    });
+    if (canceled || !filePath) {
+      return { ok: false, error: 'canceled', canceled: true };
+    }
+    return buildSessionExportZip(session as never, filePath);
   }
 );
 

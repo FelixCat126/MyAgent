@@ -7,6 +7,11 @@ import {
   tryClaimSessionSend,
   type RunModelReplyFn,
 } from './sendPipeline';
+import {
+  collectDescendantIds,
+  getDerivedActivePath,
+  resolveActiveLeafId,
+} from '../utils/branchTree';
 
 export type ResubmitEditedResult =
   | { ok: true }
@@ -38,15 +43,43 @@ export async function resubmitEditedUserMessage(opts: {
   const sess = chat.sessions.find((s) => s.id === opts.sessionId);
   if (!sess) return { ok: false, reason: 'session-missing' };
 
-  const sourceIndex = sess.messages.findIndex((m) => m.id === opts.messageId);
-  if (sourceIndex < 0) return { ok: false, reason: 'message-missing' };
-  const sourceMessage = sess.messages[sourceIndex];
+  const sourceMessage = sess.messages.find((m) => m.id === opts.messageId);
+  if (!sourceMessage) return { ok: false, reason: 'message-missing' };
   if (sourceMessage.role !== 'user') return { ok: false, reason: 'not-user' };
 
   if (!tryClaimSessionSend(opts.sessionId)) return { ok: false, reason: 'busy' };
 
-  let priorMessages = sess.messages.slice(0, sourceIndex);
-  const staleMessageIds = sess.messages.slice(sourceIndex + 1).map((m) => m.id);
+  const resolvePriorAndStale = (messages: Message[], activeLeafId?: string | null) => {
+    const leaf = resolveActiveLeafId(messages, activeLeafId);
+    const pathIds = getDerivedActivePath(messages, leaf);
+    const pathIndex = pathIds.indexOf(opts.messageId);
+    const byId = new Map(messages.map((m) => [m.id, m]));
+    let prior: Message[];
+    let stale: string[];
+    if (pathIndex >= 0) {
+      prior = pathIds
+        .slice(0, pathIndex)
+        .map((id) => byId.get(id)!)
+        .filter(Boolean);
+      stale = [
+        ...new Set([
+          ...collectDescendantIds(messages, opts.messageId),
+          ...pathIds.slice(pathIndex + 1),
+        ]),
+      ];
+    } else {
+      /** 无 parentId 的线性会话：按下标裁剪 */
+      const flatIdx = messages.findIndex((m) => m.id === opts.messageId);
+      prior = flatIdx >= 0 ? messages.slice(0, flatIdx) : [];
+      stale = flatIdx >= 0 ? messages.slice(flatIdx + 1).map((m) => m.id) : [];
+    }
+    return { prior, stale };
+  };
+
+  let { prior: priorMessages, stale: staleMessageIds } = resolvePriorAndStale(
+    sess.messages,
+    sess.activeLeafId
+  );
 
   try {
     const ensured = await ensureContextBeforeSend({
@@ -61,14 +94,15 @@ export async function resubmitEditedUserMessage(opts: {
     });
     priorMessages = ensured.priorMessages;
 
-    const latest =
-      useChatStore.getState().sessions.find((s) => s.id === opts.sessionId)?.messages ?? sess.messages;
-    const latestSourceIndex = latest.findIndex((m) => m.id === opts.messageId);
-    if (latestSourceIndex < 0) {
+    const latestSess = useChatStore.getState().sessions.find((s) => s.id === opts.sessionId);
+    const latest = latestSess?.messages ?? sess.messages;
+    if (!latest.some((m) => m.id === opts.messageId)) {
       useChatStore.getState().clearLoadingForSession(opts.sessionId);
       return { ok: false, reason: 'message-missing' };
     }
-    priorMessages = latest.slice(0, latestSourceIndex);
+    const resolved = resolvePriorAndStale(latest, latestSess?.activeLeafId);
+    priorMessages = resolved.prior;
+    const staleIds = resolved.stale.length ? resolved.stale : staleMessageIds;
 
     const userMessage: Message = {
       ...sourceMessage,
@@ -77,11 +111,6 @@ export async function resubmitEditedUserMessage(opts: {
       timestamp: Date.now(),
       model: opts.model.name,
     };
-
-    const staleIds =
-      staleMessageIds.length > 0
-        ? latest.slice(latestSourceIndex + 1).map((m) => m.id)
-        : [];
 
     useChatStore.getState().resubmitUserMessageAtomically(
       opts.sessionId,

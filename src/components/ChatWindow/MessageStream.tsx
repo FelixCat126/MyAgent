@@ -4,10 +4,13 @@ import AgentBrowserPanel from '../AgentBrowserPanel';
 import { FiLoader } from 'react-icons/fi';
 import type { ConversationImageGalleryItem } from '../../utils/conversationImageGallery';
 import type { Message } from '../../types';
+import { getSiblingNav } from '../../utils/branchTree';
 
 export interface MessageStreamProps {
   scrollContainerRef: React.RefObject<HTMLDivElement>;
   messages: Message[];
+  /** 全量消息树（含非激活分支），用于兄弟导航 */
+  allMessages: Message[];
   isStreaming: boolean;
   streamingTargetAssistantId: string | null;
   selectionMode: boolean;
@@ -15,9 +18,14 @@ export interface MessageStreamProps {
   onToggleSelect: (messageId: string) => void;
   onStartSelect: (messageId?: string) => void;
   onEdit: (message: Message) => void;
+  onRegenerate?: (message: Message) => void;
+  onSwitchSibling?: (messageId: string, direction: -1 | 1) => void;
   editingMessageId: string | null;
   onSubmitEdit: (message: Message, next: string) => void;
   onCancelEdit: () => void;
+  branchPrevLabel: string;
+  branchNextLabel: string;
+  regenerateLabel: string;
   imageGenProgress: { current: number; total: number; messageId: string } | null;
   /** 由 ChatWindow 统一构建（曾在此二次构建 + 二次索引查找） */
   conversationGallery: ConversationImageGalleryItem[];
@@ -95,6 +103,22 @@ export const MessageStream: React.FC<MessageStreamProps> = (p) => {
                 key={message.id}
                 message={message}
                 onEdit={message.role === 'user' ? p.onEdit : undefined}
+                onRegenerate={
+                  message.role === 'assistant' && !p.isStreaming ? p.onRegenerate : undefined
+                }
+                branchNav={(() => {
+                  const nav = getSiblingNav(p.allMessages, message.id);
+                  if (nav.total <= 1) return null;
+                  return {
+                    index: nav.index,
+                    total: nav.total,
+                    onPrev: () => p.onSwitchSibling?.(message.id, -1),
+                    onNext: () => p.onSwitchSibling?.(message.id, 1),
+                    prevLabel: p.branchPrevLabel,
+                    nextLabel: p.branchNextLabel,
+                  };
+                })()}
+                regenerateLabel={p.regenerateLabel}
                 editing={p.editingMessageId === message.id}
                 onSubmitEdit={p.onSubmitEdit}
                 onCancelEdit={p.onCancelEdit}
