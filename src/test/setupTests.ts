@@ -73,6 +73,13 @@ const electronStub: ElectronAPI = {
   }),
   getGestureModelData: async () => ({ ok: false, error: 'stub' }),
   getFaceModelData: async () => ({ ok: false, error: 'stub' }),
+  ensureCameraAccess: async () => ({
+    ok: true,
+    status: 'granted',
+    openedSettings: false,
+    targetApp: 'Electron',
+  }),
+  openCameraPrivacySettings: async () => ({ ok: true, targetApp: 'Electron' }),
   simulateGazeMove: async () => ({ ok: false, error: 'stub' }),
   simulateGazeClick: async () => ({ ok: false, error: 'stub' }),
   simulateGazeWheel: async () => ({ ok: false, error: 'stub' }),

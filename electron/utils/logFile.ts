@@ -12,9 +12,13 @@ function dayString(d: Date = new Date()): string {
   return d.toISOString().slice(0, 10);
 }
 
+/** 懒求值：app.getPath 在 ready 前会抛，所以首次写日志时才拿路径。 */
+let _logDir: string | null = null;
 function logDir(): string {
+  if (_logDir) return _logDir;
   const dir = path.join(app.getPath('userData'), 'logs');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  _logDir = dir;
   return dir;
 }
 

@@ -106,7 +106,7 @@ window.electron = {
     ipcRenderer.on('window-focus-changed', handler);
     return () => ipcRenderer.removeListener('window-focus-changed', handler);
   },
-  log: (payload) => ipcRenderer.invoke('app:log', payload),
+   log: (payload) => ipcRenderer.send('app:log', payload),
   getHealth: () => ipcRenderer.invoke('app:get-health'),
   getStats: () => ipcRenderer.invoke('app:get-stats'),
   exportSession: (arg) => ipcRenderer.invoke('session:export', arg),
@@ -149,6 +149,8 @@ const INVOKE_CHANNELS = {
   remoteGatewaySetConfig: 'remote-gateway-set-config',
   getGestureModelData: 'get-gesture-model-data',
   getFaceModelData: 'get-face-model-data',
+  ensureCameraAccess: 'ensure-camera-access',
+  openCameraPrivacySettings: 'open-camera-privacy-settings',
   simulateGazeMove: 'simulate-gaze-move',
   simulateGazeClick: 'simulate-gaze-click',
   simulateGazeWheel: 'simulate-gaze-wheel',

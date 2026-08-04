@@ -6,6 +6,7 @@
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "ELECTRON_DISABLE_SECURITY_WARNINGS=true vite",
+    "grant:camera": "electron scripts/grant-macos-camera.cjs",
     "test": "npx vitest run",
     "build": "tsc && vite build",
     "preview": "ELECTRON_DISABLE_SECURITY_WARNINGS=true vite preview",

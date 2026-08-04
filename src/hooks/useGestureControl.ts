@@ -197,6 +197,7 @@ export function useGestureControl(enabled: boolean): UseGestureControlResult {
     let recognizer: { close: () => void; recognizeForVideo: (v: HTMLVideoElement, ts: number) => GestureResult } | null = null;
     let tickTimerId: number | null = null;
     let lastGestureTickAt = 0;
+    let videoReadyWaitedAt = 0;
 
     /** 图库开合链：仅跟踪 Open_Palm ↔ Closed_Fist */
     let lastLibraryGesture = '';
@@ -453,6 +454,8 @@ export function useGestureControl(enabled: boolean): UseGestureControlResult {
     };
 
     const stopAll = () => {
+      /** 清理路径必须重置 status，否则 isStale() 早 return 路径会卡在 'requesting-camera' */
+      setStatus({ kind: 'idle' });
       if (tickTimerId != null) {
         cancelAnimationFrame(tickTimerId);
         tickTimerId = null;
@@ -543,7 +546,18 @@ export function useGestureControl(enabled: boolean): UseGestureControlResult {
           break;
         }
       }
-      /** 仅识别右手；左手或未识别到右手时整帧忽略，不 fallback 到第一只手 */
+      /**
+       * 优先右手；若无 Right 标签则回退到第一只有 landmark 的手。
+       * 前摄未镜像时 MediaPipe 常把用户右手标成 Left，原先「只认 Right」会导致整段空跑。
+       */
+      if (handIdx < 0 && result?.landmarks?.length) {
+        for (let i = 0; i < result.landmarks.length; i++) {
+          if (result.landmarks[i]?.length >= 21) {
+            handIdx = i;
+            break;
+          }
+        }
+      }
       const landmarks = handIdx >= 0 ? result?.landmarks?.[handIdx] : undefined;
       const rawGesture =
         handIdx >= 0 ? result?.gestures?.[handIdx]?.[0]?.categoryName ?? '' : '';
@@ -623,6 +637,22 @@ export function useGestureControl(enabled: boolean): UseGestureControlResult {
         };
 
         setStatus({ kind: 'requesting-camera' });
+        /**
+         * 尽量走系统 TCC 弹窗；从 ZCode 启动时常不弹、列表也没有 Electron。
+         * 失败不阻断：继续 getUserMedia（开发态常已能出画面）。
+         */
+        if (typeof window !== 'undefined' && window.electron?.ensureCameraAccess) {
+          try {
+            await window.electron.ensureCameraAccess();
+          } catch {
+            /* ignore */
+          }
+        }
+        if (isStale()) {
+          stopAll();
+          return;
+        }
+
         stream = await navigator.mediaDevices.getUserMedia({
           video: { width: 640, height: 360, frameRate: { ideal: 18, max: 24 } },
           audio: false,
@@ -636,19 +666,63 @@ export function useGestureControl(enabled: boolean): UseGestureControlResult {
         videoEl.autoplay = true;
         videoEl.playsInline = true;
         videoEl.muted = true;
-        videoEl.style.position = 'fixed';
-        videoEl.style.width = '1px';
-        videoEl.style.height = '1px';
-        videoEl.style.opacity = '0';
-        videoEl.style.pointerEvents = 'none';
-        videoEl.style.left = '-9999px';
+        /** 必须给真实像素尺寸：1×1 + opacity:0 在 Electron 下经常不解码帧 */
+        videoEl.width = 640;
+        videoEl.height = 360;
+        videoEl.style.cssText =
+          'position:fixed;left:0;top:0;width:640px;height:360px;opacity:0.01;pointer-events:none;z-index:-1;';
         videoEl.srcObject = stream;
         document.body.appendChild(videoEl);
 
-        await videoEl.play().catch(() => {});
+        await Promise.race([
+          videoEl.play().catch(() => {}),
+          new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+        ]);
+        await new Promise<void>((resolve) => {
+          const el = videoEl;
+          if (!el) {
+            resolve();
+            return;
+          }
+          if (el.videoWidth > 0 && el.readyState >= 2) {
+            resolve();
+            return;
+          }
+          let settled = false;
+          const done = () => {
+            if (settled) return;
+            settled = true;
+            el.removeEventListener('loadeddata', done);
+            el.removeEventListener('playing', done);
+            window.clearInterval(poll);
+            resolve();
+          };
+          el.addEventListener('loadeddata', done);
+          el.addEventListener('playing', done);
+          const poll = window.setInterval(() => {
+            if (el.videoWidth > 0) done();
+          }, 100);
+          window.setTimeout(done, 4000);
+        });
 
         if (isStale()) {
           stopAll();
+          return;
+        }
+
+        /** 确无画面时再视为权限问题，并打开系统设置提示 */
+        if (videoEl.videoWidth < 1) {
+          try {
+            await window.electron?.openCameraPrivacySettings?.();
+          } catch {
+            /* ignore */
+          }
+          stopAll();
+          setStatus({
+            kind: 'permission-denied',
+            message:
+              '未拿到摄像头画面。请在系统「终端」运行 npm run grant:camera，勾选 Electron 后重试',
+          });
           return;
         }
 
@@ -665,7 +739,15 @@ export function useGestureControl(enabled: boolean): UseGestureControlResult {
           if (now - lastGestureTickAt < TARGET_FRAME_INTERVAL_MS) return;
           lastGestureTickAt = now;
           const v = videoEl;
-          if (!v || v.readyState < 2 || !recognizer) {
+          if (!v || !recognizer) {
+            applyDecay();
+            return;
+          }
+          if (v.videoWidth < 1) {
+            if (now - videoReadyWaitedAt > 2000) {
+              v.play().catch(() => {});
+              videoReadyWaitedAt = now;
+            }
             applyDecay();
             return;
           }
@@ -680,12 +762,12 @@ export function useGestureControl(enabled: boolean): UseGestureControlResult {
         tickTimerId = requestAnimationFrame(tick);
       } catch (e) {
         const err = e as { name?: string; message?: string };
+        stopAll();
         if (err?.name === 'NotAllowedError' || err?.name === 'SecurityError') {
           setStatus({ kind: 'permission-denied', message: err.message });
         } else {
           setStatus({ kind: 'error', message: err?.message || String(e) });
         }
-        stopAll();
       }
     };
 

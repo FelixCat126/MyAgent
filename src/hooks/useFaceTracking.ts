@@ -292,7 +292,8 @@ export function useFaceTracking(
 
     const tick = () => {
       if (isStale() || !landmarker || !video) return;
-      if (video.readyState < 2) return;
+      /** 与手势共用隐藏 video：以 videoWidth 判定是否已有帧；勿死卡 readyState>=2 */
+      if (video.videoWidth < 1) return;
       let res: FaceLandmarkerResult;
       try {
         res = landmarker.detectForVideo(video, performance.now());

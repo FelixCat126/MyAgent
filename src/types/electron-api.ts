@@ -261,6 +261,20 @@ export interface ElectronAPI {
   getFaceModelData: () => Promise<
     { ok: true; data: Uint8Array; path: string } | { ok: false; error?: string }
   >;
+  /** macOS 系统级摄像头授权；未授权时会尝试弹窗，仍失败则打开系统隐私设置 */
+  ensureCameraAccess: () => Promise<{
+    ok: boolean;
+    status: string;
+    openedSettings?: boolean;
+    targetApp?: string;
+    error?: string;
+  }>;
+  /** 打开 macOS 摄像头隐私设置；开发态请勾选 Electron（不是 ZCode） */
+  openCameraPrivacySettings: () => Promise<{
+    ok: boolean;
+    targetApp?: string;
+    error?: string;
+  }>;
   /** 在视口坐标 (x,y) 处模拟指针移动，触发 :hover / mouseenter 等 */
   simulateGazeMove: (x: number, y: number) => Promise<{ ok: true } | { ok: false; error?: string }>;
   /** 在视口坐标 (x,y) 处模拟左键点击，供视线单眨触发 */

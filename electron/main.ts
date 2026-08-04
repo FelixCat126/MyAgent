@@ -1,10 +1,20 @@
 import './utils/userDataPath';
-/** 观测层必须早于业务 IPC 注册（其它模块 import 时即建立 logger） */
+import { rootLogger } from './utils/logger';
 import { bootstrapLogging } from './utils/loggerBootstrap';
 bootstrapLogging(app.getVersion());
 /** 须尽早注册：若置于其它 ipc 之后，同目录其它模块在 import 阶段抛错会导致本段 handler 未执行 */
 import './ipc/knowledge';
-import { app, BrowserWindow, clipboard, globalShortcut, ipcMain, protocol, session } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  globalShortcut,
+  ipcMain,
+  protocol,
+  session,
+  shell,
+  systemPreferences,
+} from 'electron';
 import path from 'path';
 import os from 'os';
 import fsSync from 'fs';
@@ -166,8 +176,83 @@ async function readMediapipeModel(fileName: string) {
   return { ok: false as const, error: `${fileName} not found` };
 }
 
-ipcMain.handle('get-gesture-model-data', () => readMediapipeModel('gesture_recognizer.task'));
-ipcMain.handle('get-face-model-data', () => readMediapipeModel('face_landmarker.task'));
+ipcMain.handle('get-gesture-model-data', async () => {
+  const r = await readMediapipeModel('gesture_recognizer.task');
+  rootLogger.info('get-gesture-model-data', { ok: r.ok, bytes: r.ok ? r.data.length : 0, error: r.ok ? null : r.error });
+  return r;
+});
+ipcMain.handle('get-face-model-data', async () => {
+  const r = await readMediapipeModel('face_landmarker.task');
+  rootLogger.info('get-face-model-data', { ok: r.ok, bytes: r.ok ? r.data.length : 0, error: r.ok ? null : r.error });
+  return r;
+});
+
+/**
+ * macOS TCC 摄像头授权。
+ * 真正访问摄像头的是 Electron/MyAgent，不是 ZCode。
+ * 仅尝试弹窗；不因 status≠granted 而失败（开发态 getUserMedia 常仍可用）。
+ * 需要把 Electron 登记进系统列表时，请在系统「终端」运行：npm run grant:camera
+ */
+ipcMain.handle('ensure-camera-access', async () => {
+  const targetApp = app.isPackaged ? 'MyAgent' : 'Electron';
+  if (process.platform !== 'darwin') {
+    return { ok: true as const, status: 'granted' as const, openedSettings: false, targetApp };
+  }
+  try {
+    let status = systemPreferences.getMediaAccessStatus('camera');
+    if (status === 'granted') {
+      return { ok: true as const, status, openedSettings: false, targetApp };
+    }
+    const granted = await systemPreferences.askForMediaAccess('camera');
+    status = systemPreferences.getMediaAccessStatus('camera');
+    if (granted || status === 'granted') {
+      return { ok: true as const, status: 'granted' as const, openedSettings: false, targetApp };
+    }
+    /** 不自动乱开设置页（列表里可能暂时没有 Electron）；由 grant:camera / 设置按钮处理 */
+    return { ok: false as const, status, openedSettings: false, targetApp };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    rootLogger.warn('ensure-camera-access failed', { error: msg });
+    return {
+      ok: false as const,
+      status: 'unknown' as const,
+      openedSettings: false,
+      targetApp,
+      error: msg,
+    };
+  }
+});
+
+/** 仅打开 macOS「隐私 → 摄像头」设置页（开发态勾选 Electron，勿找 ZCode） */
+ipcMain.handle('open-camera-privacy-settings', async () => {
+  const targetApp = app.isPackaged ? 'MyAgent' : 'Electron';
+  if (process.platform !== 'darwin') {
+    return { ok: false as const, targetApp, error: 'only-macos' };
+  }
+  try {
+    await shell.openExternal(
+      'x-apple.systempreferences:com.apple.preference.security?Privacy_Camera',
+    );
+    return { ok: true as const, targetApp };
+  } catch (e) {
+    return {
+      ok: false as const,
+      targetApp,
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
+});
+
+/** 渲染端日志转发：fire-and-forget，主进程统一落盘 */
+ipcMain.on('app:log', (_e, payload: { level?: string; msg?: string; fields?: Record<string, unknown> }) => {
+  try {
+    const lvl = (payload?.level === 'debug' || payload?.level === 'warn' || payload?.level === 'error' || payload?.level === 'fatal') ? payload.level : 'info';
+    const fn = rootLogger[lvl];
+    fn.call(rootLogger, String(payload?.msg ?? ''), payload?.fields);
+  } catch {
+    /* ignore */
+  }
+});
 
 function parseGazeCoords(x: unknown, y: unknown): { ix: number; iy: number } | null {
   const ix = Math.round(Number(x));
@@ -263,13 +348,17 @@ if (PRIMARY_INSTANCE) {
   });
 
   app.whenReady().then(() => {
-    /** 语音识别：放行麦克风权限（否则 Web Speech API 不可用）*/
+    /** 语音/摄像头：放行 media（否则 getUserMedia / Web Speech 不可用）*/
     session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
       if (permission === 'media') {
         callback(true);
       } else {
         callback(false);
       }
+    });
+    /** Electron 较新版本还会走 check；只 request 不 check 时，偶发「已授权仍无帧」*/
+    session.defaultSession.setPermissionCheckHandler((_wc, permission) => {
+      return permission === 'media' || permission === 'mediaKeySystem';
     });
 
     if (process.env.MYAGENT_LOG_WEB_REQUESTS === '1') {

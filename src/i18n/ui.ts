@@ -366,6 +366,9 @@ const zh: Record<string, string> = {
   'settings.gesture.enable': '启用摄像头手势/视觉识别',
   'settings.gesture.desc':
     '开启后通过摄像头识别手势与面部动作：握拳↔张掌开关图库；✌️ 剪刀手进入/退出预览；张掌上下/左右跟手惯性滑动（列表与预览，预览内仅左右）；单独伸食指移动光标；食指操作姿态下单眨点击、双眨打开设置。推理在本机完成，不上传视频帧。',
+  'settings.gesture.cameraPermissionHint':
+    '从 ZCode 启动时，隐私列表里通常没有 ZCode，也经常暂时没有 Electron。请用系统「终端.app」（不要用 ZCode 终端）在项目目录运行：npm run grant:camera，按提示允许后，列表会出现 Electron。',
+  'settings.gesture.openCameraSettings': '打开系统摄像头权限',
   'settings.gesture.particleField': '显示对话区粒子悬浮窗',
   'settings.gesture.noCamera': '未检测到摄像头，手势/视觉识别已禁用。',
   'settings.speech.noMicrophone': '未检测到麦克风，相关语音功能已禁用。',
@@ -373,7 +376,7 @@ const zh: Record<string, string> = {
   'gesture.status.requestingCamera': '请求摄像头…',
   'gesture.status.ready': '手势/视觉识别中',
   'gesture.status.modelMissing': '模型缺失',
-  'gesture.status.permissionDenied': '权限被拒',
+  'gesture.status.permissionDenied': '需系统摄像头权限',
   'gesture.status.error': '出错',
   'gaze.calibration.title': '视线校准',
   'gaze.calibration.intro': '屏幕上会依次出现 9 个圆点，请保持头部基本不动，依次注视高亮圆点直至完成。整个过程约 18 秒。',
@@ -761,6 +764,9 @@ const en: Record<string, string> = {
   'settings.gesture.enable': 'Enable webcam gesture & vision',
   'settings.gesture.desc':
     'Uses your camera for hand gestures and face cues: fist↔palm toggles library; Victory ✌️ toggles preview; open-palm drag scrolls lists with momentum; open-palm horizontal swipe flips preview with momentum; index finger moves cursor; single blink clicks in pointer mode, double blink opens settings. Processed locally; no video upload.',
+  'settings.gesture.cameraPermissionHint':
+    'Launched from an IDE, Camera privacy often lists neither the IDE nor Electron yet. Run in macOS Terminal.app (not the IDE terminal): npm run grant:camera — then allow Electron.',
+  'settings.gesture.openCameraSettings': 'Open macOS Camera privacy',
   'settings.gesture.particleField': 'Show conversation particle window',
   'settings.gesture.noCamera': 'No camera detected. Gesture & vision control is disabled.',
   'settings.speech.noMicrophone': 'No microphone detected. Voice features are disabled.',
@@ -768,7 +774,7 @@ const en: Record<string, string> = {
   'gesture.status.requestingCamera': 'Requesting camera…',
   'gesture.status.ready': 'Gesture & vision active',
   'gesture.status.modelMissing': 'Model missing',
-  'gesture.status.permissionDenied': 'Permission denied',
+  'gesture.status.permissionDenied': 'Camera permission needed',
   'gesture.status.error': 'Error',
   'gaze.calibration.title': 'Gaze calibration',
   'gaze.calibration.intro':
