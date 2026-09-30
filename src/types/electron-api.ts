@@ -12,9 +12,9 @@ export interface ElectronAPI {
   callModel: (
     messages: Message[],
     config: ModelConfig,
-    options?: { locale?: 'zh' | 'en'; temperature?: number }
-  ) => Promise<{ content: string; reasoning?: string }>;
-  /** OpenAI/兼容 与 Ollama：使用 subscribeModelStream 流式，须配合 closeModelStream 与事件监听 */
+    options?: { locale?: 'zh' | 'en'; temperature?: number; connectionTest?: boolean }
+  ) => Promise<{ content: string; reasoning?: string; truncated?: boolean }>;
+  /** OpenAI / Anthropic 兼容与 Ollama：使用 subscribeModelStream 流式，须配合 closeModelStream 与事件监听 */
   subscribeModelStream: (
     messages: Message[],
     config: ModelConfig,
@@ -32,7 +32,7 @@ export interface ElectronAPI {
     defaultName: string;
     content: string;
     filters?: { name: string; extensions: string[] }[];
-  }) => Promise<{ ok: boolean; path?: string }>;
+  }) => Promise<{ ok: boolean; path?: string; error?: string }>;
   /** 将本机已有文件拷贝到用户选择的路径（保存为…） */
   saveLocalFileCopy: (arg: {
     sourcePath: string;
@@ -64,9 +64,15 @@ export interface ElectronAPI {
     type: string;
     size: number;
   }) => Promise<FileInfo & { preview?: string }>;
+  /** 使用系统默认应用打开本地产物 */
+  openLocalFile: (arg: { path: string }) => Promise<{
+    ok: boolean;
+    error?: string;
+  }>;
   launchApp: (appName: string) => Promise<boolean>;
   getInstalledApps: () => Promise<string[]>;
   /** 返回 1 张或多张（如火山 sequential / 多 URL）；界面按顺序展示 */
+  cancelImageGeneration: (requestId: string) => void;
   generateImage: (
     params: ImageGenerationParams,
     handlers?: {
@@ -90,15 +96,15 @@ export interface ElectronAPI {
     /** 正文因上限被裁剪（仍可阅读部分） */
     truncated?: boolean;
   }>;
-  /** 将助手消息全文导出为 md / xlsx(表格) / docx */
+  /** 将助手消息全文导出为 md / xlsx(表格) / docx / pdf */
   saveAssistantExport: (arg: {
-    format: 'md' | 'xlsx' | 'docx';
+    format: import('./document').DocumentFormat;
     content: string;
     defaultBaseName: string;
-  }) => Promise<{ ok: boolean; path?: string }>;
+  }) => Promise<{ ok: boolean; path?: string; error?: string }>;
   /** 后台生成一个文档产物并返回本地附件信息，不弹保存框 */
   createDocumentArtifact: (arg: {
-    format: 'md' | 'docx' | 'xlsx';
+    format: import('./document').DocumentFormat;
     content: string;
     defaultBaseName: string;
   }) => Promise<{ ok: boolean; file?: FileInfo; error?: string }>;
@@ -288,6 +294,26 @@ export interface ElectronAPI {
   capturePageToClipboard: () => Promise<
     { ok: true; width: number; height: number } | { ok: false; error?: string }
   >;
+  /**
+   * 视频生成（MiniMax 异步任务 + 轮询）：
+   * - handlers.onProgress 接收 { status: 'started' | 'polling' | 'completed' | 'failed', message?, localPath?, url? }
+   * - resolve 值：ok:true 时 localPath 是已落盘的 mp4 绝对路径
+   */
+  generateVideo: (
+    params: {
+      modelId: string;
+      prompt: string;
+      videoGeneratorConfig?: ModelConfig['videoGeneratorConfig'];
+      streamRequestId?: string;
+    },
+    handlers?: { onProgress?: (p: { requestId?: string; status: string; message?: string; localPath?: string; url?: string }) => void }
+  ) => Promise<{ ok: true; localPath: string; url?: string } | { ok: false; error: string; code?: number | string }>;
+  /** 把本地视频文件转 data URL（renderer 加载 local-file:// 受限） */
+  readVideoAsDataUrl: (filePath: string) => Promise<{ ok: true; dataUrl: string } | { ok: false; error: string }>;
+  /** 用户取消当前视频任务 */
+  cancelVideo: (taskId: string) => Promise<{ ok: true; canceled: true }>;
+  /** 拿本地文件大小（视频附件注入时用；local-file 走主进程 white-list 校验） */
+  getLocalFileSize: (filePath: string) => Promise<{ ok: true; size: number } | { ok: false; error: string }>;
   /** 主窗口获得/失去焦点（Electron 主进程推送，弥补首次 show 时 hasFocus 不准） */
   onWindowFocusChanged?: (handler: (focused: boolean) => void) => () => void;
   /** 观测层：渲染端日志转发到主进程统一落盘（fire-and-forget，不阻塞调用） */

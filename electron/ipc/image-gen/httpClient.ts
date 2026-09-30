@@ -1,3 +1,4 @@
+import { imageTaskContext, checkImageTask } from './task';
 import http from 'node:http';
 import https from 'node:https';
 import type { IncomingHttpHeaders } from 'node:http';
@@ -15,6 +16,7 @@ function nodeRawPostJsonBody(
   timeoutMs: number,
   extraHeaders?: Record<string, string>
 ): Promise<{ statusCode: number; headers: IncomingHttpHeaders; body: Buffer }> {
+  checkImageTask();
   let u: NodeURL;
   try {
     u = new NodeURL(endpoint);
@@ -87,6 +89,7 @@ function nodeRawPostJsonBody(
         port,
         path: `${u.pathname}${u.search}`,
         method: 'POST',
+        signal: imageTaskContext.getStore(),
         headers: {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(bodyJson, 'utf8'),

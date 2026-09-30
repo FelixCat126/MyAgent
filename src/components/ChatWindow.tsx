@@ -1,3 +1,4 @@
+import { cancelImageTask, cancelReplyRun } from '../chat/imageTaskState';
 import React, {
   useState,
   useRef,
@@ -272,7 +273,12 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
   // ===== Hooks（5 个抽出的 hook） =====
   const selection = useMessageSelection();
   const attachments = useChatAttachments();
-  const { scrollContainerRef, stickToBottomRef } = useChatScrollStick({
+  const {
+    scrollContainerRef,
+    stickToBottomRef,
+    showScrollToLatest,
+    scrollToLatest,
+  } = useChatScrollStick({
     currentSessionId: currentSessionId ?? null,
     showTypingDots: false, // 占位：useChatScrollStick 不会因为 showTypingDots 变化触发贴底以外的副作用，调用方在末尾 useLayoutEffect 中处理
     vectorRagStatus,
@@ -402,11 +408,14 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
 
   // ===== 编辑 / 选择 / 导出 / 拖拽 / 输入 / 发送 / 停止 =====
   const handleStop = () => {
+    if (currentSessionId) cancelReplyRun(currentSessionId);
     streamCancelledByUserRef.current = true;
     imageGenCancelledRef.current = true;
     setImageGenProgress(null);
     const p = imageGenSyncRef.current;
     if (p) {
+      cancelImageTask(p.messageId);
+      window.electron.cancelImageGeneration?.(p.messageId);
       updateMessage(p.sessionId, p.messageId, { imageGenProgress: undefined });
       imageGenSyncRef.current = null;
     }
@@ -659,9 +668,9 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
         summaryTitle: t('chat.contextSummaryTitle'),
         webEnabled: webOn,
         runModelReply,
+        onCommitted: () => setEditingMessageId(null),
       });
       if (!result.ok) return;
-      setEditingMessageId(null);
     } catch (e) {
       clearLoadingForSession(sendSessionId);
       console.error('[handleSubmitEditedMessage]', e);
@@ -715,7 +724,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
       fullAt: resolveContextProgressFullChars(activeModel ?? null),
       softLimit: resolveContextSoftLimitChars(activeModel ?? null),
       overhead: estimateInjectedPayloadOverheadChars(extras),
-      stored: estimateSessionChars(messages, input),
+      stored: estimateSessionChars(messages, input, activeModel),
       truncateRisk: messagesExceedSanitizeLimit(messages),
     };
   }, [activeModel, currentSession, webSearchEnabled, messages, input]);
@@ -867,6 +876,9 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
         attachmentsAriaLabel={t('chat.attachments')}
         uploadFileLabel={t('chat.uploadFile')}
         footerH={footerH}
+        showScrollToLatest={showScrollToLatest}
+        onScrollToLatest={scrollToLatest}
+        scrollToLatestLabel={t('chat.scrollToLatest')}
       />
 
       <GalleryModal

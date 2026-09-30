@@ -12,6 +12,7 @@ export interface ModelSelectorProps {
 const ModelSelector: React.FC<ModelSelectorProps> = ({ compact, className }) => {
   const { t } = useI18n();
   const { models, activeModelId, setActiveModel, getActiveModel } = useModelStore();
+  const chatModels = models.filter(m => m.isChatModel !== false);
   const activeModel = getActiveModel();
 
   const selectClass = compact
@@ -24,15 +25,15 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ compact, className }) => 
       title={activeModel?.name || t('modelSelect.placeholder')}
     >
       <select
-        value={activeModelId || ''}
+        value={activeModel?.id || activeModelId || ''}
         onChange={(e) => setActiveModel(e.target.value)}
         className={selectClass}
         style={{ WebkitAppearance: 'none', MozAppearance: 'none', appearance: 'none', textOverflow: 'ellipsis' }}
       >
-        {models.length === 0 ? (
+        {chatModels.length === 0 ? (
           <option value="">{t('modelSelect.empty')}</option>
         ) : (
-          models.map((model: ModelConfig) => (
+          chatModels.map((model: ModelConfig) => (
             <option key={model.id} value={model.id}>
               {model.name}
             </option>

@@ -86,7 +86,7 @@ export function pickModelId(
 ): string | null {
   for (const r of rules) {
     if (!matchesRule(r, ctx)) continue;
-    const exists = models.some((m) => m.id === r.preferModelId);
+    const exists = models.some((m) => m.id === r.preferModelId && m.isChatModel !== false);
     if (!exists) continue;
     return r.preferModelId;
   }

@@ -1,6 +1,7 @@
 import type { Message, ModelConfig } from '../types';
 import {
   CONTEXT_SUMMARY_PREFIX,
+  CONTEXT_MIN_RECENT_MESSAGES,
   buildCompressionPrompt,
   compressMessagesLocally,
   createContextSummaryMessage,
@@ -52,8 +53,9 @@ export async function compressSessionContext(opts: {
   const { older, recent, keepFromIndex } = splitMessagesForCompression(
     messages,
     undefined,
-    6,
-    softLimit
+    CONTEXT_MIN_RECENT_MESSAGES,
+    softLimit,
+    model
   );
   if (older.length === 0) {
     return { didCompress: false, messages };
@@ -79,7 +81,7 @@ export async function compressSessionContext(opts: {
   }
 
   if (!summaryBody) {
-    const local = compressMessagesLocally(messages, summaryTitle, softLimit);
+    const local = compressMessagesLocally(messages, summaryTitle, softLimit, model);
     if (!local) return { didCompress: false, messages };
     replaceMessagesPrefix(sessionId, local.keepFromIndex, local.summaryMessage);
     return { didCompress: true, messages: local.messages };

@@ -1,3 +1,4 @@
+import { isDocumentFormat, type DocumentFormat } from '../types/document';
 import { endOfBalancedBraceObject } from '../utils/toolCalls';
 
 export type AgentLocalToolName =
@@ -16,7 +17,7 @@ export type AgentToolCall =
   | { tool: 'local_read'; path: string; raw: string }
   | {
       tool: 'local_export';
-      format: 'md' | 'docx' | 'xlsx';
+      format: DocumentFormat;
       content: string;
       name: string;
       raw: string;
@@ -148,8 +149,8 @@ function parseLocalToolCall(raw: string): AgentToolCall | null {
 
   if (tool === 'local_export') {
     const formatRaw = String(obj.format ?? 'md');
-    const format =
-      formatRaw === 'docx' ? 'docx' : formatRaw === 'xlsx' ? 'xlsx' : 'md';
+    if (!isDocumentFormat(formatRaw)) return null;
+    const format = formatRaw;
     const content = typeof obj.content === 'string' ? obj.content : '';
     const name = typeof obj.name === 'string' ? obj.name.trim() : 'export';
     if (!content.trim()) return null;

@@ -10,8 +10,10 @@ export interface Message {
   /** 本轮用户明确要求生成可下载文档时，控制助手消息下方的下载入口 */
   exportHint?: {
     document?: boolean;
-    formats?: Array<'md' | 'docx'>;
-    status?: 'thinking' | 'generating';
+    formats?: import('./document').DocumentFormat[];
+    status?: 'thinking' | 'generating' | 'ready' | 'failed';
+    sourceContent?: string;
+    error?: string;
   };
   /** 生图进行时供远端快照展示占位格；不写盘（见 chatStore.partialize） */
   imageGenProgress?: { current: number; total: number };
@@ -46,6 +48,7 @@ export interface FileInfo {
 }
 
 export interface ImageGenerationParams {
+  background?: 'transparent' | 'opaque' | 'auto';
   prompt: string;
   width?: number;
   height?: number;

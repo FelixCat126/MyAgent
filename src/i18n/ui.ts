@@ -1,6 +1,13 @@
 import type { Locale } from './types';
 
 const zh: Record<string, string> = {
+  'document.incomplete': '文件尚未全部生成',
+  'document.failed': '生成失败，正文已保留。',
+  'document.retry': '重试缺失的文件',
+  'document.generating': '正在生成…',
+  'document.ready': '文件已生成，可点击附件下载。',
+  'document.saveAs': '另存为',
+  'document.unsupported': '目前支持 Word、PDF、Excel、Markdown、TXT 和 CSV。你要求的文件格式暂未支持，请选择其中一种；我不会自动替换成其他格式。',
   'app.newChat': '新对话',
   'app.emptyHint': '点击左下角“新对话”开始智聊',
   'app.brand': 'MyAgent AI',
@@ -39,6 +46,7 @@ const zh: Record<string, string> = {
   'message.selectTitle': '选择这条消息',
   'message.closePreview': '关闭预览',
   'message.imagePreviewDownload': '下载',
+  'message.imageOpenPreview': '查看大图',
   'message.imageAlt': '图片预览',
   'message.imageGalleryPrev': '上一张',
   'message.imageGalleryNext': '下一张',
@@ -47,6 +55,10 @@ const zh: Record<string, string> = {
   'message.downloadSourceMissing': '本地源文件已不存在（可能已被移动或删除），无法下载。',
   'message.downloadPathEmpty': '没有有效的本地文件路径，无法保存。',
   'message.imageDownloadFailed': '图片保存失败，可稍后重试或长按图片保存。',
+  'message.fileOpen': '打开',
+  'message.fileMore': '更多文件操作',
+  'message.fileExportAs': '导出为',
+  'message.fileOpenFailed': '无法打开文件：{detail}',
   'message.contentTruncated': '[内容过长，已截断显示；复制按钮仍会复制完整内容]',
   'modelSelect.placeholder': '选择模型',
   'modelSelect.empty': '暂无模型',
@@ -83,6 +95,7 @@ const zh: Record<string, string> = {
   'chat.reasoningStreaming': '正在输出…',
   'chat.imageGenWorking': '正在生成图片',
   'chat.imageGenWorkingTotal': '（共 {total} 张）',
+  'chat.imageGenProgress': '{current} / {total} 已完成',
   'chat.documentGenWorking': '正在生成文档',
   'chat.documentGenWorkingSub': '正在整理正文、排版并写入本地文件',
   'chat.documentDraftingTerminal': '正在流式起草文档…',
@@ -104,8 +117,9 @@ const zh: Record<string, string> = {
   'chat.documentWriteFailed': '文档内容已生成，但写入本地文件失败。请重试或检查文档目录权限。',
   'chat.newConversationDivider': '以下为新对话内容',
   'chat.compressingContext': '自动压缩上下文中',
+  'chat.scrollToLatest': '回到最新消息',
   'chat.contextSummaryTitle': '【上下文摘要】',
-  'chat.contextUsageHint': '本地上下文约 {used}k / {limit}k（{pct}% · 统一按 1M）',
+  'chat.contextUsageHint': '本地上下文约 {used}k / {limit}k（{pct}% · 估算输入预算）',
   'chat.contextSanitizeWarn': '有消息超长，发送时可能被截断',
   'remoteGateway.sessionMissing': '找不到该会话，请在桌面刷新对话列表后再试。',
   'remoteGateway.busySession': '该会话正在等待上一轮模型回复，请稍后再发。',
@@ -137,6 +151,7 @@ const zh: Record<string, string> = {
   'chat.downloadMd': '下载 MD',
   'chat.downloadXlsx': '下载 Excel',
   'chat.downloadDocx': '下载 Word',
+  'chat.downloadPdf': '下载 PDF',
   'chat.exportStripHint': '检测到本回复含 Markdown 表格，可将内容导出为文件。',
   'chat.exportDocumentHint': '已按本轮要求提供文档下载。',
   'chat.ragStatusInjected':
@@ -144,12 +159,7 @@ const zh: Record<string, string> = {
   'chat.ragStatusEmpty':
     '本次未附加本地知识库：与当前问题足够相关的片段不足（或相关度未达阈值）。已建索引时可换更具体的问题重试。',
   'chat.ragStatusError': '工作区向量未生效：{detail}',
-  'chat.imageGenToolSystemPrompt':
-    '【MyAgent · 图像生成】本客户端已连接图像生成工具（本地 CLI 或 HTTP）。当用户明确要求画图、生成图片、海报、插画、头像等时，你必须在回复中给出一条可被客户端解析的「工具调用」，以便在本机执行绘图；禁止仅用「我不能生成图片」「我没有绘图能力」「我是文本模型」等理由拒绝而不输出工具调用。\n\n' +
-    '任选其一（须出现在回复正文中）：\n' +
-    '· JSON 单行：{"myagent_tool":"generate_image","prompt":"对画面主体的具体中文描述，可含光线、构图、风格等","width":512,"height":768,"count":1}\n' +
-    '· 或 XML：<GenerateImage prompt="对画面的具体中文或中英混写描述" width="512" height="768" count="1" />\n\n' +
-    '要求：prompt 须**尽量具体**（主体、氛围、光线、构图、风格等）；语言**不限**，中文、英文或中英混写均可——云端多模态图片模型通常可直接使用高质量中文，本地 SD 类后端更适合英文。**count 可选但很重要**：用户要求“九张/多张/每人一张/多个方案”时必须填目标张数，不要说“之后继续生成”。多图时 prompt 也要写清每张应独立成图且动作/款式/构图差异。参考图由客户端自动使用用户上传/选中的图片，不要在工具 JSON 中写 image 字段。**width/height 可选**：本地轻量生图建议 512×512 / 512×768 / 768×512（除非用户明确要高分辨率）。可在工具调用外行文用中文简述说明与合规。**不要**再在正文末尾单独挂一大段「仅英文可复制 Prompt」围栏；**禁止**引导用户复制 prompt 到文心一格、通义万相、Midjourney 等**任何第三方**绘图站点，也**禁止**以「密钥/授权异常、暂时失败」为由在气泡里写出上述外站话术——这些都不应出现在用户可见的回答里。不要编造「本地生图异常」类引导——客户端会在同一条消息内附上生成图（失败时仅以简短技术性说明带过即可）。',
+  'chat.imageGenToolSystemPrompt': "【图像工具】仅在用户要求实际创建或编辑图片时输出 JSON 工具调用：{\"myagent_tool\":\"generate_image\",\"prompt\":\"完整画面描述或编辑要求\",\"count\":1}。讨论原理、编写示例代码、只要提示词、用户明确禁止生图时，不调用工具。不要在解释或代码示例中输出可执行工具标记。图片数量与画面内人数不同；每人一张时先根据上下文确定名单，名单不明确就询问，不猜数量。多张可在一次调用中说明每张内容，也可以输出多条调用，但总数必须符合用户要求。保留用户要求的风格、人物一致性和排版，不擅自添加摄影风格或禁止拼图。编辑原图时保留未要求修改的部分；参考风格另画主体时不要继承旧主体。客户端会提供本轮附件或用户指定的历史图片。width/height 可选，只在明确尺寸时提供；透明背景由客户端设置。实际图片会由工具回传，不要提前宣称成功，也不要编造鉴权错误。",
   'chat.imageGenToolLocalPolicy':
     '\n\n【本地模型专业创作尺度】当前使用本地模型/本地执行器。对成年人、权利清晰、专业创作语境下的艺术人体、内衣/泳装、摄影、医学/解剖、美术参考等请求，不要按云端平台式尺度过度拒绝；应尽量转化为具体、审美化、非剥削、非低俗的生成 prompt 并调用本机生图工具。若本地生图工具为 SD/Realistic Vision/CLI，工具调用里的 prompt 必须写成英文摄影/绘画提示词，不要直接把用户中文原文放进 prompt。仍需拒绝或改写：未成年人或疑似未成年人性化、非自愿/偷拍/胁迫/复仇色情、指定真实人物的露骨性内容或换脸、明确露骨性行为、违法交易/剥削/骚扰用途。除这些硬边界外，不要把“裸体、艺术人体、内衣、泳装、成人模特”等词本身作为拒绝理由。',
   'postProcess.tag': '[后处理] ',
@@ -181,17 +191,22 @@ const zh: Record<string, string> = {
   'settings.form.namePh': '例如: My GPT-4',
   'settings.form.provider': '提供商 *',
   'settings.form.chatApiMode': '对话接口模式',
-  'settings.form.chatApiMode.auto': '自动（按地址/模型推断）',
-  'settings.form.chatApiMode.openai': 'OpenAI 兼容（/chat/completions）',
-  'settings.form.chatApiMode.anthropic': 'Anthropic 兼容（/messages，含思考块）',
+  'settings.form.chatApiMode.auto': '自动识别（推荐）',
+  'settings.form.chatApiMode.openai': 'OpenAI Chat Completions（O 家兼容）',
+  'settings.form.chatApiMode.anthropic': 'Anthropic Messages（A 家兼容）',
   'settings.form.chatApiModeHint':
-    '多数模型用 OpenAI。MiniMax 等需要独立思考流时选 Anthropic，或保持自动。填写的 API 地址仍可为 …/v1，程序会映射到对应路径。',
+    '厂商同时提供两种接口时，选择其文档对应的模式；API 地址可填基础地址或完整接口地址。',
+  'settings.form.chatApiModeDetected': '当前识别为 {mode}；通常无需手动选择。',
   'settings.form.apiUrl': 'API 地址 *',
   'settings.form.apiUrlPh.ollama': 'http://127.0.0.1:11434（可省略 /v1，程序会补全）',
   'settings.form.apiUrlPh.default': 'https://api.openai.com/v1',
   'settings.form.apiKey': 'API 密钥',
   'settings.form.apiKeyPh': 'sk-...',
   'settings.form.modelName': '模型名称 *',
+  'settings.form.testConnection': '测试连接',
+  'settings.form.testingConnection': '正在测试…',
+  'settings.form.connectionTestSuccess': '连接成功：{model}',
+  'settings.form.connectionTestFailed': '连接失败：{detail}',
   'settings.form.modelNamePh.openai': 'gpt-4',
   'settings.form.modelNamePh.other': 'llama3',
   'settings.form.maxTokens': '最大 Token 数',
@@ -260,6 +275,7 @@ const zh: Record<string, string> = {
   'settings.list.confirmDelete': '确定删除「{name}」吗？',
   'settings.list.add': '添加模型',
   'settings.provider.custom': '自定义',
+  'settings.provider.compatible': '兼容接口（A / O）',
   'settings.imageGenModel': '生图模型',
   'settings.imageGenModelAuto': '自动选择（使用第一个可用的生图模型）',
   'settings.imageGenModelHint': '选择用于图像生成的模型，可与对话模型不同。对话时说「画一张…」即调用此模型。',
@@ -269,7 +285,7 @@ const zh: Record<string, string> = {
   'settings.stream': '启用流式输出',
   'settings.streaming.sectionTitle': '流式输出',
   'settings.streamDesc':
-    '仅当当前模型为 OpenAI / 自定义兼容 / Ollama / 智谱（OpenAI 兼容端点）时逐字输出；Claude、Gemini 在应用内仍为整段返回，与是否勾选无关。',
+    'OpenAI Chat Completions、Anthropic Messages、Ollama 与兼容接口均支持流式输出；Gemini 暂为整段返回。',
   'settings.webDesc':
     '仅当消息含「搜索、查询、新闻、天气、官网」等关键词或 /web / #联网 前缀时才请求网络（省流量）。摘要不写入聊天记录。免 Key 时会依次尝试 DuckDuckGo Instant Answer、中文/英文维基、最后 DuckDuckGo Lite 网页摘录；要好的实时摘要请选用 Tavily / Brave 并填写 API Key。',
   'settings.webEnable': '启用联网搜索',
@@ -393,6 +409,13 @@ const zh: Record<string, string> = {
 };
 
 const en: Record<string, string> = {
+  'document.incomplete': 'Some files could not be generated',
+  'document.failed': 'Generation failed. The document body has been preserved.',
+  'document.retry': 'Retry missing files',
+  'document.generating': 'Generating…',
+  'document.ready': 'Files are ready. Click an attachment to download.',
+  'document.saveAs': 'Save as',
+  'document.unsupported': 'Supported formats are Word, PDF, Excel, Markdown, TXT and CSV. The requested format is not supported yet. Please choose one of these formats.',
   'app.newChat': 'New',
   'app.emptyHint': 'Click “New” at the bottom left to start.',
   'app.brand': 'MyAgent AI',
@@ -431,6 +454,7 @@ const en: Record<string, string> = {
   'message.selectTitle': 'Select this message',
   'message.closePreview': 'Close',
   'message.imagePreviewDownload': 'Download',
+  'message.imageOpenPreview': 'View full size',
   'message.imageAlt': 'Image preview',
   'message.imageGalleryPrev': 'Previous image',
   'message.imageGalleryNext': 'Next image',
@@ -440,6 +464,10 @@ const en: Record<string, string> = {
     'The local file is no longer available (it may have been moved or deleted), so it cannot be downloaded.',
   'message.downloadPathEmpty': 'No valid local file path — cannot save.',
   'message.imageDownloadFailed': 'Could not save the image. Retry or touch-and-hold the image to save.',
+  'message.fileOpen': 'Open',
+  'message.fileMore': 'More file actions',
+  'message.fileExportAs': 'Export as',
+  'message.fileOpenFailed': 'Could not open the file: {detail}',
   'message.contentTruncated': '[Content truncated for display; Copy still copies the full text]',
   'modelSelect.placeholder': 'Choose model',
   'modelSelect.empty': 'No models',
@@ -476,6 +504,7 @@ const en: Record<string, string> = {
   'chat.reasoningStreaming': 'Streaming…',
   'chat.imageGenWorking': 'Generating image',
   'chat.imageGenWorkingTotal': ' ({total} total)',
+  'chat.imageGenProgress': '{current} / {total} complete',
   'chat.documentGenWorking': 'Generating document',
   'chat.documentGenWorkingSub': 'Preparing content, formatting, and writing the local file',
   'chat.documentDraftingTerminal': 'Streaming document draft…',
@@ -498,8 +527,9 @@ const en: Record<string, string> = {
     'Document content was generated, but writing the local file failed. Retry or check folder permissions.',
   'chat.newConversationDivider': 'New conversation',
   'chat.compressingContext': 'Compressing context…',
+  'chat.scrollToLatest': 'Jump to latest message',
   'chat.contextSummaryTitle': '[Context summary]',
-  'chat.contextUsageHint': 'Local context ~{used}k / {limit}k ({pct}% · unified 1M)',
+  'chat.contextUsageHint': 'Local context ~{used}k / {limit}k ({pct}% · estimated input budget)',
   'chat.contextSanitizeWarn': 'Some messages are overlong and may be truncated on send',
   'remoteGateway.sessionMissing': 'Conversation not found. Refresh the desktop session list and try again.',
   'remoteGateway.busySession': 'That chat is still waiting for the previous model reply. Try again shortly.',
@@ -531,6 +561,7 @@ const en: Record<string, string> = {
   'chat.downloadMd': 'Save as Markdown',
   'chat.downloadXlsx': 'Save as Excel',
   'chat.downloadDocx': 'Save as Word',
+  'chat.downloadPdf': 'Save as PDF',
   'chat.exportStripHint':
     'This reply includes a Markdown-style table—you can export it below.',
   'chat.exportDocumentHint': 'Document download is available for this request.',
@@ -539,12 +570,7 @@ const en: Record<string, string> = {
   'chat.ragStatusEmpty':
     'No local knowledge was attached: nothing was close enough by relevance (or below the threshold). Try a more specific question if an index exists.',
   'chat.ragStatusError': 'Workspace vectors were not applied: {detail}',
-  'chat.imageGenToolSystemPrompt':
-    '[MyAgent · Image generation] This client has an image-generation tool (local CLI or HTTP). When the user clearly asks for a drawing, image, poster, illustration, avatar, etc., you MUST include one machine-parseable tool invocation in your reply so the client can run it locally. Do not refuse with only “I cannot generate images” / “I have no image capability” / “I am a text-only model” without outputting the tool call.\n\n' +
-    'Use either form (must appear in the reply body):\n' +
-    '· Single-line JSON: {"myagent_tool":"generate_image","prompt":"Concrete description of the scene (Chinese, English, or mixed is fine)","width":512,"height":768,"count":1}\n' +
-    '· Or XML: <GenerateImage prompt="Concrete Chinese or bilingual description of the scene" width="512" height="768" count="1" />\n\n' +
-    'Rules: prompt must be **specific** (subject, lighting, composition, style, etc.). **Language is not restricted**—cloud multimodal image models often handle Chinese well; English is also fine especially for English-tuned local/SD backends. `count` is optional but important: when the user asks for nine/multiple images, one image per person, or several options, set the target count now; do not say you will continue later. For multi-image requests, the prompt must say every output is a separate finished image and should vary pose/style/clothing/composition as requested. Reference images are automatically attached from user uploads/selection; do not put an image field in the tool JSON. Width/height are optional; for lightweight local gens prefer 512×512, 512×768, or 768×512 unless the user asks for higher res. You may add a short note outside the tool line. **Do not** append a fenced English-only prompt dump. **Never** suggest copying prompts to Wenxin Yige, Tongyi Wanxiang, or any third‑party drawing site, nor “if keys/auth fail, paste elsewhere” fallbacks—keep all of that out of the visible reply.** On failures**, responses must stay brief and technical only. **Do not** invent “local tool broken” narratives—the client attaches the image here.',
+  'chat.imageGenToolSystemPrompt': "Image tool: only for actual image creation or editing, emit JSON {\"myagent_tool\":\"generate_image\",\"prompt\":\"complete description or edit instructions\",\"count\":1}. Do not invoke for explanations, example code, prompt-only requests, or when the user prohibits image generation. Do not include executable tool markers in examples. Count output images, not subjects inside an image. For one image per subject, resolve the list from context; ask if unknown. Multiple calls must sum to the requested count. Preserve requested style, identity and layout; do not force photographic style, diversity or prohibit collages. Edits preserve unchanged content; style references with new subjects must not inherit old subjects. The client supplies attached or selected historical images. Width/height are optional. The client handles transparent backgrounds. Never claim success before results or invent API errors.",
   'chat.imageGenToolLocalPolicy':
     '\n\n[Local model professional-creation policy] The current model/executor is local. For adult, rights-cleared, professional creation contexts such as artistic nude studies, lingerie/swimwear, photography, medical/anatomy, or figure-reference work, do not apply cloud-platform-style over-refusal; convert the request into a concrete, aesthetic, non-exploitative, non-vulgar prompt and call the local image tool. If the local image tool is SD/Realistic Vision/CLI, the tool-call prompt must be written as an English photography/painting prompt; do not put the user’s Chinese wording directly into the prompt. Still refuse or rewrite: sexualized minors or ambiguous minors, non-consensual/spy/coercive/revenge sexual content, explicit sexual content or deepfake/sexual content targeting a real person, explicit sexual acts, illegal trade, exploitation, or harassment. Outside those hard boundaries, do not treat words like nudity, artistic nude, underwear, swimwear, or adult model as refusal reasons by themselves.',
   'postProcess.tag': '[post-process] ',
@@ -576,17 +602,22 @@ const en: Record<string, string> = {
   'settings.form.namePh': 'e.g. My GPT-4',
   'settings.form.provider': 'Provider *',
   'settings.form.chatApiMode': 'Chat API mode',
-  'settings.form.chatApiMode.auto': 'Auto (infer from URL / model)',
-  'settings.form.chatApiMode.openai': 'OpenAI-compatible (/chat/completions)',
-  'settings.form.chatApiMode.anthropic': 'Anthropic-compatible (/messages, with thinking)',
+  'settings.form.chatApiMode.auto': 'Auto detect (recommended)',
+  'settings.form.chatApiMode.openai': 'OpenAI Chat Completions (O-compatible)',
+  'settings.form.chatApiMode.anthropic': 'Anthropic Messages (A-compatible)',
   'settings.form.chatApiModeHint':
-    'Most models use OpenAI. Choose Anthropic for independent thinking streams (e.g. MiniMax), or leave Auto. You can keep a …/v1 base URL; the app maps it to the right path.',
+    'When a provider offers both APIs, choose the mode shown in its docs. You may enter a base URL or a full endpoint URL.',
+  'settings.form.chatApiModeDetected': 'Detected: {mode}. Usually no manual selection is needed.',
   'settings.form.apiUrl': 'API base URL *',
   'settings.form.apiUrlPh.ollama': 'http://127.0.0.1:11434 (may omit /v1; the app will add it)',
   'settings.form.apiUrlPh.default': 'https://api.openai.com/v1',
   'settings.form.apiKey': 'API key',
   'settings.form.apiKeyPh': 'sk-...',
   'settings.form.modelName': 'Model name *',
+  'settings.form.testConnection': 'Test connection',
+  'settings.form.testingConnection': 'Testing…',
+  'settings.form.connectionTestSuccess': 'Connected: {model}',
+  'settings.form.connectionTestFailed': 'Connection failed: {detail}',
   'settings.form.modelNamePh.openai': 'gpt-4',
   'settings.form.modelNamePh.other': 'llama3',
   'settings.form.maxTokens': 'Max tokens',
@@ -655,6 +686,7 @@ const en: Record<string, string> = {
   'settings.list.confirmDelete': 'Delete “{name}”?',
   'settings.list.add': 'Add model',
   'settings.provider.custom': 'Custom',
+  'settings.provider.compatible': 'Compatible API (A / O)',
   'settings.imageGenModel': 'Image model',
   'settings.imageGenModelAuto': 'Auto (use first available image model)',
   'settings.imageGenModelHint': 'Select the model for image generation; it can differ from the chat model. Say "draw a…" in chat to invoke it.',
@@ -664,7 +696,7 @@ const en: Record<string, string> = {
   'settings.stream': 'Enable streaming output',
   'settings.streaming.sectionTitle': 'Streaming output',
   'settings.streamDesc':
-    'Token streaming works for OpenAI-compatible, Ollama, and Zhipu-compatible APIs. Claude and Gemini still return a full block in this app.',
+    'Streaming works with OpenAI Chat Completions, Anthropic Messages, Ollama, and compatible APIs. Gemini currently returns a full block.',
   'settings.webDesc':
     'A search runs only when the message has search-like keywords or a /web / #web prefix. Summaries are not saved to the chat. Without API keys, DuckDuckGo and Wikipedia are tried; for better results use Tavily or Brave with a key.',
   'settings.webEnable': 'Enable web search',

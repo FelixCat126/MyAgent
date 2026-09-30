@@ -1,3 +1,4 @@
+import { bindImageTask, checkImageTask } from './task';
 import type { ModelConfig, ImageGenerationParams } from '../../../src/types';
 import { stripUtf8Bom, looksLikeBinaryImage, base64FieldToImageBuffer } from './parsing';
 import {
@@ -82,6 +83,9 @@ async function buildImageHttpRequestViaAdapter(ctx: {
   const adapter = httpImageProviderAdapters.find((a) =>
     a.match({ mode: ctx.mode, endpoint: ctx.endpoint, config: ctx.config })
   )!;
+  if (request.referenceImages.length && !['volc-seedream', 'openai-images'].includes(adapter.id)) {
+    throw new Error('当前图片服务尚未接入参考图编辑，请选择支持参考图的服务。');
+  }
   const built = await adapter.build({
     endpoint: ctx.endpoint,
     config: ctx.config,
@@ -158,6 +162,7 @@ async function generateImageHttp(
   params: ImageGenerationParams,
   config: NonNullable<ModelConfig['imageGeneratorConfig']>
 ): Promise<Array<{ url: string; path: string; width: number; height: number }>> {
+  checkImageTask();
   if (!config.endpoint?.trim()) {
     throw new Error('请配置生图 HTTP 接口 URL');
   }
@@ -203,6 +208,7 @@ async function generateImageHttp(
    * 否则 Undici 在 body 挂起时会无限 await，主进程 IPC 卡死、整个应用无响应。
    */
   const abortCtrl = new AbortController();
+  const unbind = bindImageTask(abortCtrl);
   const abortTimer = setTimeout(() => abortCtrl.abort(), IMAGE_GEN_TIMEOUT_MS);
 
   let response: Response;
@@ -221,6 +227,7 @@ async function generateImageHttp(
       buf = Buffer.from(await response.arrayBuffer());
     }
   } catch (e: unknown) {
+    checkImageTask();
     const nm = e instanceof Error ? e.name : '';
     const msg = e instanceof Error ? e.message : String(e);
     if (nm === 'AbortError') {
@@ -231,6 +238,7 @@ async function generateImageHttp(
     throw new Error(`生图 HTTP 请求失败（含读取响应体）：${msg}`);
   } finally {
     clearTimeout(abortTimer);
+    unbind();
   }
 
   /** MiniMax 2049 常见于国内/国际站与 Key 不匹配：自动换站重试一次 */
@@ -245,7 +253,9 @@ async function generateImageHttp(
             to: alt.slice(0, 220),
             authSource: authMeta.source,
           });
+          checkImageTask();
           const retryCtrl = new AbortController();
+          const unbindRetry = bindImageTask(retryCtrl);
           const retryTimer = setTimeout(() => retryCtrl.abort(), IMAGE_GEN_TIMEOUT_MS);
           try {
             const retryRes = await fetch(alt, {
@@ -272,6 +282,7 @@ async function generateImageHttp(
             }
           } finally {
             clearTimeout(retryTimer);
+            unbindRetry();
           }
         }
       }
@@ -280,6 +291,7 @@ async function generateImageHttp(
     }
   }
 
+  checkImageTask();
   let httpStatus = response.status;
   let ct = String(response.headers.get('content-type') ?? '').toLowerCase();
   let clHdr = response.headers.get('content-length');
@@ -318,6 +330,7 @@ async function generateImageHttp(
 
   const bodyPayload = JSON.stringify(postBody);
 
+  if (!buf.length && response.ok && providerKind !== 'ollama' && providerKind !== 'sdwebui') throw new Error('图片服务返回空结果，未自动重复付费请求，请稍后重试。');
   if (!buf.length && response.ok) {
     imgGenDebug('[生图 HTTP] fetch 读到 0 字节，尝试 Node http/https 兜底', {
       te: teHdr,

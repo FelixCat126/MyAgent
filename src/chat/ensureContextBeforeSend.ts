@@ -1,8 +1,6 @@
 import type { Message, ModelConfig } from '../types';
 import {
-  CONTEXT_COMPRESS_RATIO,
   canPerformCompressionSplit,
-  estimateSessionChars,
   shouldCompressContext,
 } from '../utils/contextBudget';
 import { resolveContextSoftLimitChars } from '../utils/inferContextWindow';
@@ -61,12 +59,20 @@ function needsCompression(
     workspaceMaxChars: extras?.workspaceMaxChars,
   });
   const effectiveLimit = Math.max(soft - overhead, Math.floor(soft * 0.5));
-  const overBudget =
-    shouldCompressContext(priorMessages, draftInput, effectiveLimit, undefined, model) ||
-    estimateSessionChars(priorMessages, draftInput) + overhead >= soft * CONTEXT_COMPRESS_RATIO;
+  /**
+   * 只在聊天历史本身可通过摘要缩小时启动压缩。
+   * 工作区/RAG 是本次临时注入，压缩历史无法减少它；若仅预留开销超限，反复摘要只会空转。
+   */
+  const overBudget = shouldCompressContext(
+    priorMessages,
+    draftInput,
+    effectiveLimit,
+    undefined,
+    model
+  );
   if (!overBudget) return false;
   /** 与 compressSessionContext 可行性对齐，避免空转压缩 UI */
-  return canPerformCompressionSplit(priorMessages, soft);
+  return canPerformCompressionSplit(priorMessages, soft, model);
 }
 
 /**

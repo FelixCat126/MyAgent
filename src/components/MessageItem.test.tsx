@@ -1,3 +1,4 @@
+import { flushZustandFilePersist } from '../utils/zustandFileStorage';
 /** @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
@@ -26,7 +27,8 @@ beforeEach(() => {
   useSettingStore.setState({ locale: 'zh' });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await flushZustandFilePersist();
   cleanup();
   setSaveCapability(true);
 });

@@ -27,6 +27,7 @@ import './ipc/export';
 import './ipc/file';
 import './ipc/documents';
 import './ipc/image-gen';
+import './ipc/video-gen';
 import './ipc/web-search';
 import './ipc/persist';
 import './ipc/media-library';

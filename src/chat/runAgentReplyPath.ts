@@ -50,7 +50,12 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
     modelName: activeModel.name,
   });
 
-  const reasoningStream = createAnimStream(sendSessionId, assistantId, ui.appendReasoningToMessage);
+  const reasoningStream = createAnimStream(
+    sendSessionId,
+    assistantId,
+    ui.appendReasoningToMessage,
+    { pace: 'reasoning' },
+  );
 
   try {
     const agentOut = await runAgentLoop({

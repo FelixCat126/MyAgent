@@ -10,3 +10,9 @@ const myAgentData = path.join(app.getPath('appData'), 'MyAgent');
 if (app.getPath('userData') !== myAgentData) {
   app.setPath('userData', myAgentData);
 }
+
+/**
+ * 升级安装兼容性约束：版本升级只能更改 package version，不能根据版本号、
+ * 构建架构或安装位置改变 userData。这样覆盖安装 1.2.0 时会继续读取同一份
+ * ~/Library/Application Support/MyAgent 数据和加密配置。
+ */

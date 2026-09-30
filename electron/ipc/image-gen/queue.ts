@@ -7,15 +7,13 @@ import {
   OLLAMA_EMPTY_PROBE_DEFAULT_MS,
 } from '../../constants';
 
-/** 全应用单次只跑一个生图 IPC，避免多张并行 CLI/HTTP 抢占 GPU 或卡住主线程 */
-let imageGenerationQueueTail: Promise<void> = Promise.resolve();
-
-export function enqueueSerializedImageGeneration<T>(job: () => Promise<T>): Promise<T> {
-  const run = imageGenerationQueueTail.then(job);
-  imageGenerationQueueTail = run.then(
-    () => undefined,
-    () => undefined
-  );
+/** Local GPU jobs serialize together; independent cloud services do not block them. */
+const queueTails = new Map<string, Promise<void>>();
+export function enqueueSerializedImageGeneration<T>(job: () => Promise<T>, key = 'local'): Promise<T> {
+  const run = (queueTails.get(key) ?? Promise.resolve()).then(job);
+  const tail = run.then(() => undefined, () => undefined);
+  queueTails.set(key, tail);
+  void tail.then(() => { if (queueTails.get(key) === tail) queueTails.delete(key); });
   return run;
 }
 

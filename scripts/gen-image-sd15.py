@@ -10,8 +10,10 @@ with 24 GB unified memory without forcing large CPU offload.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
+import urllib.request
 
 
 MODEL_ID = os.environ.get("MYAGENT_SD_MODEL", "SG161222/Realistic_Vision_V6.0_B1_noVAE")
@@ -149,16 +151,35 @@ def main() -> None:
     parser.add_argument("--out", default=os.environ.get("MYAGENT_OUTPUT_PATH", ""), help="Output PNG path")
     parser.add_argument("--width", type=int, default=None)
     parser.add_argument("--height", type=int, default=None)
+    parser.add_argument("--unload-ollama-model", default="")
     parser.add_argument("--steps", type=int, default=int(os.environ.get("MYAGENT_SD_STEPS", "20")))
     parser.add_argument("--guidance", type=float, default=float(os.environ.get("MYAGENT_SD_GUIDANCE", "7.0")))
     parser.add_argument("--negative", default=os.environ.get("MYAGENT_SD_NEGATIVE", "low quality, blurry, distorted"))
     args = parser.parse_args()
+
+    if json.loads(os.environ.get("MYAGENT_REFERENCE_IMAGES") or "[]"):
+        raise SystemExit("本地 SD1.5 仅支持文生图，无法使用参考图。请移除参考图，或切换到支持图片编辑的生图模型。")
 
     prompt = enhance_composition_prompt((args.prompt or "").strip())
     if not prompt:
         raise SystemExit("Missing prompt")
     if not args.out:
         raise SystemExit("Missing output path")
+
+    # Optional for memory-constrained Macs: release only this app's configured
+    # conversation model after prompt preparation, before allocating the image model.
+    if args.unload_ollama_model:
+        request = urllib.request.Request(
+            "http://127.0.0.1:11434/api/generate",
+            data=json.dumps({"model": args.unload_ollama_model, "keep_alive": 0}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                response.read()
+            print("Released local conversation model memory before image generation.", flush=True)
+        except OSError:
+            print("Could not release Ollama memory; continuing image generation.", flush=True)
 
     requested_width = clamp_size(args.width or int(os.environ.get("MYAGENT_WIDTH", "512")), 512)
     requested_height = clamp_size(args.height or int(os.environ.get("MYAGENT_HEIGHT", "512")), 512)

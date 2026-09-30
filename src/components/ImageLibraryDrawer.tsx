@@ -10,6 +10,7 @@ import {
 } from '@/utils/conversationImageGallery';
 import { setGestureUiPhase } from '@/utils/gestureUiContext';
 import { confirmDestructive } from '../store/confirmStore';
+import { artifactDisplayName } from './MessageItem/DocumentAttachmentCard';
 
 const TRANSITION_MS = 320;
 
@@ -260,12 +261,14 @@ const ImageLibraryDrawer: React.FC<Props> = ({ open, sessions, onClose }) => {
                   const href = localFileProtocolUrl(p);
                   const name =
                     p.replace(/\\/g, '/').split('/').pop() || `${i + 1}`;
+                  const displayName = artifactDisplayName(name, t('message.imageAlt'));
                   return (
-                    <li key={p} className="min-w-0">
+                    <li key={p} className="group relative min-w-0">
                       <button
                         type="button"
-                        className="group flex w-full flex-col overflow-hidden rounded-xl border border-stone-400/35 bg-white/85 text-left shadow-sm transition-all hover:border-primary-500/50 hover:shadow-md dark:border-slate-600/40 dark:bg-slate-900/70"
+                        className="flex w-full flex-col overflow-hidden rounded-xl border border-stone-400/35 bg-white/85 text-left shadow-sm transition-all hover:border-primary-500/50 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/65 dark:border-slate-600/40 dark:bg-slate-900/70"
                         onClick={() => openPreviewAt(i)}
+                        aria-label={`${t('message.imageOpenPreview')} ${displayName}`}
                       >
                         <span className="relative block aspect-square w-full overflow-hidden bg-stone-200/60 dark:bg-slate-800">
                           <img
@@ -274,32 +277,21 @@ const ImageLibraryDrawer: React.FC<Props> = ({ open, sessions, onClose }) => {
                             loading="lazy"
                             className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.03]"
                           />
-                          <span
-                            role="button"
-                            tabIndex={0}
-                            className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-md bg-black/45 text-white opacity-0 backdrop-blur-sm transition-opacity hover:bg-red-600/80 group-hover:opacity-100 focus:opacity-100"
-                            title={t('imageLibrary.delete')}
-                            aria-label={t('imageLibrary.delete')}
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              void deleteImagePath(p);
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key !== 'Enter' && e.key !== ' ') return;
-                              e.preventDefault();
-                              e.stopPropagation();
-                              void deleteImagePath(p);
-                            }}
-                          >
-                            <FiTrash2 size={14} aria-hidden />
-                          </span>
                         </span>
                         <span className="flex min-h-[2rem] items-center gap-1 border-t border-stone-400/25 px-1.5 py-1 dark:border-slate-600/35">
                           <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-stone-700 dark:text-slate-200">
-                            {name}
+                            {displayName}
                           </span>
                         </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-md bg-black/50 text-white opacity-0 backdrop-blur-sm transition-opacity hover:bg-red-600/90 group-hover:opacity-100 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
+                        title={t('imageLibrary.delete')}
+                        aria-label={`${t('imageLibrary.delete')} ${displayName}`}
+                        onClick={() => void deleteImagePath(p)}
+                      >
+                        <FiTrash2 size={14} aria-hidden />
                       </button>
                     </li>
                   );

@@ -17,6 +17,14 @@ export function looksLikeMiniMaxChat(apiUrl: string, modelName: string): boolean
   );
 }
 
+function endpointPath(apiUrl: string): string {
+  try {
+    return new URL(String(apiUrl ?? '').trim()).pathname.replace(/\/+$/, '').toLowerCase();
+  } catch {
+    return String(apiUrl ?? '').trim().split(/[?#]/, 1)[0]!.replace(/\/+$/, '').toLowerCase();
+  }
+}
+
 /** 解析最终走哪条对话协议（显式选择优先于自动推断） */
 export function resolveChatApiMode(input: {
   chatApiMode?: ChatApiModePreference | null;
@@ -26,6 +34,11 @@ export function resolveChatApiMode(input: {
 }): ResolvedChatApiMode {
   const pref = input.chatApiMode ?? 'auto';
   if (pref === 'openai' || pref === 'anthropic') return pref;
+
+  /** 完整接口地址比厂商名称更明确，双协议厂商可直接粘贴任一路径。 */
+  const path = endpointPath(input.apiUrl ?? '');
+  if (/\/messages$/.test(path)) return 'anthropic';
+  if (/\/chat\/completions$/.test(path)) return 'openai';
 
   if (input.provider === 'claude') return 'anthropic';
 
@@ -45,44 +58,47 @@ export function resolveChatApiMode(input: {
  */
 export function resolveAnthropicMessagesUrl(apiUrl: string): string {
   const raw = String(apiUrl ?? '').trim();
+  if (!raw) return 'https://api.anthropic.com/v1/messages';
   try {
-    const u = new URL(raw || 'https://api.anthropic.com');
-    let host = u.hostname;
+    const u = new URL(raw);
+    let host = u.host;
     let path = u.pathname.replace(/\/+$/, '') || '';
+    const suffix = u.search;
 
     if (/minimax/i.test(host) || looksLikeMiniMaxChat(raw, '')) {
-      if (/^api\.minimax\.chat$/i.test(host)) host = 'api.minimax.io';
+      if (/^api\.minimax\.chat$/i.test(u.hostname)) host = 'api.minimax.io';
       if (!/minimax/i.test(host)) {
         host = /minimaxi\.com/i.test(raw) ? 'api.minimaxi.com' : 'api.minimax.io';
       }
-      return `${u.protocol}//${host}/anthropic/v1/messages`;
+      return `${u.protocol}//${host}/anthropic/v1/messages${suffix}`;
     }
 
-    if (/\/v1\/messages$/i.test(path)) {
-      return `${u.protocol}//${host}${path}`;
+    if (/\/messages$/i.test(path)) {
+      return `${u.protocol}//${host}${path}${suffix}`;
     }
     if (/\/anthropic$/i.test(path)) {
-      return `${u.protocol}//${host}${path}/v1/messages`;
+      return `${u.protocol}//${host}${path}/v1/messages${suffix}`;
     }
     if (/\/anthropic\/v1$/i.test(path)) {
-      return `${u.protocol}//${host}${path}/messages`;
+      return `${u.protocol}//${host}${path}/messages${suffix}`;
     }
     if (/\/chat\/completions$/i.test(path)) {
       path = path.replace(/\/chat\/completions$/i, '');
     }
     if (/\/v1$/i.test(path)) {
-      return `${u.protocol}//${host}${path}/messages`;
+      return `${u.protocol}//${host}${path}/messages${suffix}`;
     }
     if (!path || path === '/') {
-      return `${u.protocol}//${host}/v1/messages`;
+      return `${u.protocol}//${host}/v1/messages${suffix}`;
     }
-    return `${u.protocol}//${host}${path}/v1/messages`;
+    return `${u.protocol}//${host}${path}/v1/messages${suffix}`;
   } catch {
-    return 'https://api.anthropic.com/v1/messages';
+    /** 地址错误时保留原值让请求明确失败，避免把第三方密钥误发给默认外部服务。 */
+    return raw;
   }
 }
 
-/** Anthropic 鉴权：官方 Claude 用 x-api-key；MiniMax / 多数兼容网关用 Bearer */
+/** Anthropic 鉴权：官方 Claude 用 x-api-key；MiniMax 用 Bearer；通用网关同时兼容两种头。 */
 export function buildAnthropicAuthHeaders(opts: {
   apiKey?: string;
   provider?: string;
@@ -102,8 +118,11 @@ export function buildAnthropicAuthHeaders(opts: {
 
   if (useXApiKey) {
     headers['x-api-key'] = key;
+  } else if (looksLikeMiniMaxChat(opts.apiUrl ?? '', '')) {
+    headers.Authorization = `Bearer ${key}`;
   } else {
     headers.Authorization = `Bearer ${key}`;
+    headers['x-api-key'] = key;
   }
   return headers;
 }
@@ -114,7 +133,10 @@ export function buildAnthropicThinkingParams(opts: {
   modelName?: string;
   provider?: string;
   maxTokens?: number;
-}): { thinking: Record<string, unknown> } {
+}): { thinking?: Record<string, unknown> } {
+  if (looksLikeMiniMaxChat(opts.apiUrl ?? '', opts.modelName ?? '')) {
+    return { thinking: { type: 'adaptive' } };
+  }
   const isClaudeOfficial =
     opts.provider === 'claude' || /\banthropic\.com\b/i.test(String(opts.apiUrl ?? ''));
   if (isClaudeOfficial) {
@@ -126,8 +148,8 @@ export function buildAnthropicThinkingParams(opts: {
       },
     };
   }
-  /** 非 Claude 的 Anthropic 兼容网关：用 adaptive 开启 thinking */
-  return { thinking: { type: 'adaptive' } };
+  /** 通用 Messages 网关未必实现扩展思考字段，默认不传以保证兼容。 */
+  return {};
 }
 
 export function parseAnthropicContentBlocks(data: unknown): {

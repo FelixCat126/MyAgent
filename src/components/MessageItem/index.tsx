@@ -1,3 +1,5 @@
+import { DocumentArtifactStatus } from './DocumentArtifactStatus';
+import { DOCUMENT_FORMATS, type DocumentFormat } from '../../types/document';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Message } from '../../types';
 import {
@@ -31,7 +33,6 @@ import { AttachmentGrid } from './AttachmentGrid';
 import {
   MAX_MARKDOWN_RENDER_CHARS,
   MAX_ASSISTANT_PREPROCESS_CHARS,
-  MULTI_IMAGE_ATTACHMENT_GRID,
 } from './styleConstants';
 
 interface MessageItemProps {
@@ -72,22 +73,6 @@ import InlineStreamDots from './InlineStreamDots';
 import DocumentGeneratingPlaceholder from './DocumentGeneratingPlaceholder';
 import ImageGeneratingPlaceholder from './ImageGeneratingPlaceholder';
 
-
-function extractDocumentExportBody(raw: string): string {
-  const text = String(raw || '').replace(/\r\n/g, '\n').trim();
-  if (!text) return text;
-
-  const fenced = text.match(/```(?:markdown|md|document|docx|word)?\s*\n([\s\S]*?)\n```/i);
-  if (fenced?.[1]?.trim()) return fenced[1].trim();
-
-  const bodyMarker = text.match(/(?:^|\n)(?:正文|文档正文|以下为(?:文档|正文)|文稿内容)\s*[:：]\s*\n([\s\S]*)/);
-  if (bodyMarker?.[1]?.trim()) return bodyMarker[1].trim();
-
-  const heading = text.search(/^#{1,3}\s+\S/m);
-  if (heading > 0) return text.slice(heading).trim();
-
-  return text;
-}
 
 // AssistantReasoningCollapsible 已抽离到 ./MessageItem/AssistantReasoningCollapsible
 // 既要重新导出保留外部 import 兼容，也要让本地 JSX 通过别名可见
@@ -212,6 +197,19 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
     }
   };
 
+  const openAttachmentFile = async (localPath: string) => {
+    try {
+      const result = await window.electron.openLocalFile({ path: localPath });
+      if (!result.ok) {
+        showError('message.fileOpenFailed', { detail: result.error || '' });
+      }
+    } catch (error) {
+      showError('message.fileOpenFailed', {
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
 
 
   const isThoughtStreaming =
@@ -240,11 +238,11 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
   const assistantExportBody = useMemo(
     () => {
       if (message.role !== 'assistant') return '';
-      const raw = message.content ?? '';
+      const raw = message.exportHint?.sourceContent ?? message.content ?? '';
       if (isThoughtStreaming) return capAssistantText(raw);
       return stripGenerateImageArtifactsForDisplay(raw);
     },
-    [message.role, message.id, message.content, isThoughtStreaming]
+    [message.role, message.id, message.content, message.exportHint?.sourceContent, isThoughtStreaming]
   );
 
   const handleCopy = async () => {
@@ -267,16 +265,15 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
     }
   };
 
-  const handleSaveExport = async (format: 'md' | 'xlsx' | 'docx') => {
+  const handleSaveExport = async (format: DocumentFormat) => {
     const raw = message.role === 'assistant' ? assistantExportBody : (message.content ?? '');
-    const content = format === 'xlsx' ? raw : extractDocumentExportBody(raw);
+    const content = raw;
     const safe = String(content).slice(0, 40).replace(/[\\/:"*?<>|\r\n]/g, '_');
     const base = safe || `reply-${message.timestamp}`;
-    await window.electron.saveAssistantExport({
-      format,
-      content,
-      defaultBaseName: base,
-    });
+    try {
+      const result = await window.electron.saveAssistantExport({ format, content, defaultBaseName: base });
+      if (!result.ok && result.error) showError('common.operationFailed', { detail: result.error });
+    } catch (e) { showError('common.operationFailed', { detail: e instanceof Error ? e.message : String(e) }); }
   };
 
   const standaloneCode =
@@ -307,19 +304,44 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
     assistantDisplayBody.length > MAX_MARKDOWN_RENDER_CHARS
       ? `${assistantDisplayBody.slice(0, MAX_MARKDOWN_RENDER_CHARS)}\n\n${t('message.contentTruncated')}`
       : assistantDisplayBody;
+  const generatedDocumentFormats = new Set<DocumentFormat>();
+  for (const file of message.files ?? []) {
+    if (file.type.startsWith('image/') || file.type.startsWith('video/')) continue;
+    const ext = file.name.match(/\.([^.]+)$/)?.[1]?.toLowerCase();
+    if (ext && DOCUMENT_FORMATS.includes(ext as DocumentFormat)) {
+      generatedDocumentFormats.add(ext as DocumentFormat);
+    }
+  }
+  const hasReadyDocumentFiles =
+    message.role === 'assistant' &&
+    message.exportHint?.document === true &&
+    generatedDocumentFormats.size > 0;
+  const cannedReadyText = new Set([
+    t('chat.documentReady').trim(),
+    t('document.ready').trim(),
+    '文件已生成',
+    '文档已生成',
+    'File generated',
+    'Document generated',
+  ]);
+  const hideCannedDocumentReadyBody =
+    hasReadyDocumentFiles && cannedReadyText.has(assistantDisplayBody.trim().replace(/[.。，,].*$/, ''));
+  const renderedMarkdownBody = hideCannedDocumentReadyBody ? '' : markdownBody;
   const hasExportableAssistantText =
     message.role === 'assistant' && !showInlineStreamPlaceholder && assistantExportBody.trim().length > 0;
   const hasMarkdownTable = assistantExportBody.trim().length > 0 && markdownContainsPipeTable(assistantExportBody);
-  const documentExportFormats = message.exportHint?.document ? message.exportHint.formats ?? ['md', 'docx'] : [];
-  const showMdExport = documentExportFormats.includes('md');
-  const showDocxExport = documentExportFormats.includes('docx');
-  const showExportPanel =
-    !standaloneCode &&
-    hasExportableAssistantText &&
-    !showDocumentGeneratingPlaceholder &&
-    !showImageGeneratingPlaceholder &&
-    !(message.exportHint?.document && message.files?.length) &&
-    (hasMarkdownTable || showMdExport || showDocxExport);
+  const documentExportFormats: DocumentFormat[] = (() => {
+    if (!message.exportHint?.document) return [];
+    const base: DocumentFormat[] = message.exportHint?.formats ?? ['md', 'docx', 'pdf', 'xlsx'];
+    /** 含 markdown 表格时把 xlsx 列入可选导出（用户上传表格/AI 给表格时希望用 Excel） */
+    return hasMarkdownTable && !base.includes('xlsx') ? [...base, 'xlsx'] : base;
+  })();
+  const showExportPanel = !hasReadyDocumentFiles && !standaloneCode && hasExportableAssistantText && !showDocumentGeneratingPlaceholder && !showImageGeneratingPlaceholder && (documentExportFormats.length > 0 || hasMarkdownTable);
+  const exportFormats: DocumentFormat[] = [...new Set<DocumentFormat>([...documentExportFormats, ...(hasMarkdownTable ? ['xlsx' as const] : [])])];
+  const artifactExportFormats = hasReadyDocumentFiles
+    ? DOCUMENT_FORMATS.filter((format) => !generatedDocumentFormats.has(format))
+    : [];
+
 
   /** 以上为助手展示/导出正文（已剔除生图工具 JSON） */
 
@@ -359,7 +381,7 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
                   bg-gradient-to-br from-primary-500 to-primary-600 text-white rounded-tr-sm border border-primary-400/30`}
                 >
               {message.files && message.files.length > 0 && (
-                    <div className={`mb-2 ${MULTI_IMAGE_ATTACHMENT_GRID}`}>
+                    <div className="mb-2">
                       <AttachmentGrid
                         files={message.files}
                         tone="user"
@@ -518,43 +540,17 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
                     </pre>
                   </div>
                 ) : showInlineStreamPlaceholder || hideBodyForDocumentThinking ? null : (
-                  <MarkdownContent text={markdownBody} copyCodeLabel={t('message.copyCodeBlock')} />
+                  renderedMarkdownBody ? (
+                    <MarkdownContent text={renderedMarkdownBody} copyCodeLabel={t('message.copyCodeBlock')} />
+                  ) : null
                 )}
+                <DocumentArtifactStatus message={message} />
                 {showExportPanel ? (
-                  <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-stone-200/80 pt-2.5 dark:border-slate-600/50">
-                    <p className="m-0 inline-flex min-h-[1.625rem] items-center text-[10px] leading-snug text-stone-500 dark:text-slate-400">
-                      {message.exportHint?.document ? t('chat.exportDocumentHint') : t('chat.exportStripHint')}
-                    </p>
-                    {showMdExport ? (
-                      <button
-                        type="button"
-                        onClick={() => void handleSaveExport('md')}
-                        className="inline-flex items-center gap-1 rounded-md border border-stone-300/60 bg-white/60 px-2 py-1 text-[10px] font-medium text-stone-600 hover:bg-stone-100 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-200 dark:hover:bg-slate-600"
-                      >
-                        <FiDownload size={11} />
-                        {t('chat.downloadMd')}
-                      </button>
-                    ) : null}
-                    {hasMarkdownTable ? (
-                      <button
-                        type="button"
-                        onClick={() => void handleSaveExport('xlsx')}
-                        className="inline-flex items-center gap-1 rounded-md border border-stone-300/60 bg-white/60 px-2 py-1 text-[10px] font-medium text-stone-600 hover:bg-stone-100 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-200 dark:hover:bg-slate-600"
-                      >
-                        <FiDownload size={11} />
-                        {t('chat.downloadXlsx')}
-                      </button>
-                    ) : null}
-                    {showDocxExport ? (
-                      <button
-                        type="button"
-                        onClick={() => void handleSaveExport('docx')}
-                        className="inline-flex items-center gap-1 rounded-md border border-stone-300/60 bg-white/60 px-2 py-1 text-[10px] font-medium text-stone-600 hover:bg-stone-100 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-200 dark:hover:bg-slate-600"
-                      >
-                        <FiDownload size={11} />
-                        {t('chat.downloadDocx')}
-                      </button>
-                    ) : null}
+                  <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-stone-200 bg-stone-50/70 p-2.5 dark:border-slate-700 dark:bg-slate-800/50">
+                    <span className="mr-1 text-xs text-stone-500 dark:text-slate-400">{t('document.saveAs')}</span>
+                    {exportFormats.map(format => <button key={format} type="button" onClick={() => void handleSaveExport(format)} className="inline-flex items-center gap-1.5 rounded-md border border-stone-200 bg-white px-2.5 py-1.5 text-xs font-medium text-stone-700 hover:border-stone-400 hover:bg-stone-100 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200">
+                      <FiDownload size={12} />{{ docx: 'Word', pdf: 'PDF', xlsx: 'Excel', md: 'Markdown', txt: 'TXT', csv: 'CSV' }[format]}
+                    </button>)}
                   </div>
                 ) : null}
                 {showImageGeneratingPlaceholder && mergedImageGenProgress ? (
@@ -573,20 +569,21 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
                     className={
                       !(showInlineStreamPlaceholder ||
                         standaloneCode ||
-                        markdownBody.trim() ||
+                        renderedMarkdownBody.trim() ||
                         (isThoughtStreaming || (message.reasoning ?? '').trim().length > 0))
                         ? ''
                         : 'mt-3'
                     }
                   >
-                    <div className={MULTI_IMAGE_ATTACHMENT_GRID}>
-                      <AttachmentGrid
-                        files={message.files}
-                        tone="assistant"
-                        onPreviewImage={openAttachmentPreview}
-                        onDownload={downloadAttachmentCopy}
-                      />
-                    </div>
+                    <AttachmentGrid
+                      files={message.files}
+                      tone="assistant"
+                      onPreviewImage={openAttachmentPreview}
+                      onDownload={downloadAttachmentCopy}
+                      onOpen={openAttachmentFile}
+                      exportFormats={artifactExportFormats}
+                      onExport={handleSaveExport}
+                    />
                   </div>
                 )}
               </div>

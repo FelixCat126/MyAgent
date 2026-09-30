@@ -10,16 +10,22 @@ export interface ModelConfig {
   apiKey?: string;
   modelName: string;
   /**
-   * 对话 API 协议。差异较大时（如需独立 thinking 流）请选 anthropic。
-   * 缺省 / auto：MiniMax、URL 含 anthropic、provider=claude → Anthropic Messages；其余 → OpenAI Chat Completions。
+   * 对话 API 协议。多数配置保持 auto 即可；双协议厂商可手动指定。
+   * 缺省 / auto：完整 /messages 或 /chat/completions 路径优先；其后按 MiniMax、Anthropic URL、provider=claude 推断。
    */
   chatApiMode?: ChatApiMode;
   isLocal: boolean;
+  /** 旧配置默认可用于对话；纯生图连接为 false。 */
+  isChatModel?: boolean;
+  contextWindowTokens?: number;
   maxTokens: number;
   /** 是否允许作为图像生成工具调用的"生图模型"，用于 <GenerateImage> */
   isImageGenerator?: boolean;
   imageGeneratorConfig?: {
     type: 'cli' | 'http';
+    promptLanguage?: 'auto' | 'en';
+    apiKeySource?: 'independent' | 'connection';
+    quality?: 'auto' | 'low' | 'medium' | 'high';
     /**
      * 生图厂商标识，用于显式路由适配器（优先于 endpoint/模式推断）。
      * - bailian-wanx：阿里云百炼 DashScope 通义万相（wan2.6 同步）
@@ -51,5 +57,23 @@ export interface ModelConfig {
      * 留空则不给进程传 argv，仅用环境变量（推荐本地脚本读 MYAGENT_*）
      */
     cliArgLines?: string;
+  };
+  /** 是否允许作为视频生成工具调用的"视频模型" */
+  isVideoGenerator?: boolean;
+  videoGeneratorConfig?: {
+    /**
+     * 视频厂商标识：minimax（异步任务 + 轮询）；后续可扩展 runway/kling 等
+     */
+    provider: 'minimax' | 'custom' | string;
+    /** API 密钥（视频厂商） */
+    apiKey?: string;
+    /** 模型名（如 MiniMax-Hailuo-02 / abab-video-1 / video-01） */
+    model: string;
+    /** 端点：MiniMax 视频任务国内 https://api.minimaxi.com  国际 https://api.minimax.io */
+    endpoint?: string;
+    /** 默认分辨率：720 / 768 / 1080；MiniMax 支持 5s/10s 默认 768x768 */
+    resolution?: '480' | '720' | '768' | '1080';
+    /** 时长（秒）：MiniMax 5 / 10 / 其它厂商各异 */
+    duration?: 5 | 10;
   };
 }

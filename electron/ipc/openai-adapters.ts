@@ -112,7 +112,10 @@ export function resolveMiniMaxAnthropicMessagesUrl(apiUrl: string): string {
 export { resolveAnthropicMessagesUrl, looksLikeMiniMaxChat };
 
 /** Anthropic Messages：拆出 system，其余为 user/assistant（含可选图片 / 思考块） */
-export function formatAnthropicMessages(messages: Message[]): {
+export function formatAnthropicMessages(
+  messages: Message[],
+  options?: { includeAssistantThinking?: boolean }
+): {
   system: string;
   messages: Array<{ role: string; content: string | Array<Record<string, unknown>> }>;
 } {
@@ -148,7 +151,9 @@ export function formatAnthropicMessages(messages: Message[]): {
     /** MiniMax 多轮要求保留 thinking 块；有 reasoning 时按 content 数组回传 */
     if (msg.role === 'assistant') {
       const reasoning = typeof msg.reasoning === 'string' ? msg.reasoning.trim() : '';
-      if (reasoning) {
+      /** 官方 Anthropic 的 thinking 回传还要求原始 signature；当前消息结构未保存签名。
+       * 仅 MiniMax 明确要求多轮保留 thinking，因此由调用方显式开启。 */
+      if (reasoning && options?.includeAssistantThinking) {
         out.push({
           role: 'assistant',
           content: [

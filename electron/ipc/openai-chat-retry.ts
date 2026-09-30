@@ -7,7 +7,23 @@ export function canFallbackAnthropicToOpenAi(config: ModelConfig): boolean {
 
 export function isHttpBadRequest(e: unknown): boolean {
   const ax = e as { response?: { status?: number } };
-  return ax?.response?.status === 400;
+  return ax?.response?.status === 400 || ax?.response?.status === 422;
+}
+
+/** A 协议兼容端点若不接受扩展思考参数，去掉该可选字段重试一次。 */
+export async function withAnthropicThinkingFallback<T>(opts: {
+  thinkingParams: { thinking?: Record<string, unknown> };
+  request: (thinkingParams: { thinking?: Record<string, unknown> }) => Promise<T>;
+  onFallback?: (err: unknown) => void;
+}): Promise<T> {
+  const { thinkingParams, request, onFallback } = opts;
+  try {
+    return await request(thinkingParams);
+  } catch (err: unknown) {
+    if (!thinkingParams.thinking || !isHttpBadRequest(err)) throw err;
+    onFallback?.(err);
+    return request({});
+  }
 }
 
 /**

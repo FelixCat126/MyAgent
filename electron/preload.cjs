@@ -41,7 +41,11 @@ window.electron = {
     const think = (_e, t) => {
       if (handlers.onThinkingDelta) handlers.onThinkingDelta(t);
     };
-    const err = (_e, m) => handlers.onError(m);
+    const err = (_e, m) => {
+      handlers.onError(m);
+      /** 错误本身就是终态；立即清理，避免兼容服务漏发/延迟 end 时界面一直“运行中”。 */
+      end();
+    };
     let ended = false;
     const cleanup = () => {
       if (ended) return;
@@ -70,6 +74,7 @@ window.electron = {
     };
   },
   closeModelStream: () => ipcRenderer.send('model-stream-abort'),
+  cancelImageGeneration: (requestId) => ipcRenderer.send('image-generation-cancel', requestId),
   generateImage: (params, handlers) => {
     const requestId =
       (params && typeof params.streamRequestId === 'string' && params.streamRequestId) ||
@@ -101,6 +106,26 @@ window.electron = {
     ipcRenderer.send('persist-state-set-sync', name, value);
   },
   capturePageToClipboard: () => ipcRenderer.invoke('capture-page-to-clipboard'),
+  generateVideo: (params, handlers) => {
+    const requestId =
+      (params && typeof params.streamRequestId === 'string' && params.streamRequestId) ||
+      `vid-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const payload = { ...(params || {}), streamRequestId: requestId };
+    let progressHandler = null;
+    if (handlers && typeof handlers.onProgress === 'function') {
+      progressHandler = (_event, eventPayload) => {
+        if (!eventPayload || eventPayload.requestId !== requestId) return;
+        handlers.onProgress(eventPayload);
+      };
+      ipcRenderer.on('video-generation-progress', progressHandler);
+    }
+    return ipcRenderer.invoke('api:generate-video', payload).finally(() => {
+      if (progressHandler) ipcRenderer.removeListener('video-generation-progress', progressHandler);
+    });
+  },
+  readVideoAsDataUrl: (filePath) => ipcRenderer.invoke('api:read-video', filePath),
+  cancelVideo: (taskId) => ipcRenderer.invoke('api:cancel-video', taskId),
+  getLocalFileSize: (filePath) => ipcRenderer.invoke('app:get-local-file-size', filePath),
   onWindowFocusChanged: (func) => {
     const handler = (_event, focused) => func(Boolean(focused));
     ipcRenderer.on('window-focus-changed', handler);
@@ -122,6 +147,7 @@ const INVOKE_CHANNELS = {
   getClipboardText: 'get-clipboard-text',
   setClipboardText: 'set-clipboard-text',
   uploadFile: 'upload-file',
+  openLocalFile: 'open-local-file',
   launchApp: 'launch-app',
   getInstalledApps: 'get-installed-apps',
   extractDocumentText: 'extract-document-text',

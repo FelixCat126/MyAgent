@@ -35,4 +35,30 @@ describe('sanitizeMessagesForModel', () => {
     expect(out[0].files).toBeUndefined();
     expect(out[1].files).toEqual(files);
   });
+
+  it('附件型空助手转成非空占位，避免兼容接口卡在无正文历史轮次', () => {
+    const files = [{ name: 'result.xlsx', path: '/tmp/result.xlsx', type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', size: 1 }];
+    const out = sanitizeMessagesForModel([
+      { ...msg('第一问', 'user') },
+      { ...msg('', 'assistant'), files },
+      { ...msg('第二问', 'user') },
+    ]);
+    expect(out.map((item) => [item.role, item.content])).toEqual([
+      ['user', '第一问'],
+      ['assistant', '（上一轮助手已生成附件）'],
+      ['user', '第二问'],
+    ]);
+    expect(out[1].files).toBeUndefined();
+  });
+
+  it('删除无正文无附件的空轮次，并合并由此相邻的同角色消息', () => {
+    const out = sanitizeMessagesForModel([
+      msg('问题一', 'user'),
+      msg('   ', 'assistant'),
+      msg('问题二', 'user'),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].role).toBe('user');
+    expect(out[0].content).toBe('问题一\n\n问题二');
+  });
 });

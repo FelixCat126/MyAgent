@@ -31,13 +31,18 @@ describe('canUseSseStream', () => {
     expect(canUseSseStream(m({ id: '1', provider: 'custom', apiUrl: 'u', modelName: 'g' }))).toBe(true);
     expect(canUseSseStream(m({ id: '1', provider: 'ollama', apiUrl: 'u', modelName: 'g' }))).toBe(true);
   });
-  it('claude 仅当智谱判据时为 true，否则 false', () => {
-    expect(canUseSseStream(m({ id: '1', provider: 'claude', apiUrl: 'u', modelName: 'c' }))).toBe(false);
+  it('Claude 与显式 Anthropic 兼容接口为 true', () => {
+    expect(canUseSseStream(m({ id: '1', provider: 'claude', apiUrl: 'u', modelName: 'c' }))).toBe(true);
+    expect(canUseSseStream(m({ id: '2', provider: 'custom', apiUrl: 'https://x/v1/messages', modelName: 'c', chatApiMode: 'anthropic' }))).toBe(true);
     expect(
       canUseSseStream(
         m({ id: '1', provider: 'claude', apiUrl: 'https://open.bigmodel.cn', modelName: 'c' })
       )
     ).toBe(true);
+  });
+
+  it('Gemini 仍为非 SSE', () => {
+    expect(canUseSseStream(m({ id: 'g', provider: 'gemini', apiUrl: 'https://x', modelName: 'gemini' }))).toBe(false);
   });
 });
 

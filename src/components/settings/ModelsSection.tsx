@@ -1,3 +1,4 @@
+import { useSettingStore } from '../../store/settingStore';
 /**
  * 模型配置区：模型列表（增删改）+ 编辑表单（基础信息 + 生图工具高级配置）+ 生图模型独立选择。
  *
@@ -13,43 +14,40 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import {
   FORM_INPUT_LG,
-  FORM_INPUT_SM,
-  FORM_INPUT_SM_MONO,
-  FORM_INPUT_SM_MONO_TIGHT,
-  FORM_LABEL,
-  FORM_LABEL_SM,
-  FORM_SELECT_SM,
 } from './styleConstants';
 import {
   FiCpu,
   FiChevronUp,
   FiChevronDown,
-  FiChevronRight,
   FiSave,
   FiEdit2,
   FiTrash2,
   FiPlus,
+  FiWifi,
+  FiLoader,
 } from 'react-icons/fi';
-import { IosSwitch } from '../IosSwitch';
 import { useModelStore, modelHasUsableImageGenerator } from '../../store/modelStore';
 import { confirmDestructive } from '../../store/confirmStore';
-import { showError, showWarning } from '../../store/errorStore';
+import { showError, showSuccess, showWarning } from '../../store/errorStore';
 import { ModelConfig } from '../../types';
 import { BUILTIN_ROUTING_RULES, type RoutingRule } from '../../agent/modelRouting';
 import {
   IMAGE_PROVIDER_PRESETS,
   getImageProviderPreset,
   getPresetDefaults,
-  imageGenNeedsApiKey,
-  inferImageProviderFromEndpoint,
   resolveImageProviderId,
-  suggestedHttpFormatForProvider,
   type ImageProviderId,
 } from '../../../electron/shared/imageProviderPresets';
+import { resolveChatApiMode } from '../../utils/chatApiMode';
 
 /** 编辑表单数据结构（原 SettingsPanel.tsx 模块作用域 type，移入本组件以避免跨模块依赖） */
 export type EditingFormData = {
   name: string;
+  isChatModel?: boolean;
+  contextWindowTokens?: number;
+  imageKeySource?: 'connection' | 'independent';
+  promptLanguage?: 'auto' | 'en';
+  imageQuality?: 'auto' | 'low' | 'medium' | 'high';
   provider: ModelConfig['provider'];
   apiUrl: string;
   apiKey: string;
@@ -75,8 +73,11 @@ export type EditingFormData = {
 /** 默认表单数据（原 SettingsPanel.tsx 模块作用域常量） */
 export const defaultFormData: EditingFormData = {
   name: '',
+  isChatModel: true,
+  imageKeySource: 'independent',
+  imageQuality: 'auto',
   provider: 'openai',
-  apiUrl: '',
+  apiUrl: 'https://api.openai.com/v1',
   apiKey: '',
   modelName: '',
   chatApiMode: 'auto',
@@ -114,17 +115,6 @@ function validateImageGeneratorForm(form: EditingFormData, envMap: Record<string
   if (!form.isImageGenerator) return null;
   if (form.imageGenType === 'cli') {
     if (!form.imageGenCommand.trim()) return '启用生图工具后，CLI 命令不能为空。';
-    const argLines = form.imageGenCliArgLines
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean);
-    if (argLines.length === 0) return '启用 CLI 生图后，CLI 参数不能为空，至少需要脚本路径和输出路径占位符。';
-    if (!argLines.some((line) => line.includes('{{outputPath}}'))) {
-      return '启用 CLI 生图后，CLI 参数必须包含 {{outputPath}}，否则无法确认图片输出文件。';
-    }
-    if (!envMap.MYAGENT_SD_MODEL && !envMap.OLLAMA_MODEL && !envMap.MODEL && !envMap.MODEL_ID) {
-      return '启用 CLI 生图后，环境变量必须包含模型名称，例如 MYAGENT_SD_MODEL=你的本地生图模型。';
-    }
     return null;
   }
   if (form.imageGenType === 'http') {
@@ -134,6 +124,7 @@ function validateImageGeneratorForm(form: EditingFormData, envMap: Record<string
     }
     if (
       form.imageGenHttpFormat === 'ollama' &&
+      !form.imageGenModel.trim() &&
       !envMap.OLLAMA_MODEL &&
       !envMap.MODEL &&
       !envMap.MODEL_ID
@@ -153,6 +144,8 @@ export interface ModelsSectionProps {
 }
 
 export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) => {
+  const locale = useSettingStore(state => state.locale);
+  const label = (zh: string, en: string) => locale === 'zh' ? zh : en;
   // store 派生量本组件自己消费
   const {
     models,
@@ -188,6 +181,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState<EditingFormData>(defaultFormData);
+  const [testingConnection, setTestingConnection] = useState(false);
 
   /** 生图厂商解析：formData 三要素派生一次，表单内多处提示复用（曾每渲染重复调用 4 次） */
   const resolvedImageProvider = useMemo(
@@ -199,6 +193,14 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
       ),
     [formData.imageGenProvider, formData.imageGenEndpoint, formData.imageGenHttpFormat]
   );
+  const resolvedChatApiMode = useMemo(
+    () => resolveChatApiMode(formData),
+    [formData.apiUrl, formData.chatApiMode, formData.modelName, formData.provider]
+  );
+  const isLocalChatConfig =
+    formData.provider === 'ollama' ||
+    /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(formData.apiUrl.trim());
+  const canTestRemoteChat = formData.isChatModel !== false && !isLocalChatConfig;
 
   const startAdd = useCallback(() => {
     setEditingId(null);
@@ -210,6 +212,11 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
     setEditingId(model.id);
     setFormData({
       name: model.name,
+      isChatModel: model.isChatModel !== false,
+      contextWindowTokens: model.contextWindowTokens,
+      imageKeySource: model.imageGeneratorConfig?.apiKeySource ?? (model.imageGeneratorConfig?.apiKey ? 'independent' : 'connection'),
+      imageQuality: model.imageGeneratorConfig?.quality || 'auto',
+      promptLanguage: model.imageGeneratorConfig?.promptLanguage,
       provider: model.provider,
       apiUrl: model.apiUrl,
       apiKey: model.apiKey || '',
@@ -235,7 +242,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
   }, []);
 
   const handleSave = useCallback(() => {
-    if (!formData.name || !formData.apiUrl || !formData.modelName) {
+    if (formData.isChatModel !== false && (!formData.apiUrl.trim() || !formData.modelName.trim())) {
       showWarning('settings.form.required');
       return;
     }
@@ -247,13 +254,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
       return;
     }
 
-    const existingImageKey =
-      editingId != null
-        ? models.find((m) => m.id === editingId)?.imageGeneratorConfig?.apiKey?.trim()
-        : undefined;
-    /** 生图密钥：优先表单字段；空则保留已存密钥；再回退同一模型顶部「API 密钥」 */
-    const resolvedImageApiKey =
-      formData.imageGenApiKey.trim() || existingImageKey || formData.apiKey.trim() || '';
+    const resolvedImageApiKey = formData.imageKeySource === 'connection' ? '' : formData.imageGenApiKey.trim();
 
     /** 显式厂商（非 custom）优先；否则按 Endpoint 推断后写入，便于列表展示与老逻辑兼容 */
     const resolvedImageProvider =
@@ -266,24 +267,31 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
           );
 
     const payload: ModelConfig = {
-      id: editingId || Date.now().toString(),
-      name: formData.name,
+      ...(editingId ? models.find(m => m.id === editingId) : {}),
+      id: editingId || crypto.randomUUID(),
+      name: formData.name.trim() || formData.modelName.trim() || formData.imageGenModel.trim() || 'Image tool',
+      isChatModel: formData.isChatModel !== false,
+      contextWindowTokens: formData.contextWindowTokens,
       provider: formData.provider,
       apiUrl: formData.apiUrl,
       apiKey: formData.apiKey,
       modelName: formData.modelName,
       chatApiMode: formData.chatApiMode,
-      isLocal: formData.isLocal,
+      isLocal: formData.provider === 'ollama' || /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(formData.apiUrl),
       maxTokens: formData.maxTokens,
       isImageGenerator: formData.isImageGenerator,
       imageGeneratorConfig: undefined,
       ...(formData.isImageGenerator
         ? {
             imageGeneratorConfig: {
+              ...(editingId ? models.find(m => m.id === editingId)?.imageGeneratorConfig : {}),
+              promptLanguage: formData.promptLanguage,
               type: formData.imageGenType as 'cli' | 'http',
+              apiKeySource: formData.imageKeySource,
+              quality: formData.imageQuality,
               ...(resolvedImageProvider ? { provider: resolvedImageProvider } : {}),
-              ...(resolvedImageApiKey ? { apiKey: resolvedImageApiKey } : {}),
-              ...(formData.imageGenModel.trim() ? { model: formData.imageGenModel.trim() } : {}),
+              apiKey: resolvedImageApiKey || undefined,
+              model: formData.imageGenModel.trim() || undefined,
               command: formData.imageGenCommand,
               endpoint: formData.imageGenEndpoint,
               env: envMap,
@@ -308,6 +316,48 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
     setEditingId(null);
     setFormData(defaultFormData);
   }, [editingId, formData, models, addModel, updateModel]);
+
+  const handleTestConnection = useCallback(async () => {
+    if (!formData.apiUrl.trim() || !formData.modelName.trim()) {
+      showWarning('settings.form.required');
+      return;
+    }
+    setTestingConnection(true);
+    try {
+      const testModel: ModelConfig = {
+        id: editingId || 'connection-test',
+        name: formData.name.trim() || formData.modelName.trim(),
+        provider: formData.provider,
+        apiUrl: formData.apiUrl.trim(),
+        apiKey: formData.apiKey.trim(),
+        modelName: formData.modelName.trim(),
+        chatApiMode: formData.chatApiMode,
+        isLocal: false,
+        maxTokens: 32,
+        isChatModel: true,
+      };
+      await window.electron.callModel(
+        [
+          {
+            id: `connection-test-${Date.now()}`,
+            role: 'user',
+            content: 'Reply with OK.',
+            timestamp: Date.now(),
+            model: testModel.modelName,
+          },
+        ],
+        testModel,
+        { locale: locale === 'en' ? 'en' : 'zh', connectionTest: true }
+      );
+      showSuccess('settings.form.connectionTestSuccess', { model: testModel.modelName });
+    } catch (error) {
+      showError('settings.form.connectionTestFailed', {
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setTestingConnection(false);
+    }
+  }, [editingId, formData, locale]);
 
   return (
     <section className={`${cardShell} shrink-0`} aria-labelledby="settings-models-heading">
@@ -334,429 +384,94 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
       {modelBlockExpanded && (
         <div id="settings-models-panel" className="min-h-0">
           {showForm ? (
-            <div className="max-h-[min(52vh,28rem)] space-y-4 overflow-y-auto px-3 pb-3 pt-3 scrollbar-hide">
+            <div className="space-y-3 px-3 pb-3 pt-3 text-stone-700 dark:text-stone-200">
               <h3 className="text-sm font-bold text-stone-800 dark:text-white">
                 {editingId ? t('settings.form.editTitle') : t('settings.form.addTitle')}
               </h3>
 
-              <div>
-                <label className={FORM_LABEL}>
-                  {t('settings.form.name')}
-                </label>
-                <input
-                  type="text"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  placeholder={t('settings.form.namePh')}
-                  className={FORM_INPUT_LG}
-                />
-              </div>
-
-              <div>
-                <label className={FORM_LABEL}>
-                  {t('settings.form.provider')}
-                </label>
-                <select
-                  value={formData.provider}
-                  onChange={(e) => setFormData({ ...formData, provider: e.target.value as ModelConfig['provider'] })}
-                  className={FORM_INPUT_LG}
-                >
-                  <option value="openai">OpenAI</option>
-                  <option value="claude">Claude</option>
-                  <option value="ollama">Ollama</option>
-                  <option value="custom">{t('settings.provider.custom')}</option>
+              <label className="block space-y-1 text-xs">
+                <span>{label('用途', 'Use for')}</span>
+                <select aria-label={label('用途', 'Use for')} className={FORM_INPUT_LG} value={formData.isChatModel === false ? 'image' : formData.isImageGenerator ? 'both' : 'chat'} onChange={e => setFormData({ ...formData, isChatModel: e.target.value !== 'image', isImageGenerator: e.target.value !== 'chat', imageKeySource: e.target.value === 'image' ? 'independent' : formData.imageKeySource })}>
+                  <option value="chat">{label('对话', 'Chat')}</option><option value="image">{label('生成图片', 'Images')}</option><option value="both">{label('对话和图片', 'Chat and images')}</option>
                 </select>
-              </div>
-
-              {(formData.provider === 'openai' ||
-                formData.provider === 'custom' ||
-                formData.provider === 'ollama') && (
-                <div>
-                  <label className={FORM_LABEL}>
-                    {t('settings.form.chatApiMode')}
-                  </label>
-                  <select
-                    value={formData.chatApiMode}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        chatApiMode: e.target.value as EditingFormData['chatApiMode'],
-                      })
-                    }
-                    className={FORM_INPUT_LG}
-                  >
-                    <option value="auto">{t('settings.form.chatApiMode.auto')}</option>
-                    <option value="openai">{t('settings.form.chatApiMode.openai')}</option>
-                    <option value="anthropic">{t('settings.form.chatApiMode.anthropic')}</option>
+              </label>
+              {formData.isChatModel !== false && <div className="space-y-3">
+                <label className="block space-y-1 text-xs"><span>{t('settings.form.provider')}</span>
+                  <select className={FORM_INPUT_LG} value={formData.provider} onChange={e => {
+                    const provider = e.target.value as ModelConfig['provider'];
+                    setFormData({ ...formData, provider, chatApiMode: 'auto', apiKey: '', apiUrl: provider === 'ollama' ? 'http://127.0.0.1:11434' : provider === 'claude' ? 'https://api.anthropic.com' : provider === 'openai' ? 'https://api.openai.com/v1' : '' });
+                  }}>
+                    <option value="openai">OpenAI</option><option value="claude">Claude / Anthropic</option><option value="ollama">Ollama</option><option value="custom">{t('settings.provider.compatible')}</option>
                   </select>
-                  <p className="mt-1 text-[11px] text-stone-500 dark:text-gray-400 leading-snug">
-                    {t('settings.form.chatApiModeHint')}
-                  </p>
+                </label>
+                <label className="block space-y-1 text-xs">
+                  <span>{t('settings.form.chatApiMode')}</span>
+                  <select aria-label={t('settings.form.chatApiMode')} className={FORM_INPUT_LG} value={formData.chatApiMode} onChange={e => setFormData({...formData, chatApiMode:e.target.value as EditingFormData['chatApiMode']})}>
+                    <option value="auto">{t('settings.form.chatApiMode.auto')}</option>
+                    <option value="anthropic">{t('settings.form.chatApiMode.anthropic')}</option>
+                    <option value="openai">{t('settings.form.chatApiMode.openai')}</option>
+                  </select>
+                  <span className="block leading-relaxed text-stone-500 dark:text-slate-400">
+                    {formData.chatApiMode === 'auto'
+                      ? t('settings.form.chatApiModeDetected', { mode: resolvedChatApiMode === 'anthropic' ? 'Anthropic Messages (A)' : 'OpenAI Chat Completions (O)' })
+                      : t('settings.form.chatApiModeHint')}
+                  </span>
+                </label>
+                <label className="block space-y-1 text-xs"><span>{t('settings.form.apiUrl')}</span><input className={FORM_INPUT_LG} value={formData.apiUrl} placeholder="https://api.openai.com/v1" onChange={e => setFormData({...formData, apiUrl:e.target.value})}/></label>
+                <label className="block space-y-1 text-xs"><span>{t('settings.form.apiKey')}</span><input type="password" autoComplete="off" className={FORM_INPUT_LG} value={formData.apiKey} onChange={e => setFormData({...formData, apiKey:e.target.value})}/></label>
+                <label className="block space-y-1 text-xs"><span>{t('settings.form.modelName')}</span><input className={FORM_INPUT_LG} value={formData.modelName} placeholder={label('服务提供的模型名称', 'Model ID from your provider')} onChange={e => setFormData({...formData, modelName:e.target.value})}/></label>
+              </div>}
+              {formData.isImageGenerator && <div className="space-y-3 rounded-lg border border-stone-300/40 p-3 dark:border-white/10">
+                <label className="block space-y-1 text-xs"><span>{label('图片服务', 'Image service')}</span>
+                  <select className={FORM_INPUT_LG} value={formData.imageGenType === 'cli' ? 'cli' : formData.imageGenProvider} onChange={e => {
+                    if (e.target.value === 'cli') { setFormData({...formData, imageGenType:'cli'}); return; }
+                    const id = e.target.value as ImageProviderId;
+                    const defaults = getPresetDefaults(id);
+                    setFormData({...formData, imageGenType:'http', imageGenProvider:id, imageGenEndpoint:defaults.endpoint || '', imageGenModel:defaults.model || '', imageGenHttpFormat:defaults.httpFormat || 'auto', imageGenApiKey:'', imageKeySource:'independent'});
+                  }}>
+                    <option value="">{label('自动识别地址', 'Detect from URL')}</option>
+                    {IMAGE_PROVIDER_PRESETS.map(p => <option key={p.id} value={p.id}>{t(p.labelKey)}</option>)}
+                    <option value="cli">{label('本地脚本（CLI）', 'Local script (CLI)')}</option>
+                  </select>
+                </label>
+                {formData.imageGenType === 'http' ? <>
+                  <label className="block space-y-1 text-xs"><span>{t('settings.form.httpEndpoint')}</span><input className={FORM_INPUT_LG} value={formData.imageGenEndpoint} placeholder="https://…/images/generations" onChange={e => setFormData({...formData, imageGenEndpoint:e.target.value, imageGenProvider:'', imageGenHttpFormat:'auto'})}/></label>
+                  <label className="block space-y-1 text-xs"><span>{t('settings.form.imageModel')}</span><input className={FORM_INPUT_LG} value={formData.imageGenModel} placeholder={getImageProviderPreset(resolvedImageProvider || undefined)?.defaultModel || label('模型名称', 'Model ID')} onChange={e => setFormData({...formData, imageGenModel:e.target.value})}/></label>
+                  {formData.isChatModel !== false && <label className="flex gap-2 text-xs"><input type="checkbox" checked={formData.imageKeySource === 'connection'} onChange={e => setFormData({...formData, imageKeySource:e.target.checked ? 'connection' : 'independent'})}/>{label('使用上面的对话密钥', 'Use the chat API key above')}</label>}
+                  {(formData.isChatModel === false || formData.imageKeySource !== 'connection') && <label className="block space-y-1 text-xs"><span>{t('settings.form.imageApiKey')}</span><input type="password" autoComplete="off" className={FORM_INPUT_LG} value={formData.imageGenApiKey} onChange={e => setFormData({...formData, imageGenApiKey:e.target.value, imageKeySource:'independent'})}/></label>}
+                </> : <label className="block space-y-1 text-xs"><span>{t('settings.form.cliCommand')}</span><input className={FORM_INPUT_LG} value={formData.imageGenCommand} onChange={e => setFormData({...formData, imageGenCommand:e.target.value})}/></label>}
+              </div>}
+              <details className="rounded-lg border border-stone-300/40 p-3 dark:border-white/10">
+                <summary className="cursor-pointer text-xs font-medium">{label('高级设置（可选）', 'Advanced settings (optional)')}</summary>
+                <div className="mt-3 space-y-3">
+                  <label className="block space-y-1 text-xs"><span>{label('显示名称（留空自动命名）', 'Display name (optional)')}</span><input className={FORM_INPUT_LG} value={formData.name} placeholder="My GPT-4" onChange={e => setFormData({...formData, name:e.target.value})}/></label>
+                  {formData.isChatModel !== false && <>
+                    <label className="block space-y-1 text-xs"><span>{label('最大输出长度（token）', 'Maximum output tokens')}</span><input type="number" min="1" className={FORM_INPUT_LG} value={formData.maxTokens} onChange={e => setFormData({...formData, maxTokens:Math.max(1, Number(e.target.value) || 4096)})}/></label>
+                    <label className="block space-y-1 text-xs"><span>{label('上下文容量（token，留空自动识别）', 'Context tokens (blank: auto detect)')}</span><input type="number" min="1024" className={FORM_INPUT_LG} value={formData.contextWindowTokens ?? ''} onChange={e => setFormData({...formData, contextWindowTokens:e.target.value ? Math.max(1024, Number(e.target.value)) : undefined})}/></label>
+                  </>}
+                  {formData.isImageGenerator && <>
+                    {formData.imageGenType === 'cli' && <label className="block space-y-1 text-xs"><span>{label('脚本提示词语言', 'Script prompt language')}</span><select className={FORM_INPUT_LG} value={formData.promptLanguage || ''} onChange={e => setFormData({...formData, promptLanguage:(e.target.value || undefined) as EditingFormData['promptLanguage']})}><option value="">{label('自动识别 SD 脚本', 'Detect SD scripts')}</option><option value="auto">{label('保留原始语言', 'Keep original language')}</option><option value="en">{label('转换为英文', 'Translate to English')}</option></select></label>}
+                    {formData.imageGenType === 'http' ? <label className="block space-y-1 text-xs"><span>{t('settings.form.responseFormat')}</span><select className={FORM_INPUT_LG} value={formData.imageGenHttpFormat} onChange={e => setFormData({...formData, imageGenHttpFormat:e.target.value as EditingFormData['imageGenHttpFormat']})}>{['auto','sdwebui','ollama','openai_images','raw'].map(value => <option key={value} value={value}>{value}</option>)}</select></label> : <label className="block space-y-1 text-xs"><span>{t('settings.form.cliArgs')}</span><textarea rows={4} className={FORM_INPUT_LG} value={formData.imageGenCliArgLines} onChange={e => setFormData({...formData, imageGenCliArgLines:e.target.value})}/><span className="text-stone-500">{label('每行一个参数；留空时脚本通过 MYAGENT_PROMPT 和 MYAGENT_OUTPUT_PATH 环境变量读写。', 'One argument per line; scripts may instead use MYAGENT_PROMPT and MYAGENT_OUTPUT_PATH.')}</span></label>}
+                    {resolvedImageProvider === 'openai-images' && <label className="block space-y-1 text-xs"><span>{label('画质', 'Quality')}</span><select className={FORM_INPUT_LG} value={formData.imageQuality} onChange={e => setFormData({...formData, imageQuality:e.target.value as EditingFormData['imageQuality']})}>{['auto','low','medium','high'].map(value => <option key={value}>{value}</option>)}</select></label>}
+                    <label className="block space-y-1 text-xs"><span>{label('自定义环境变量 / 请求头', 'Custom environment / headers')}</span><textarea rows={4} className={FORM_INPUT_LG} value={formData.imageGenEnv} onChange={e => setFormData({...formData, imageGenEnv:e.target.value})}/></label>
+                  </>}
                 </div>
-              )}
+              </details>
 
-              <div>
-                <label className={FORM_LABEL}>
-                  {t('settings.form.apiUrl')}
-                </label>
-                <input
-                  type="text"
-                  value={formData.apiUrl}
-                  onChange={(e) => setFormData({ ...formData, apiUrl: e.target.value })}
-                  placeholder={
-                    formData.provider === 'ollama' ? t('settings.form.apiUrlPh.ollama') : t('settings.form.apiUrlPh.default')
-                  }
-                  className={FORM_INPUT_LG}
-                />
-              </div>
-
-              <div>
-                <label className={FORM_LABEL}>
-                  {t('settings.form.apiKey')}
-                  {formData.provider !== 'ollama' && ' *'}
-                </label>
-                <input
-                  type="password"
-                  value={formData.apiKey}
-                  onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
-                  placeholder={t('settings.form.apiKeyPh')}
-                  className={FORM_INPUT_LG}
-                />
-              </div>
-
-              <div>
-                <label className={FORM_LABEL}>
-                  {t('settings.form.modelName')}
-                </label>
-                <input
-                  type="text"
-                  value={formData.modelName}
-                  onChange={(e) => setFormData({ ...formData, modelName: e.target.value })}
-                  placeholder={
-                    formData.provider === 'openai' ? t('settings.form.modelNamePh.openai') : t('settings.form.modelNamePh.other')
-                  }
-                  className={FORM_INPUT_LG}
-                />
-              </div>
-
-              <div>
-                <label className={FORM_LABEL}>
-                  {t('settings.form.maxTokens')}
-                </label>
-                <input
-                  type="number"
-                  value={formData.maxTokens}
-                  onChange={(e) => {
-                    /** 空值/非法输入回落 0（下游按 falsy 走默认 4096），避免 NaN 写入持久化 JSON 变 null */
-                    const n = Math.floor(Number(e.target.value));
-                    setFormData({ ...formData, maxTokens: Number.isFinite(n) && n > 0 ? n : 0 });
-                  }}
-                  className={FORM_INPUT_LG}
-                />
-              </div>
-
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-xs text-stone-700 dark:text-gray-300">{t('settings.form.localModel')}</span>
-                <IosSwitch
-                  checked={formData.isLocal}
-                  aria-label={t('settings.form.localModel')}
-                  onChange={(next) => setFormData({ ...formData, isLocal: next })}
-                />
-              </div>
-
-              <div className="border-t border-stone-400/22 dark:border-gray-700 pt-4">
-                <h4 className="mb-2 text-xs font-semibold text-stone-700 dark:text-gray-300">{t('settings.form.imageGenSection')}</h4>
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-xs text-stone-700 dark:text-gray-300">{t('settings.form.useAsImageTool')}</span>
-                    <IosSwitch
-                      checked={formData.isImageGenerator}
-                      aria-label={t('settings.form.useAsImageTool')}
-                      onChange={(next) => setFormData({ ...formData, isImageGenerator: next })}
-                    />
-                  </div>
-
-                  {formData.isImageGenerator ? (
-                    <>
-                      {/* ===== 工具类型：HTTP 优先 ===== */}
-                      <div>
-                        <label className={FORM_LABEL_SM}>
-                          {t('settings.form.toolType')}
-                        </label>
-                        <select
-                          value={formData.imageGenType}
-                          onChange={(e) => setFormData({ ...formData, imageGenType: e.target.value })}
-                          className={FORM_SELECT_SM}
-                        >
-                          <option value="http">{t('settings.form.httpServer')}</option>
-                          <option value="cli">{t('settings.form.cliTool')}</option>
-                        </select>
-                      </div>
-
-                      {formData.imageGenType === 'http' ? (
-                        <>
-                          {/* ===== Endpoint 优先：粘贴地址即可自适配 ===== */}
-                          <div>
-                            <label className={FORM_LABEL_SM}>
-                              {t('settings.form.httpEndpoint')}
-                            </label>
-                            <input
-                              type="text"
-                              value={formData.imageGenEndpoint}
-                              onChange={(e) => {
-                                const endpoint = e.target.value;
-                                const inferred = inferImageProviderFromEndpoint(
-                                  endpoint,
-                                  formData.imageGenHttpFormat
-                                );
-                                const suggestedFmt = suggestedHttpFormatForProvider(inferred);
-                                setFormData({
-                                  ...formData,
-                                  imageGenEndpoint: endpoint,
-                                  /** 仅在仍为 auto 时跟推断结果回填格式，不覆盖用户手动选择 */
-                                  ...(formData.imageGenHttpFormat === 'auto' && suggestedFmt && suggestedFmt !== 'auto'
-                                    ? { imageGenHttpFormat: suggestedFmt }
-                                    : {}),
-                                  /** 模型名为空时用预设默认模型 */
-                                  ...(inferred && !formData.imageGenModel.trim()
-                                    ? {
-                                        imageGenModel:
-                                          getImageProviderPreset(inferred)?.defaultModel ||
-                                          formData.imageGenModel,
-                                      }
-                                    : {}),
-                                });
-                              }}
-                              placeholder={t('settings.form.httpEndpointPh')}
-                              className={FORM_SELECT_SM}
-                            />
-                            {(() => {
-                              const inferred = resolvedImageProvider;
-                              if (!inferred || !formData.imageGenEndpoint.trim()) return null;
-                              const preset = getImageProviderPreset(inferred);
-                              return (
-                                <p className="mt-1 text-[10px] text-emerald-700/90 dark:text-emerald-400/90">
-                                  {t('settings.form.imageProviderInferred', {
-                                    name: preset ? t(preset.labelKey) : inferred,
-                                  })}
-                                </p>
-                              );
-                            })()}
-                          </div>
-
-                          {/* ===== API Key / 模型名：云端或未识别时显示 ===== */}
-                          {imageGenNeedsApiKey(
-                            formData.imageGenProvider,
-                            formData.imageGenEndpoint,
-                            formData.imageGenHttpFormat
-                          ) ? (
-                            <div className="space-y-2">
-                              <div>
-                                <label className={FORM_LABEL_SM}>
-                                  {t('settings.form.imageApiKey')}
-                                </label>
-                                <input
-                                  type="password"
-                                  autoComplete="off"
-                                  value={formData.imageGenApiKey}
-                                  onChange={(e) =>
-                                    setFormData({ ...formData, imageGenApiKey: e.target.value })
-                                  }
-                                  placeholder={(() => {
-                                    const id = resolvedImageProvider;
-                                    const ph = id
-                                      ? getImageProviderPreset(id)?.apiKeyPlaceholderKey
-                                      : undefined;
-                                    return ph ? t(ph) : 'sk-…';
-                                  })()}
-                                  className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
-                                />
-                              </div>
-                              <div>
-                                <label className={FORM_LABEL_SM}>
-                                  {t('settings.form.imageModel')}
-                                </label>
-                                <input
-                                  type="text"
-                                  value={formData.imageGenModel}
-                                  onChange={(e) =>
-                                    setFormData({ ...formData, imageGenModel: e.target.value })
-                                  }
-                                  placeholder={(() => {
-                                    const id = resolvedImageProvider;
-                                    return (
-                                      (id && getImageProviderPreset(id)?.defaultModel) ||
-                                      t('settings.form.imageModelPh')
-                                    );
-                                  })()}
-                                  className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
-                                />
-                              </div>
-                            </div>
-                          ) : (
-                            <div>
-                              <label className={FORM_LABEL_SM}>
-                                {t('settings.form.imageModel')}
-                              </label>
-                              <input
-                                type="text"
-                                value={formData.imageGenModel}
-                                onChange={(e) =>
-                                  setFormData({ ...formData, imageGenModel: e.target.value })
-                                }
-                                placeholder={
-                                  getImageProviderPreset(
-                                    resolvedImageProvider || undefined
-                                  )?.defaultModel || t('settings.form.imageModelPh')
-                                }
-                                className="w-full px-2.5 py-1.5 border border-stone-400/25 dark:border-gray-600 rounded-md text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary-500 bg-stone-100/90 dark:bg-slate-700 text-stone-900 dark:text-white"
-                              />
-                            </div>
-                          )}
-
-                          {/* ===== 可选：快捷预设（仅回填，非必选） ===== */}
-                          <div>
-                            <label className={FORM_LABEL_SM}>
-                              {t('settings.form.imageProviderOptional')}
-                            </label>
-                            <select
-                              value={formData.imageGenProvider || ''}
-                              onChange={(e) => {
-                                const id = e.target.value as ImageProviderId | '';
-                                const defaults = getPresetDefaults(id || undefined);
-                                const switching = id !== formData.imageGenProvider;
-                                setFormData({
-                                  ...formData,
-                                  imageGenProvider: id,
-                                  imageGenType:
-                                    id === 'custom'
-                                      ? formData.imageGenType
-                                      : defaults.type ?? formData.imageGenType,
-                                  imageGenEndpoint:
-                                    id === 'custom'
-                                      ? formData.imageGenEndpoint
-                                      : defaults.endpoint ?? formData.imageGenEndpoint,
-                                  imageGenHttpFormat:
-                                    id === 'custom'
-                                      ? formData.imageGenHttpFormat
-                                      : defaults.httpFormat ?? formData.imageGenHttpFormat,
-                                  imageGenApiKey:
-                                    // 切换厂商时清空密钥：旧厂商的 Key 不应被带往新厂商站点
-                                    switching ? '' : formData.imageGenApiKey,
-                                  imageGenModel: switching
-                                    ? defaults.model ?? formData.imageGenModel
-                                    : formData.imageGenModel,
-                                });
-                              }}
-                              className={FORM_SELECT_SM}
-                            >
-                              <option value="">{t('settings.form.imageProviderPh')}</option>
-                              {IMAGE_PROVIDER_PRESETS.map((p) => (
-                                <option key={p.id} value={p.id}>
-                                  {t(p.labelKey)}
-                                </option>
-                              ))}
-                            </select>
-                            <p className="mt-1 text-[10px] text-stone-500 dark:text-slate-500">
-                              {t('settings.form.imageProviderHint')}
-                            </p>
-                          </div>
-                        </>
-                      ) : null}
-
-                      {formData.imageGenType === 'cli' ? (
-                        <div className="space-y-2">
-                          <div>
-                            <label className={FORM_LABEL_SM}>
-                              {t('settings.form.cliCommand')}
-                            </label>
-                            <input
-                              type="text"
-                              value={formData.imageGenCommand}
-                              onChange={(e) =>
-                                setFormData({ ...formData, imageGenCommand: e.target.value })
-                              }
-                              placeholder={t('settings.form.cliCommandPh')}
-                              className={FORM_SELECT_SM}
-                            />
-                          </div>
-                          <div>
-                            <label className={FORM_LABEL_SM}>
-                              {t('settings.form.cliArgs')}
-                            </label>
-                            <textarea
-                              value={formData.imageGenCliArgLines}
-                              onChange={(e) =>
-                                setFormData({ ...formData, imageGenCliArgLines: e.target.value })
-                              }
-                              placeholder={t('settings.form.cliArgsPh')}
-                              rows={5}
-                              className={FORM_INPUT_SM_MONO}
-                            />
-                          </div>
-                        </div>
-                      ) : null}
-
-                      {/* ===== 高级：响应格式 / env（CLI 参数已在上方） ===== */}
-                      <details className="group/details rounded-lg border border-stone-300/38 bg-stone-100/70 px-2 py-1.5 dark:border-white/10 dark:bg-slate-900/55">
-                        <summary className="flex cursor-pointer items-center gap-1 select-none text-[10px] font-medium text-stone-600 dark:text-slate-400 list-none [&::-webkit-details-marker]:hidden">
-                          <FiChevronRight
-                            size={12}
-                            className="shrink-0 text-stone-400 transition-transform duration-200 group-open/details:rotate-90 dark:text-slate-500"
-                            aria-hidden
-                          />
-                          {t('settings.form.imageGenAdvanced')}
-                        </summary>
-                        <div className="mt-2 space-y-3 border-t border-stone-300/35 pt-2 dark:border-white/8">
-                          {formData.imageGenType === 'http' ? (
-                            <div>
-                              <label className={FORM_LABEL_SM}>
-                                {t('settings.form.responseFormat')}
-                              </label>
-                              <select
-                                value={formData.imageGenHttpFormat}
-                                onChange={(e) =>
-                                  setFormData({
-                                    ...formData,
-                                    imageGenHttpFormat: e.target
-                                      .value as EditingFormData['imageGenHttpFormat'],
-                                  })
-                                }
-                                className={FORM_INPUT_SM}
-                              >
-                                <option value="auto">{t('settings.form.format.auto')}</option>
-                                <option value="sdwebui">{t('settings.form.format.sdwebui')}</option>
-                                <option value="ollama">{t('settings.form.format.ollama')}</option>
-                                <option value="openai_images">
-                                  {t('settings.form.format.openaiImages')}
-                                </option>
-                                <option value="raw">{t('settings.form.format.raw')}</option>
-                              </select>
-                            </div>
-                          ) : null}
-                          <div>
-                            <label className={FORM_LABEL_SM}>
-                              {t('settings.form.envVars')}
-                            </label>
-                            <textarea
-                              value={formData.imageGenEnv}
-                              onChange={(e) => setFormData({ ...formData, imageGenEnv: e.target.value })}
-                              placeholder={t('settings.form.envPh')}
-                              className={FORM_INPUT_SM_MONO_TIGHT}
-                              rows={2}
-                            />
-                            <p className="mt-1 text-[10px] text-stone-500 dark:text-slate-500">
-                              {t('settings.form.imageGenHttpExtraHint')}
-                            </p>
-                          </div>
-                        </div>
-                      </details>
-                    </>
-                  ) : null}
-                </div>
-              </div>
-
-              <div className="flex gap-2 pt-2">
+              <div className="sticky bottom-0 flex gap-2 bg-stone-100 py-2 dark:bg-slate-900">
+                {canTestRemoteChat && (
+                  <button
+                    type="button"
+                    onClick={() => void handleTestConnection()}
+                    disabled={testingConnection || !formData.apiUrl.trim() || !formData.modelName.trim()}
+                    className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-primary-500/35 bg-primary-50 px-4 py-2 text-primary-700 transition-colors hover:bg-primary-100 disabled:cursor-not-allowed disabled:opacity-55 dark:bg-primary-500/10 dark:text-primary-300 dark:hover:bg-primary-500/15"
+                  >
+                    {testingConnection ? <FiLoader className="animate-spin" size={14} /> : <FiWifi size={14} />}
+                    <span className="text-sm font-medium">
+                      {t(testingConnection ? 'settings.form.testingConnection' : 'settings.form.testConnection')}
+                    </span>
+                  </button>
+                )}
                 <button
                   onClick={handleSave}
                   className="flex-1 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg transition-colors flex items-center justify-center gap-2"
@@ -806,7 +521,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                           )}
                         </div>
                         <div className="mt-0.5 truncate text-[10px] text-stone-500 dark:text-slate-500">
-                          {model.modelName}
+                          {model.isChatModel === false ? model.imageGeneratorConfig?.model || model.imageGeneratorConfig?.command : model.modelName}
                         </div>
                       </div>
 
@@ -875,10 +590,10 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                 );
               })()}
               {models.length > 0 ? (
-                <div className="border-t border-stone-300/38 px-3 pb-3 pt-2.5 dark:border-white/10">
-                  <label className="mb-1 block text-[10px] font-medium text-stone-600 dark:text-gray-400">
-                    {t('settings.routing.title')}
-                  </label>
+                <details className="border-t border-stone-300/38 px-3 pb-3 pt-2.5 dark:border-white/10">
+                  <summary className="mb-2 cursor-pointer text-xs font-medium text-stone-600 dark:text-gray-400">
+                    {t('settings.routing.title')} · {label('高级', 'Advanced')}
+                  </summary>
                   <p className="mb-2 text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
                     {t('settings.routing.hint')}
                   </p>
@@ -894,7 +609,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                           className="w-full rounded-md border border-stone-400/25 bg-stone-100/90 px-2 py-1.5 text-xs text-stone-900 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-slate-700 dark:text-white"
                         >
                           <option value="">{t('settings.routing.none')}</option>
-                          {models.map((m) => (
+                          {models.filter(m => m.isChatModel !== false).map((m) => (
                             <option key={m.id} value={m.id}>
                               {m.name}
                             </option>
@@ -903,7 +618,7 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t }) =>
                       </div>
                     ))}
                   </div>
-                </div>
+                </details>
               ) : null}
             </>
           )}

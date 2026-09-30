@@ -10,7 +10,7 @@ export function makeImageGenHooks(opts: {
   const { assistantId, syncImgGenUi, imageGenCancelledRef, onImage } = opts;
   return {
     onBegin: ({ total }) => {
-      imageGenCancelledRef.current = false;
+      if (imageGenCancelledRef.current) return;
       syncImgGenUi({ current: 1, total, messageId: assistantId });
     },
     onEachStart: ({ current, total }) => syncImgGenUi({ current, total, messageId: assistantId }),

@@ -1,3 +1,4 @@
+import { completionWasTruncated } from '../../src/utils/completionStatus';
 import { ipcMain } from 'electron';
 import axios from 'axios';
 import { ModelConfig, Message } from '../../src/types';
@@ -5,6 +6,7 @@ import { mapModelCallError } from '../../src/utils/modelErrors';
 import {
   buildAnthropicAuthHeaders,
   buildAnthropicThinkingParams,
+  looksLikeMiniMaxChat,
   parseAnthropicContentBlocks,
   resolveAnthropicMessagesUrl,
   resolveChatApiMode,
@@ -21,10 +23,15 @@ import {
 } from './openai-adapters';
 import {
   canFallbackAnthropicToOpenAi,
+  withAnthropicThinkingFallback,
   withOpenAiCompatibleFallbacks,
 } from './openai-chat-retry';
 import { DEFAULT_MAX_TOKENS } from '../constants/limits';
-import { GEMINI_HTTP_TIMEOUT_MS, MODEL_HTTP_TIMEOUT_MS } from '../constants/timeouts';
+import {
+  GEMINI_HTTP_TIMEOUT_MS,
+  MODEL_CONNECTION_TEST_TIMEOUT_MS,
+  MODEL_HTTP_TIMEOUT_MS,
+} from '../constants/timeouts';
 
 /** Gemini 需单独处理 system；OpenAI 兼容接口一般可直接带 system 消息 */
 function splitSystemMessages(messages: Message[]): { systemText: string; convo: Message[] } {
@@ -41,32 +48,37 @@ async function callAnthropicMessages(opts: {
   messages: Message[];
   config: ModelConfig;
   temperature: number | undefined;
-}): Promise<{ content: string; reasoning?: string; usage?: unknown }> {
-  const { messages, config, temperature } = opts;
+  connectionTest?: boolean;
+}): Promise<{ content: string; reasoning?: string; usage?: unknown; truncated?: boolean }> {
+  const { messages, config, temperature, connectionTest } = opts;
   const { apiUrl, apiKey, modelName, maxTokens, provider } = config;
-  const { system, messages: anthropicMessages } = formatAnthropicMessages(messages);
-  let thinking = buildAnthropicThinkingParams({
-    apiUrl,
-    modelName,
-    provider,
-    maxTokens,
+  const isMiniMax = looksLikeMiniMaxChat(apiUrl, modelName);
+  const { system, messages: anthropicMessages } = formatAnthropicMessages(messages, {
+    includeAssistantThinking: isMiniMax,
   });
-  const response = await axios.post(
-    resolveAnthropicMessagesUrl(apiUrl),
-    {
-      model: modelName,
-      max_tokens: Math.max(1, maxTokens || DEFAULT_MAX_TOKENS),
-      ...thinking,
-      messages: anthropicMessages,
-      ...(system ? { system } : {}),
-      ...(temperature !== undefined ? { temperature } : {}),
-    },
-    {
-      headers: buildAnthropicAuthHeaders({ apiKey, provider, apiUrl }),
-      timeout: MODEL_HTTP_TIMEOUT_MS,
-    }
-  );
-  return parseAnthropicContentBlocks(response.data);
+  const thinking = connectionTest
+    ? {}
+    : buildAnthropicThinkingParams({ apiUrl, modelName, provider, maxTokens });
+  const response = await withAnthropicThinkingFallback({
+    thinkingParams: thinking,
+    request: (thinkingParams) =>
+      axios.post(
+        resolveAnthropicMessagesUrl(apiUrl),
+        {
+          model: modelName,
+          max_tokens: Math.max(1, maxTokens || DEFAULT_MAX_TOKENS),
+          ...thinkingParams,
+          messages: anthropicMessages,
+          ...(system ? { system } : {}),
+          ...(temperature !== undefined ? { temperature } : {}),
+        },
+        {
+          headers: buildAnthropicAuthHeaders({ apiKey, provider, apiUrl }),
+          timeout: connectionTest ? MODEL_CONNECTION_TEST_TIMEOUT_MS : MODEL_HTTP_TIMEOUT_MS,
+        }
+      ),
+  });
+  return { ...parseAnthropicContentBlocks(response.data), truncated: completionWasTruncated(response.data) };
 }
 
 function parseOpenAIMessageBlock(msg?: {
@@ -170,9 +182,10 @@ ipcMain.handle(
     _event,
     messages: Message[],
     config: ModelConfig,
-    options?: { locale?: 'zh' | 'en'; temperature?: number }
+    options?: { locale?: 'zh' | 'en'; temperature?: number; connectionTest?: boolean }
   ) => {
   const locale = options?.locale === 'en' ? 'en' : 'zh';
+  const connectionTest = options?.connectionTest === true;
   const temperature =
     typeof options?.temperature === 'number' && Number.isFinite(options.temperature)
       ? Math.max(0, Math.min(2, options.temperature))
@@ -186,7 +199,7 @@ ipcMain.handle(
     /** 通用 Anthropic Messages（provider=claude 或 chatApiMode 解析为 anthropic） */
     if (provider === 'claude' || apiMode === 'anthropic') {
       try {
-        return await callAnthropicMessages({ messages, config, temperature });
+        return await callAnthropicMessages({ messages, config, temperature, connectionTest });
       } catch (anthropicErr: unknown) {
         if (!canFallbackAnthropicToOpenAi(config)) throw anthropicErr;
         console.warn('[call-model] Anthropic 失败，回退 OpenAI 兼容', {
@@ -221,7 +234,7 @@ ipcMain.handle(
           },
           {
             headers,
-            timeout: MODEL_HTTP_TIMEOUT_MS,
+            timeout: connectionTest ? MODEL_CONNECTION_TEST_TIMEOUT_MS : MODEL_HTTP_TIMEOUT_MS,
           }
         );
 
@@ -229,7 +242,7 @@ ipcMain.handle(
         messages,
         messagesHaveImages: messagesHaveImageFiles(messages),
         errorIndicatesImageUnsupported,
-        request: async (mode, withThinking) => postChat(mode, withThinking),
+        request: async (mode, withThinking) => postChat(mode, connectionTest ? false : withThinking),
         onImageFallback: (err) => {
           console.warn(
             '[call-model] 接口拒绝图像输入，已自动改为纯文字重试一次:',
@@ -237,7 +250,7 @@ ipcMain.handle(
           );
         },
       });
-      return parseOpenAIChatResponse(response.data);
+      return { ...parseOpenAIChatResponse(response.data), truncated: completionWasTruncated(response.data) };
     }
 
     // Gemini API
@@ -301,7 +314,7 @@ ipcMain.handle(
         },
         {
           headers,
-          timeout: GEMINI_HTTP_TIMEOUT_MS,
+          timeout: connectionTest ? MODEL_CONNECTION_TEST_TIMEOUT_MS : GEMINI_HTTP_TIMEOUT_MS,
         }
       );
 
@@ -321,6 +334,7 @@ ipcMain.handle(
         .join('\n');
       return {
         content: content || '',
+        truncated: completionWasTruncated(response.data),
         ...(reasoning.trim() ? { reasoning } : {}),
       };
     }

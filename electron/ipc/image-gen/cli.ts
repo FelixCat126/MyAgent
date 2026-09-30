@@ -1,3 +1,4 @@
+import { imageTaskContext, checkImageTask } from './task';
 import { spawn } from 'child_process';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
@@ -56,6 +57,7 @@ async function generateImageCliOneShot(
   outputPath: string,
   batch?: { index: number; total: number }
 ): Promise<CliGeneratedImage> {
+  checkImageTask();
   const exe = config.command?.trim();
   if (!exe) {
     throw new Error('请填写「命令行程序」路径');
@@ -106,6 +108,7 @@ async function generateImageCliOneShot(
     env: { ...process.env, ...envVars },
     cwd: electronApp.getPath('home'),
     shell: useShell,
+    signal: imageTaskContext.getStore(),
   });
 
   return await new Promise<CliGeneratedImage>((resolve, reject) => {
@@ -115,6 +118,7 @@ async function generateImageCliOneShot(
       reject(new Error(`生图命令超时（${min} 分钟）`));
     }, IMAGE_GEN_TIMEOUT_MS);
 
+    proc.on('error', (error) => { clearTimeout(timeout); reject(error); });
     let output = '';
     proc.stdout?.on('data', (data) => {
       output = appendCappedCliLog(output, data);
@@ -124,6 +128,7 @@ async function generateImageCliOneShot(
     });
     proc.on('close', (code) => {
       clearTimeout(timeout);
+      if (imageTaskContext.getStore()?.aborted) return;
       void (async () => {
         try {
           await fs.access(outputPath);
@@ -183,6 +188,7 @@ async function generateImageCli(
   }
 
   for (let i = 0; i < n; i++) {
+    checkImageTask();
     const outputPath = join(outputDir, `${randomUUID()}.png`);
     const perParams: ImageGenerationParams = { ...params, count: 1 };
     const img = await generateImageCliOneShot(perParams, config, outputPath, {

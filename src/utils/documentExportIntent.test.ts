@@ -33,5 +33,24 @@ describe('documentExportIntent', () => {
     expect(documentArtifactBaseName('请生成《测试报告》word文档下载')).toBe('测试报告');
     expect(documentArtifactBaseName('请帮我生成一份很长很长的需求说明然后下载')).toBe('document');
     expect(documentArtifactBaseNameFromContent('# 年度经营分析报告\n\n正文')).toBe('年度经营分析报告');
+    expect(documentArtifactBaseNameFromContent('# 示例数据表（可用于导出至 Excel）\n\n正文')).toBe('示例数据表');
   });
+});
+
+describe('explicit formats and intent boundaries', () => {
+  it.each([
+    ['把这个报告导出成 PDF', ['pdf']],
+    ['生成 Excel 表格给我下载', ['xlsx']],
+    ['整理成 Markdown 文档下载', ['md']],
+    ['把刚才那个改成 PDF', ['pdf']],
+    ['给我 Word 和 PDF 两个版本', ['docx', 'pdf']],
+    ['导出 CSV 文件', ['csv']],
+    ['保存为 TXT', ['txt']],
+    ['把 Word 转成 PDF', ['pdf']],
+    ['不要 PDF，给我 Word', ['docx']],
+    ['帮我写一份 PDF 报告', ['pdf']],
+    ['根据这份 PDF 生成 Word 文档', ['docx']],
+  ])('%s', (input, expected) => expect(inferDocumentExportHint(input)?.formats).toEqual(expected));
+  it.each(['不要生成文件，只解释 Word 文档的下载方法', '如何生成 PDF', '只讨论一下 Excel 排版', 'PDF 和 Word 有什么区别'])('does not execute discussion: %s', input => expect(inferDocumentExportHint(input)).toBeUndefined());
+  it('does not discard PDF or spreadsheet formats downstream', () => expect(documentExportFormatsFromHint({ formats: ['pdf', 'xlsx', 'csv', 'txt', 'pdf'] })).toEqual(['pdf', 'xlsx', 'csv', 'txt']));
 });

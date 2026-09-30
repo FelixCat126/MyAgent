@@ -1,3 +1,4 @@
+import { afterEach } from 'vitest';
 import '@testing-library/jest-dom/vitest';
 import type { ElectronAPI } from '../types';
 
@@ -7,6 +8,7 @@ const electronStub: ElectronAPI = {
   onMessage: () => () => {},
   callModel: async () => ({ content: '' }),
   subscribeModelStream: () => () => {},
+  cancelImageGeneration: () => {},
   closeModelStream: () => {},
   saveTextFile: async () => ({ ok: false }),
   importTextFile: async () => ({ ok: false }),
@@ -15,6 +17,7 @@ const electronStub: ElectronAPI = {
   getClipboardText: async () => '',
   setClipboardText: async () => true,
   uploadFile: async () => ({ name: '', path: '', type: '', size: 0 }),
+  openLocalFile: async () => ({ ok: true }),
   launchApp: async () => true,
   getInstalledApps: async () => [],
   generateImage: async () => [{ url: '', path: '', width: 0, height: 0 }],
@@ -93,6 +96,10 @@ const electronStub: ElectronAPI = {
   }),
   getStats: async () => ({}),
   exportSession: async () => ({ ok: false as const, error: 'stub' }),
+  generateVideo: async () => ({ ok: false as const, error: 'stub' }),
+  readVideoAsDataUrl: async () => ({ ok: false as const, error: 'stub' }),
+  cancelVideo: async () => ({ ok: true as const, canceled: true as const }),
+  getLocalFileSize: async () => ({ ok: false as const, error: 'stub' }),
 };
 
 if (typeof window !== 'undefined') {
@@ -134,3 +141,11 @@ if (typeof window !== 'undefined') {
     canvasProto.getContext = (): null => null;
   }
 }
+
+// Flush debounced persistence before jsdom is disposed, even in short test files.
+afterEach(async () => {
+  if (typeof window !== 'undefined') {
+    const { flushZustandFilePersist } = await import('../utils/zustandFileStorage');
+    await flushZustandFilePersist();
+  }
+});

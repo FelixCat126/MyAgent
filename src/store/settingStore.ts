@@ -12,7 +12,6 @@ interface SettingStore {
   /** 默认跟随系统；显式选浅色/深色后写入 light/dark；system=跟随 */
   theme: AppTheme;
   fontSize: number;
-  autoSave: boolean;
   streamResponses: boolean;
   locale: Locale;
   /** 启用后显示麦克风；火山密钥区仅在开启时展开，填齐且 Electron 下优先 OpenSpeech */
@@ -40,7 +39,6 @@ interface SettingStore {
   agentDeniedPaths: string[];
   setTheme: (theme: AppTheme) => void;
   setFontSize: (size: number) => void;
-  setAutoSave: (autoSave: boolean) => void;
   setStreamResponses: (v: boolean) => void;
   setLocale: (locale: Locale) => void;
   setSpeechInputEnabled: (v: boolean) => void;
@@ -63,7 +61,6 @@ export const useSettingStore = create<SettingStore>()(
     (set) => ({
       theme: 'system',
       fontSize: 14,
-      autoSave: true,
       streamResponses: true,
       locale: 'zh',
       speechInputEnabled: true,
@@ -85,9 +82,6 @@ export const useSettingStore = create<SettingStore>()(
       },
       setFontSize: (size: number) => {
         set({ fontSize: size });
-      },
-      setAutoSave: (autoSave: boolean) => {
-        set({ autoSave });
       },
       setStreamResponses: (v: boolean) => {
         set({ streamResponses: v });
@@ -114,7 +108,7 @@ export const useSettingStore = create<SettingStore>()(
     }),
     {
       name: PERSIST_KEYS.setting,
-      version: 15,
+      version: 16,
       storage: zustandPersistJson,
       migrate: (persisted, version) => {
         const raw = persisted as Record<string, unknown>;
@@ -130,6 +124,7 @@ export const useSettingStore = create<SettingStore>()(
 
         const legacyWake =
           typeof raw.volcAsrWakePhrase === 'string' ? raw.volcAsrWakePhrase.trim() : '';
+        delete baseMerged.autoSave;
         delete baseMerged.volcAsrWakePhrase;
         delete baseMerged.volcAsrStopPhrases;
         delete baseMerged.volcAsrEnabled;

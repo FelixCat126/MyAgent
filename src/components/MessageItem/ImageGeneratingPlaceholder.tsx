@@ -1,13 +1,8 @@
 import React from 'react';
-import { FiDownload, FiImage, FiLoader } from 'react-icons/fi';
+import { FiDownload, FiImage, FiLoader, FiMaximize2 } from 'react-icons/fi';
 import type { FileInfo } from '../../types';
 import { attachmentImageDisplaySrc } from '@/utils/attachmentDisplaySrc';
-import {
-  MULTI_IMAGE_ATTACHMENT_GRID,
-  ASSISTANT_IMAGE_THUMB_FRAME,
-  ASSISTANT_IMAGE_THUMB_IMG,
-  ASSISTANT_IMAGE_THUMB_META_ROW,
-} from './styleConstants';
+import { artifactDisplayName } from './DocumentAttachmentCard';
 
 interface ImageGeneratingPlaceholderProps {
   progress: { current: number; total: number };
@@ -22,7 +17,7 @@ interface ImageGeneratingPlaceholderProps {
   t: (key: string, params?: Record<string, string | number>) => string;
 }
 
-/** 图像生成占位：网格展示已生成图 + 当前生成槽位（旋转 spinner） */
+/** 只展示已完成图片与当前生成位，避免未来空槽抢占视觉层级。 */
 const ImageGeneratingPlaceholder: React.FC<ImageGeneratingPlaceholderProps> = ({
   progress,
   files,
@@ -31,86 +26,93 @@ const ImageGeneratingPlaceholder: React.FC<ImageGeneratingPlaceholderProps> = ({
   t,
 }) => {
   const imageFiles = (files ?? []).filter((f) => f.type.startsWith('image/'));
-  const slotCount = Math.min(Math.max(progress.total, 1), 24);
+  const total = Math.min(Math.max(progress.total, 1), 24);
+  const completed = Math.min(imageFiles.length, total);
+  const showActiveSlot = completed < total;
+  const percentage = Math.max(4, Math.min(100, Math.round((completed / total) * 100)));
+  const oneImage = total === 1;
 
   return (
     <div
-      className="rounded-lg border border-stone-300/55 bg-white/85 p-2.5 text-stone-800 shadow-sm dark:border-slate-600/60 dark:bg-slate-800/75 dark:text-slate-100"
+      className="rounded-xl border border-stone-300/65 bg-white/85 p-3 text-stone-800 shadow-sm dark:border-white/10 dark:bg-slate-900/45 dark:text-slate-100"
       role="status"
       aria-live="polite"
     >
-      <div className="mb-2 flex flex-wrap items-center gap-2 border-b border-stone-200/90 pb-2 text-[11px] text-stone-600 dark:border-slate-600/65 dark:text-slate-400">
-        <FiLoader size={13} className="shrink-0 animate-spin text-primary-600 dark:text-primary-300" aria-hidden />
-        <span>
-          {t('chat.imageGenWorking')}
-          {progress.total > 1 ? (
-            <span className="ml-1.5 tabular-nums text-stone-500 dark:text-slate-500">
-              {t('chat.imageGenWorkingTotal', { total: progress.total })}
-            </span>
-          ) : null}
+      <div className="mb-3 flex items-center gap-2.5">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary-500/10 text-primary-700 dark:bg-primary-400/12 dark:text-primary-200">
+          <FiLoader size={15} className="animate-spin" aria-hidden />
         </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-3 text-[12px]">
+            <span className="font-semibold">{t('chat.imageGenWorking')}</span>
+            <span className="shrink-0 tabular-nums text-stone-500 dark:text-slate-400">
+              {t('chat.imageGenProgress', { current: completed, total })}
+            </span>
+          </div>
+          <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-stone-200 dark:bg-slate-700">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-primary-500 to-teal-400 transition-[width] duration-500"
+              style={{ width: `${percentage}%` }}
+            />
+          </div>
+        </div>
       </div>
-      <div className={MULTI_IMAGE_ATTACHMENT_GRID}>
-        {Array.from({ length: slotCount }).map((_, idx) => {
-          const file = imageFiles[idx];
-          if (file) {
-            const displaySrc = attachmentImageDisplaySrc(file);
-            return (
-              <div key={file.path || `img-${idx}`} className="relative min-w-0 transition-all" title={file.name}>
-                <div className="flex w-max flex-col gap-1">
-                  <img
-                    src={displaySrc}
-                    alt={file.name}
-                    onClick={() => displaySrc && openAttachmentPreview?.(file.name, displaySrc, file.path, idx)}
-                    className={`${ASSISTANT_IMAGE_THUMB_IMG} bg-stone-50 dark:bg-slate-900/35`}
-                  />
-                  <div className={ASSISTANT_IMAGE_THUMB_META_ROW}>
-                    <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-stone-700 dark:text-slate-300">
-                      {file.name}
-                    </span>
-                    {downloadAttachmentCopy ? (
-                      <button
-                        type="button"
-                        className="shrink-0 rounded p-0.5 text-stone-500 hover:bg-stone-100 dark:text-slate-400 dark:hover:bg-slate-700/80"
-                        title={t('message.imagePreviewDownload')}
-                        aria-label={t('message.imagePreviewDownload')}
-                        onClick={(e) =>
-                          void downloadAttachmentCopy(e, file.path, file.name, displaySrc)
-                        }
-                      >
-                        <FiDownload size={12} aria-hidden />
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-            );
-          }
-          const active = idx === imageFiles.length;
+
+      <div
+        className={
+          oneImage
+            ? 'grid w-[min(520px,66vw)] max-w-full grid-cols-1 gap-2'
+            : 'grid w-[min(660px,68vw)] max-w-full grid-cols-1 gap-2 sm:grid-cols-2'
+        }
+      >
+        {imageFiles.slice(0, total).map((file, idx) => {
+          const displaySrc = attachmentImageDisplaySrc(file);
+          const displayName = artifactDisplayName(file.name, t('message.imageAlt'));
           return (
-            <div key={`slot-${idx}`} className="flex w-max flex-col gap-1">
-              <div
-                className={`relative myagent-image-gen-loading-shimmer flex ${ASSISTANT_IMAGE_THUMB_FRAME} flex-col items-center justify-center overflow-hidden rounded-md border bg-stone-100/95 dark:bg-slate-700/35 ${
-                  active
-                    ? 'border-primary-400/65 ring-2 ring-primary-400/35 dark:border-primary-500/50 dark:ring-primary-500/28'
-                    : 'border-stone-300/60 dark:border-slate-600/55'
-                }`}
+            <div
+              key={file.path || `img-${idx}`}
+              className="group/generated relative aspect-[4/3] min-w-0 overflow-hidden rounded-xl border border-stone-300/65 bg-stone-100 dark:border-white/10 dark:bg-slate-950/45"
+              title={file.name}
+            >
+              <button
+                type="button"
+                className="flex h-full w-full items-center justify-center"
+                onClick={() => displaySrc && openAttachmentPreview?.(file.name, displaySrc, file.path, idx)}
+                aria-label={`${t('message.imageOpenPreview')} ${displayName}`}
               >
-                {active ? (
-                  <FiLoader size={20} className="relative z-10 animate-spin text-primary-600 dark:text-primary-300" aria-hidden />
-                ) : (
-                  <FiImage size={21} className="relative z-10 text-stone-400 dark:text-slate-500" aria-hidden />
-                )}
-                <span className="absolute bottom-1 right-1 rounded bg-stone-800/78 px-1 py-0.5 text-[9px] font-medium tabular-nums text-stone-100 dark:bg-slate-950/82 dark:text-slate-100">
-                  {idx + 1}/{progress.total}
-                </span>
+                <img src={displaySrc} alt={displayName} className="h-full w-full object-contain" />
+              </button>
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-black/65 to-transparent px-3 pb-2 pt-8 text-white opacity-100 transition sm:opacity-0 sm:group-hover/generated:opacity-100">
+                <span className="min-w-0 truncate text-[10px] font-medium text-white/90">{displayName}</span>
+                <FiMaximize2 size={12} className="shrink-0 opacity-80" aria-hidden />
               </div>
-              <div className={`${ASSISTANT_IMAGE_THUMB_META_ROW} pointer-events-none`} aria-hidden>
-                <span className="invisible select-none text-[11px]">.</span>
-              </div>
+              {downloadAttachmentCopy ? (
+                <button
+                  type="button"
+                  className="absolute right-2 top-2 inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/20 bg-black/45 text-white opacity-100 backdrop-blur-sm transition hover:bg-black/65 sm:opacity-0 sm:group-hover/generated:opacity-100"
+                  title={t('message.imagePreviewDownload')}
+                  aria-label={`${t('message.imagePreviewDownload')} ${displayName}`}
+                  onClick={(e) => void downloadAttachmentCopy(e, file.path, file.name, displaySrc)}
+                >
+                  <FiDownload size={14} aria-hidden />
+                </button>
+              ) : null}
             </div>
           );
         })}
+
+        {showActiveSlot ? (
+          <div className="myagent-image-gen-loading-shimmer relative aspect-[4/3] overflow-hidden rounded-xl border border-primary-400/50 bg-stone-100/90 ring-2 ring-primary-400/20 dark:border-primary-500/40 dark:bg-slate-800/55 dark:ring-primary-500/18">
+            <div className="relative z-10 flex h-full flex-col items-center justify-center gap-2 text-primary-700 dark:text-primary-200">
+              <span className="flex h-11 w-11 items-center justify-center rounded-full bg-white/65 shadow-sm backdrop-blur-sm dark:bg-slate-900/60">
+                {completed === 0 ? <FiImage size={20} aria-hidden /> : <FiLoader size={19} className="animate-spin" aria-hidden />}
+              </span>
+              <span className="rounded-full bg-white/65 px-2.5 py-1 text-[10px] font-medium tabular-nums backdrop-blur-sm dark:bg-slate-900/60">
+                {completed + 1} / {total}
+              </span>
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );

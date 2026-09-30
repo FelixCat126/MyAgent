@@ -1,4 +1,4 @@
-import { ipcMain, app } from 'electron';
+import { ipcMain, app, shell } from 'electron';
 import fs from 'fs/promises';
 import path from 'path';
 
@@ -72,6 +72,26 @@ ipcMain.handle('cleanup-uploads', async () => {
     console.log('上传目录已清理');
   } catch (error: unknown) {
     console.error('清理上传目录失败:', error instanceof Error ? error.message : String(error));
+  }
+});
+
+/** 使用系统默认应用打开本地产物；界面中的“打开”不再等同于再次另存。 */
+ipcMain.handle('open-local-file', async (_event, arg: { path: string }) => {
+  const raw = String(arg?.path || '').trim();
+  if (!raw) return { ok: false as const, error: '路径为空' };
+  const resolved = path.resolve(raw);
+  try {
+    const stat = await fs.stat(resolved);
+    if (!stat.isFile()) return { ok: false as const, error: '不是可打开的文件' };
+    const error = await shell.openPath(resolved);
+    return error
+      ? { ok: false as const, error }
+      : { ok: true as const };
+  } catch (error: unknown) {
+    return {
+      ok: false as const,
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
 });
 

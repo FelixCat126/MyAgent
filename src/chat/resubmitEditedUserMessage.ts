@@ -35,6 +35,8 @@ export async function resubmitEditedUserMessage(opts: {
   /** 会话级联网开关（已算好的 effective） */
   webEnabled: boolean;
   runModelReply: RunModelReplyFn;
+  /** 消息和分支已提交，可立即退出编辑界面；无需等待模型回复结束。 */
+  onCommitted?: () => void;
 }): Promise<ResubmitEditedResult> {
   const textContent = opts.textContent.trim();
   if (!textContent) return { ok: false, reason: 'empty' };
@@ -122,6 +124,7 @@ export async function resubmitEditedUserMessage(opts: {
       },
       staleIds
     );
+    opts.onCommitted?.();
 
     if (
       !addFullTextBypassIfNeeded({

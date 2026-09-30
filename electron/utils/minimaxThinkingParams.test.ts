@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildThinkingParams,
+  formatAnthropicMessages,
   isMiniMaxChatEndpoint,
 } from '../ipc/openai-adapters';
+import type { Message } from '../../src/types';
 
 describe('MiniMax 思考参数', () => {
   it('按 Endpoint / 模型名识别 MiniMax', () => {
@@ -52,5 +54,27 @@ describe('MiniMax 思考参数', () => {
     });
     expect(p.enable_thinking).toBe(true);
     expect(p.thinking).toBe('enabled');
+  });
+
+  it('仅在 MiniMax 路径显式要求时回传历史 thinking 块', () => {
+    const history: Message[] = [
+      {
+        id: 'a',
+        role: 'assistant',
+        content: '答案',
+        reasoning: '历史思考',
+        timestamp: 1,
+        model: 'test',
+      },
+    ];
+    expect(formatAnthropicMessages(history).messages[0]?.content).toEqual([
+      { type: 'text', text: '答案' },
+    ]);
+    expect(
+      formatAnthropicMessages(history, { includeAssistantThinking: true }).messages[0]?.content
+    ).toEqual([
+      { type: 'thinking', thinking: '历史思考' },
+      { type: 'text', text: '答案' },
+    ]);
   });
 });

@@ -1,3 +1,6 @@
+import { generateDocumentArtifacts } from './documentArtifacts';
+import { imageTaskWasCancelled, replyRunWasCancelled } from './imageTaskState';
+import { resolveImageReferences } from '../utils/imageReferences';
 import type { FileInfo, Message, ModelConfig } from '../types';
 import { useChatStore } from '../store/chatStore';
 import { StreamingSpeechReader } from '../utils/streamingSpeech';
@@ -10,8 +13,6 @@ import {
 } from '../utils/documentExportIntent';
 import {
   postProcessAssistantContent,
-  imageReferencePathsFromFiles,
-  createDocumentArtifactsFromMarkdown,
 } from './imageGenAssist';
 import { makeImageGenHooks } from './makeImageGenHooks';
 import type { RunModelReplyUi } from './runModelReplyTypes';
@@ -73,18 +74,9 @@ export function mergeAssistantFiles(
 }
 
 /**
- * 逐字符动画流式渲染器（content 和 reasoning 共用）。
- *
- * 用固定间隔定时器（TICK_MS=25ms ≈ 40fps 写入）替代 rAF，
- * 每次tick取少量字符追加到 store。固定间隔保证帧间衔接均匀无"瘸"感。
- *
- * 速度档位（在上一版基础上再降 ~10%）：
- * - buffer ≤14 字 → 每次 1 字（最丝滑）
- * - ≤38 字 → 每次 2 字
- * - ≤90 字 → 每次 len/12
- * - >90 字 → 每次 len/6（积压严重时加速追赶）
+ * 自适应流式渲染：小缓冲稳定推进，大缓冲自动追赶。
+ * 同一帧只写一次 store，避免 Markdown 频繁重绘；结束时可自然排空而非整段闪现。
  */
-const TICK_MS = 25;
 
 export interface StreamLifecycleOptions {
   /** 流式开始前调用；通常用于 setIsStreaming(true) + setStreamingTargetAssistantId(id) */
@@ -139,46 +131,129 @@ export async function withStreamLifecycle<T>(
 export function createAnimStream(
   sendSessionId: string,
   assistantId: string,
-  appendFn: (sessionId: string, msgId: string, chunk: string) => void
+  appendFn: (sessionId: string, msgId: string, chunk: string) => void,
+  options: { pace?: 'answer' | 'reasoning'; startPaused?: boolean } = {}
 ) {
   let buffer = '';
-  let timerId: ReturnType<typeof setInterval> | null = null;
-  const flush = () => {
-    if (timerId !== null) {
-      clearInterval(timerId);
-      timerId = null;
-    }
-    if (!buffer) return;
-    appendFn(sendSessionId, assistantId, buffer);
-    buffer = '';
+  let timerId: ReturnType<typeof setTimeout> | null = null;
+  let finishPromise: Promise<void> | null = null;
+  let resolveFinish: (() => void) | null = null;
+  let paused = Boolean(options.startPaused);
+
+  const isReasoning = options.pace === 'reasoning';
+  /** 正文约 50 个中文视觉单位/秒；思考约 100 个/秒，仍逐字推进。 */
+  const BASE_TICK_MS = isReasoning ? 10 : 20;
+
+  const visualCost = (grapheme: string): number => {
+    if (/^\s$/u.test(grapheme)) return 0.3;
+    /** Markdown 控制符跟相邻字符一起出现，减少 `**` / ``` 半截闪烁。 */
+    if (/^[`*_#>~\[\](){}|\\]$/u.test(grapheme)) return 0.35;
+    /** 英文/数字比汉字窄，但仍限速，避免一行文字瞬间横向扫过。 */
+    if (/^[\x20-\x7e]$/u.test(grapheme)) return 0.65;
+    return 1;
   };
-  const tick = () => {
+
+  const takeComfortableChunk = (): string => {
+    /** 固定视觉预算，不因模型返回过快或缓冲积压而突然提速。 */
+    const budget = 1;
+    let spent = 0;
+    let consumedUnits = 0;
+    let consumedCodeUnits = 0;
+    /** for...of 按 Unicode code point 迭代且最多读取 8 个，避免长缓冲每拍整段复制。 */
+    for (const grapheme of buffer) {
+      const cost = visualCost(grapheme);
+      if (consumedUnits > 0 && spent + cost > budget) break;
+      spent += cost;
+      consumedUnits += 1;
+      consumedCodeUnits += grapheme.length;
+      if (consumedUnits >= 8) break;
+    }
+    const chunk = buffer.slice(0, consumedCodeUnits);
+    buffer = buffer.slice(consumedCodeUnits);
+    return chunk;
+  };
+
+  const nextDelayAfter = (chunk: string): number => {
+    /** 思考过程优先快速连续输出，不在标点处额外等待。 */
+    if (isReasoning) return BASE_TICK_MS;
+    const units = Array.from(chunk);
+    const tail = units[units.length - 1] ?? '';
+    if (tail === '\n') return BASE_TICK_MS + 70;
+    if (/[。！？]/u.test(tail)) return BASE_TICK_MS + 75;
+    if (/[，、；：]/u.test(tail)) return BASE_TICK_MS + 24;
+    if (/[.!?]/u.test(tail) && (!buffer || /^\s/u.test(buffer))) return BASE_TICK_MS + 60;
+    if (/[,;:]/u.test(tail) && /^\s/u.test(buffer)) return BASE_TICK_MS + 20;
+    return BASE_TICK_MS;
+  };
+
+  const settleFinish = () => {
+    if (buffer || timerId !== null || !resolveFinish) return;
+    const resolve = resolveFinish;
+    resolveFinish = null;
+    finishPromise = null;
+    resolve();
+  };
+
+  const cancelScheduled = () => {
+    if (timerId !== null) clearTimeout(timerId);
+    timerId = null;
+  };
+
+  const drain = () => {
+    timerId = null;
     if (!buffer) {
-      if (timerId !== null) {
-        clearInterval(timerId);
-        timerId = null;
-      }
+      settleFinish();
       return;
     }
-    const len = buffer.length;
-    let take: number;
-    if (len <= 14) take = 1;
-    else if (len <= 38) take = 2;
-    else if (len <= 90) take = Math.ceil(len / 12);
-    else take = Math.ceil(len / 6);
-    const chunk = buffer.slice(0, take);
-    buffer = buffer.slice(take);
+    const chunk = takeComfortableChunk();
     appendFn(sendSessionId, assistantId, chunk);
+    if (buffer) {
+      schedule(nextDelayAfter(chunk));
+    } else {
+      settleFinish();
+    }
   };
+
+  const schedule = (delayMs = BASE_TICK_MS) => {
+    if (paused || timerId !== null) return;
+    timerId = setTimeout(drain, delayMs);
+  };
+
+  const flush = () => {
+    cancelScheduled();
+    if (!buffer) return;
+    const chunk = buffer;
+    buffer = '';
+    appendFn(sendSessionId, assistantId, chunk);
+    settleFinish();
+  };
+
   return {
     push(d: string) {
       if (!d) return;
       buffer += d;
-      if (timerId === null) {
-        timerId = setInterval(tick, TICK_MS);
-      }
+      schedule();
     },
     flush,
+    resume() {
+      if (!paused) return;
+      paused = false;
+      schedule();
+    },
+    finish(): Promise<void> {
+      if (!buffer) {
+        cancelScheduled();
+        settleFinish();
+        return Promise.resolve();
+      }
+      if (!finishPromise) {
+        finishPromise = new Promise<void>((resolve) => {
+          resolveFinish = resolve;
+        });
+      }
+      schedule();
+      return finishPromise;
+    },
   };
 }
 
@@ -315,9 +390,9 @@ export async function runImagePostProcess(opts: {
     opts.plannedIntent ?? planAssistantImageIntent(userMessage, historyBeforeUser, rawText);
   const imageGenHooks = makeImageGenHooks({
     assistantId,
-    syncImgGenUi: (v) => syncImgGenUi(ui, sendSessionId, v),
+    syncImgGenUi: (v) => { if (!imageTaskWasCancelled(assistantId)) syncImgGenUi(ui, sendSessionId, v); },
     imageGenCancelledRef: ui.imageGenCancelledRef,
-    onImage: (image) => appendGeneratedImageToAssistant(ui, sendSessionId, assistantId, image),
+    onImage: (image) => { if (!imageTaskWasCancelled(assistantId)) appendGeneratedImageToAssistant(ui, sendSessionId, assistantId, image); },
   });
   const { content, files } = await postProcessAssistantContent(
     rawText,
@@ -326,10 +401,11 @@ export async function runImagePostProcess(opts: {
     ui.setInlineImageIndex,
     {
       imageGenHooks,
-      referenceImages: imageReferencePathsFromFiles(userMessage.files),
+      requestId: assistantId,
+      referenceImages: plannedIntent.shouldGenerate ? resolveImageReferences(userMessage, historyBeforeUser) : [],
       userPromptContext: userMessage.content,
       plannedIntent,
-      shouldCancel: () => ui.imageGenCancelledRef.current,
+      shouldCancel: () => imageTaskWasCancelled(assistantId) || replyRunWasCancelled(sendSessionId, userMessage.id),
     }
   );
   return { content, files, plannedIntent };
@@ -345,18 +421,21 @@ export async function fulfillDocumentArtifact(opts: {
   exportHint: NonNullable<Message['exportHint']>;
   /** 随最终 updateMessage 一并写入的额外字段（如 reasoning） */
   extraUpdate?: Record<string, unknown>;
+  shouldCancel?: () => boolean;
 }): Promise<void> {
   const { ui, sendSessionId, assistantId, rawText, userText, exportHint, extraUpdate } = opts;
   const artifactBody = stripGenerateImageArtifactsForDisplay(rawText).trim();
-  const artifactFiles = await createDocumentArtifactsFromMarkdown(
+  const result = await generateDocumentArtifacts(
     artifactBody,
     documentExportFormatsFromHint(exportHint),
-    documentArtifactBaseNameFromContent(artifactBody, documentArtifactBaseName(userText))
+    documentArtifactBaseName(userText, documentArtifactBaseNameFromContent(artifactBody)),
+    [],
+    () => ui.streamCancelledByUserRef.current || Boolean(opts.shouldCancel?.()),
   );
   ui.updateMessage(sendSessionId, assistantId, {
-    content: artifactFiles.length ? ui.t('chat.documentReady') : ui.t('chat.documentWriteFailed'),
     ...(extraUpdate ?? {}),
-    exportHint,
-    files: artifactFiles.length ? artifactFiles : undefined,
+    content: result.cancelled ? ui.t('chat.stoppedBanner') : result.errors.length ? artifactBody : ui.t('chat.documentReady'),
+    exportHint: { ...exportHint, sourceContent: artifactBody, status: result.cancelled || result.errors.length ? 'failed' : 'ready', error: result.cancelled ? ui.t('chat.stoppedBanner') : result.errors.join('；') || undefined },
+    files: result.files.length ? result.files : undefined,
   });
 }

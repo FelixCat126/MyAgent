@@ -1,3 +1,4 @@
+import { normalizeReferenceImagesForApi } from '../arkBody';
 import { effectiveImageProvider } from '../auth';
 import { VENDOR_IMAGE_COUNT_LIMITS } from '../../../constants';
 import type { HttpImageProviderAdapter } from './types';
@@ -9,7 +10,7 @@ const openAiImagesAdapter: HttpImageProviderAdapter = {
     const id = effectiveImageProvider(config, endpoint);
     return id === 'openai-images' || id === 'zhipu-cogview';
   },
-  build({ endpoint, config, env, request }) {
+  async build({ endpoint, config, env, request }) {
     const model = resolveOpenAiCompatibleImageModel(config, env, false);
     /** 智谱 CogView 只返回 URL（不支持 b64_json），强制用 url */
     const isZhipu =
@@ -31,9 +32,22 @@ const openAiImagesAdapter: HttpImageProviderAdapter = {
       model,
       prompt: request.prompt,
       size,
-      response_format: rf === 'url' ? 'url' : 'b64_json',
+      ...(!/^gpt-image-|^chatgpt-image-/i.test(model) ? { response_format: rf === 'url' ? 'url' : 'b64_json' } : { output_format: 'png' }),
     };
-    if (request.count > 1) body.n = Math.max(1, Math.min(VENDOR_IMAGE_COUNT_LIMITS.openAiImages, request.count));
+    if (/^gpt-image-|^chatgpt-image-/i.test(model)) {
+      if (request.params.background) body.background = request.params.background;
+      if (config.quality) body.quality = config.quality;
+      if (/^gpt-image-1(?:[.-]|$)/i.test(model) && !['1024x1024', '1536x1024', '1024x1536'].includes(size)) {
+        body.size = (request.width || 1024) > (request.height || 1024) ? '1536x1024' : (request.height || 1024) > (request.width || 1024) ? '1024x1536' : '1024x1024';
+      }
+    }
+    if (request.referenceImages.length) {
+      if (isZhipu || !/^gpt-image-|^chatgpt-image-/i.test(model)) throw new Error('当前生图模型未接入图片编辑，请选择支持参考图的模型。');
+      body.images = (await normalizeReferenceImagesForApi(request.params, 16)).map(image_url => ({ image_url }));
+      if (!/\/images\/(generations|edits)\/?$/i.test(endpoint)) throw new Error('编辑图片需要 /images/edits 接口地址。');
+      endpoint = endpoint.replace(/\/images\/generations\/?$/i, '/images/edits');
+    }
+    if (request.count > 1) body.n = Math.max(1, Math.min(model === 'dall-e-3' ? 1 : VENDOR_IMAGE_COUNT_LIMITS.openAiImages, request.count));
     return { provider: isZhipu ? 'zhipu-cogview' : 'openai-images', mode: 'openai_images', endpoint, body };
   },
 };

@@ -18,12 +18,12 @@ import { DownloadLocalFileError, downloadDisplayImage, hasDesktopLocalSaveCapabi
 import { showError } from '../../store/errorStore';
 import {
   GALLERY_MODAL_ENTER_MS,
-  GALLERY_IMG_FRAME,
-  GALLERY_IMG,
+  MODAL_CLEAR_TITLEBAR_PT,
   MODAL_PORTAL_LAYER_CLASS,
   MODAL_PORTAL_SHELL_STYLE,
   PREVIEW_IMG_TOUCH_MENU_STYLE,
 } from './styleConstants';
+import { artifactDisplayName } from './DocumentAttachmentCard';
 
 export interface ImagePreviewModalProps {
   src: string;
@@ -43,6 +43,10 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
 }) => {
   const { t } = useI18n();
   const desktopShell = hasDesktopLocalSaveCapability();
+  const displayName = artifactDisplayName(
+    defaultFileName || alt || t('message.imageAlt'),
+    t('message.imageAlt'),
+  );
   const [shown, setShown] = useState(false);
   const closingRef = useRef(false);
 
@@ -87,51 +91,61 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
         transitionDuration: `${GALLERY_MODAL_ENTER_MS}ms`,
       }}
       onClick={requestClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label={displayName}
     >
       <div
-        className="relative isolate flex max-h-[85vh] w-full max-w-[90vw] flex-col gap-4"
+        className="relative isolate flex h-full max-h-screen min-h-0 w-full max-w-[100vw] flex-col px-4 sm:px-8"
         onClick={(e) => e.stopPropagation()}
         style={{
           transform: shown ? 'scale(1) translateY(0)' : 'scale(0.94) translateY(14px)',
           transition: `transform ${GALLERY_MODAL_ENTER_MS}ms cubic-bezier(0.32, 0.72, 0, 1)`,
         }}
       >
-        <div className="pointer-events-auto relative z-[210] flex shrink-0 justify-end gap-3 [&_svg]:pointer-events-none">
-          {desktopShell ? (
+        <div className={`pointer-events-auto relative z-[210] flex shrink-0 items-center justify-between gap-4 pb-4 ${MODAL_CLEAR_TITLEBAR_PT}`}>
+          <p className="min-w-0 truncate text-sm font-medium text-white/85" title={defaultFileName || alt}>
+            {displayName}
+          </p>
+          <div className="flex shrink-0 items-center gap-2 [&_svg]:pointer-events-none">
+            {desktopShell ? (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/10 px-3 py-1.5 text-sm text-white backdrop-blur-sm transition-colors hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
+                title={t('message.imagePreviewDownload')}
+                aria-label={t('message.imagePreviewDownload')}
+                onClick={(e) => void handleSaveCopy(e)}
+              >
+                <FiDownload size={14} aria-hidden />
+                <span>{t('message.imagePreviewDownload')}</span>
+              </button>
+            ) : null}
             <button
               type="button"
-              className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2.5 py-1 text-sm text-white backdrop-blur-sm transition-colors hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
-              title={t('message.imagePreviewDownload')}
-              aria-label={t('message.imagePreviewDownload')}
-              onClick={(e) => void handleSaveCopy(e)}
+              onClick={requestClose}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/15 bg-white/10 text-white backdrop-blur-sm transition-colors hover:bg-white/20 hover:text-primary-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
+              title={t('message.closePreview')}
+              aria-label={t('message.closePreview')}
             >
-              <FiDownload size={14} aria-hidden />
-              <span>{t('message.imagePreviewDownload')}</span>
+              <FiX size={18} aria-hidden />
             </button>
+          </div>
+        </div>
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 pb-6">
+          <div className="flex max-h-[82vh] max-w-[92vw] items-center justify-center overflow-hidden rounded-xl bg-zinc-950 shadow-2xl ring-1 ring-white/10">
+            <img
+              src={src}
+              alt={alt}
+              style={desktopShell ? undefined : PREVIEW_IMG_TOUCH_MENU_STYLE}
+              className="block max-h-[82vh] max-w-[92vw] object-contain"
+            />
+          </div>
+          {!desktopShell ? (
+            <p className="mx-auto max-w-[min(90vw,24rem)] px-2 text-center text-[11px] leading-snug text-white/55">
+              {t('message.imageLongPressGalleryHint')}
+            </p>
           ) : null}
-        <button
-          type="button"
-          onClick={requestClose}
-          className="inline-flex items-center justify-center rounded-md bg-white/10 px-2 py-1 text-white backdrop-blur-sm transition-colors hover:bg-white/20 hover:text-primary-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
-          title={t('message.closePreview')}
-          aria-label={t('message.closePreview')}
-        >
-          <FiX size={18} aria-hidden />
-        </button>
         </div>
-        <div className={`mx-auto ${GALLERY_IMG_FRAME}`}>
-          <img
-            src={src}
-            alt={alt}
-            style={desktopShell ? undefined : PREVIEW_IMG_TOUCH_MENU_STYLE}
-            className={GALLERY_IMG}
-          />
-        </div>
-        {!desktopShell ? (
-          <p className="mx-auto max-w-[min(90vw,24rem)] text-center text-[11px] leading-snug text-white/55 px-2">
-            {t('message.imageLongPressGalleryHint')}
-          </p>
-        ) : null}
       </div>
     </div>
   );

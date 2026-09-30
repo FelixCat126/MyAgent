@@ -1,3 +1,4 @@
+import { imageTaskContext, checkImageTask } from './task';
 import { URL as NodeURL } from 'node:url';
 import { ImageGenerationParams } from '../../../src/types';
 import { stripUtf8Bom, looksLikeBinaryImage } from './parsing';
@@ -22,7 +23,8 @@ async function fetchOllamaVersion(endpoint: string): Promise<string | null> {
   const versionEndpoint = buildSiblingEndpoint(endpoint, '/api/version');
   if (!versionEndpoint) return null;
   try {
-    const res = await fetch(versionEndpoint, { method: 'GET' });
+    checkImageTask();
+    const res = await fetch(versionEndpoint, { method: 'GET', signal: imageTaskContext.getStore() });
     if (!res.ok) return null;
     const data = (await res.json()) as { version?: unknown };
     return typeof data.version === 'string' ? data.version : null;

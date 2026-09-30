@@ -1,7 +1,9 @@
+import { imageTaskWasCancelled, releaseImageTask, replyRunWasCancelled } from './imageTaskState';
 import type { Message, ModelConfig, FileInfo } from '../types';
 import { useChatStore } from '../store/chatStore';
 import { useSettingStore } from '../store/settingStore';
 import { canUseSseStream } from '../utils/chatModelPolicy';
+import { inferReplyExportHint } from '../utils/documentExportIntent';
 import {
   createAnimStream,
   beginAssistantStream,
@@ -13,6 +15,7 @@ import {
   runImagePostProcess,
   withStreamLifecycle,
 } from './runModelReplyShared';
+import { runVideoPostProcess } from './videoGenAssist';
 import type { RunModelReplyUi } from './runModelReplyTypes';
 
 export type RunStreamReplyPathArgs = {
@@ -59,7 +62,12 @@ function runDocumentStreamReply(args: RunStreamReplyPathArgs): void {
     exportHint: { ...exportHint, status: 'thinking' },
   });
 
-  const reasoningStream = createAnimStream(sendSessionId, assistantId, ui.appendReasoningToMessage);
+  const reasoningStream = createAnimStream(
+    sendSessionId,
+    assistantId,
+    ui.appendReasoningToMessage,
+    { pace: 'reasoning' },
+  );
 
   const unsub = window.electron.subscribeModelStream(plainMessages, plainModel, {
     onDelta: (d) => {
@@ -72,8 +80,8 @@ function runDocumentStreamReply(args: RunStreamReplyPathArgs): void {
       reasoningStream.flush();
       ui.streamHadErrorRef.current = true;
       ui.updateMessage(sendSessionId, assistantId, {
-        content: ui.t('chat.requestFailed') + m,
-        exportHint,
+        content: artifactBuffer || ui.t('chat.requestFailed') + m,
+        exportHint: { ...exportHint, status: 'failed', error: m },
       });
     },
     locale: ui.locale,
@@ -81,19 +89,22 @@ function runDocumentStreamReply(args: RunStreamReplyPathArgs): void {
       void (async () => {
         reasoningStream.flush();
         ui.streamUnsubRef.current = null;
-        const aborted = ui.streamCancelledByUserRef.current;
+        const aborted = replyRunWasCancelled(sendSessionId, userMessage.id) || ui.streamCancelledByUserRef.current;
         ui.streamCancelledByUserRef.current = false;
         await withStreamLifecycle(
           assistantId,
           {
-            onFinalize: () => resetStreamingUi(ui, sendSessionId),
+            onFinalize: () => {
+              if (!imageTaskWasCancelled(assistantId) && !replyRunWasCancelled(sendSessionId, userMessage.id)) resetStreamingUi(ui, sendSessionId);
+              releaseImageTask(assistantId);
+            },
           },
           async () => {
             if (ui.streamHadErrorRef.current) return;
             if (aborted) {
               ui.updateMessage(sendSessionId, assistantId, {
-                content: ui.t('chat.stoppedBanner'),
-                exportHint,
+                content: artifactBuffer || ui.t('chat.stoppedBanner'),
+                exportHint: { ...exportHint, status: 'failed', error: ui.t('chat.stoppedBanner') },
               });
               return;
             }
@@ -104,6 +115,7 @@ function runDocumentStreamReply(args: RunStreamReplyPathArgs): void {
               ui,
               sendSessionId,
               assistantId,
+              shouldCancel: () => replyRunWasCancelled(sendSessionId, userMessage.id),
               rawText: artifactBuffer,
               userText: userMessage.content,
               exportHint,
@@ -138,26 +150,55 @@ function runSseStreamReply(args: RunStreamReplyPathArgs): void {
   if (voiceReader) void voiceReader.start();
   const voiceReplyThisTurn = Boolean(voiceReader);
 
-  const contentStream = createAnimStream(sendSessionId, assistantId, ui.appendToMessage);
-  const reasoningStream = createAnimStream(sendSessionId, assistantId, ui.appendReasoningToMessage);
+  /** 正文先缓冲；思考逐字排空后才恢复，避免两段内容在界面上交叉播放。 */
+  const contentStream = createAnimStream(sendSessionId, assistantId, ui.appendToMessage, {
+    startPaused: true,
+  });
+  const reasoningStream = createAnimStream(
+    sendSessionId,
+    assistantId,
+    ui.appendReasoningToMessage,
+    { pace: 'reasoning' },
+  );
   const flushPendingContentDeltaImmediately = contentStream.flush;
   const drainReasoningBufferUnsafe = reasoningStream.flush;
+  const finishContentAtComfortablePace = contentStream.finish;
+  const finishReasoningAtComfortablePace = reasoningStream.finish;
   const queueContentDeltaChunk = contentStream.push;
   const queueReasoningDeltaChunk = reasoningStream.push;
+  let contentStartPromise: Promise<void> | null = null;
+  let contentHasStarted = false;
+  let pendingVoiceContent = '';
+
+  const startContentAfterReasoning = (): Promise<void> => {
+    if (!contentStartPromise) {
+      contentStartPromise = finishReasoningAtComfortablePace().then(() => {
+        contentHasStarted = true;
+        contentStream.resume();
+        if (voiceReplyThisTurn && pendingVoiceContent) {
+          ui.speechReaderRef.current?.push(pendingVoiceContent);
+          pendingVoiceContent = '';
+        }
+      });
+    }
+    return contentStartPromise;
+  };
 
   const unsub = window.electron.subscribeModelStream(plainMessages, plainModel, {
     onDelta: (d) => {
       queueContentDeltaChunk(d);
       if (voiceReplyThisTurn) {
-        ui.speechReaderRef.current?.push(d);
+        if (contentHasStarted) ui.speechReaderRef.current?.push(d);
+        else pendingVoiceContent += d;
       }
+      void startContentAfterReasoning();
     },
     onThinkingDelta: (th) => {
       if (th) queueReasoningDeltaChunk(th);
     },
     onError: (m) => {
-      flushPendingContentDeltaImmediately();
       drainReasoningBufferUnsafe();
+      flushPendingContentDeltaImmediately();
       ui.speechReaderRef.current?.cancel();
       ui.setVoiceReplySpeaking(false);
       ui.streamHadErrorRef.current = true;
@@ -171,16 +212,24 @@ function runSseStreamReply(args: RunStreamReplyPathArgs): void {
     locale: ui.locale,
     onEnd: () => {
       void (async () => {
-        flushPendingContentDeltaImmediately();
-        drainReasoningBufferUnsafe();
+        const aborted = replyRunWasCancelled(sendSessionId, userMessage.id) || ui.streamCancelledByUserRef.current;
+        if (aborted || ui.streamHadErrorRef.current) {
+          drainReasoningBufferUnsafe();
+          flushPendingContentDeltaImmediately();
+        } else {
+          await startContentAfterReasoning();
+          await finishContentAtComfortablePace();
+        }
         ui.streamUnsubRef.current = null;
-        const aborted = ui.streamCancelledByUserRef.current;
         ui.streamCancelledByUserRef.current = false;
 
         await withStreamLifecycle(
           assistantId,
           {
-            onFinalize: () => resetStreamingUi(ui, sendSessionId),
+            onFinalize: () => {
+              if (!imageTaskWasCancelled(assistantId) && !replyRunWasCancelled(sendSessionId, userMessage.id)) resetStreamingUi(ui, sendSessionId);
+              releaseImageTask(assistantId);
+            },
           },
           async () => {
             if (ui.streamHadErrorRef.current) {
@@ -213,7 +262,7 @@ function runSseStreamReply(args: RunStreamReplyPathArgs): void {
 
             let nextContent = raw;
             let nextFiles = msg?.files as Message['files'] | undefined;
-            if (raw.trim() || plannedIntent.shouldGenerate) {
+            if (!aborted && (raw.trim() || plannedIntent.shouldGenerate)) {
               try {
                 const { content, files } = await runImagePostProcess({
                   ui,
@@ -235,14 +284,35 @@ function runSseStreamReply(args: RunStreamReplyPathArgs): void {
                 nextContent = `${nextContent}\n\n---\n\n${ui.t('chat.stoppedBanner')}`;
               }
             }
+            if (aborted) nextContent = `${nextContent}\n\n${ui.t('chat.stoppedBanner')}`;
+            /** 视频生成：客户端代理 + 后台模式。
+             *  视频生成耗时 30s~几分钟，绝不阻塞消息收尾——消息先正常显示，
+             *  视频在后台生成，完成后由 videoGenAssist 直接 updateMessage 追加附件。 */
+            void runVideoPostProcess({
+              ui,
+              sendSessionId,
+              assistantId,
+              rawText: nextContent,
+              userMessage,
+              activeModel,
+              historyBeforeUser,
+              currentMsg: msg,
+            }).catch((e) => {
+              console.warn('[videoGenAssist] 后台视频生成失败', e);
+            });
             if (!nextContent.trim() && !nextFiles?.length && reasoningText) {
               nextContent = ui.t('chat.emptyAfterReasoning');
             }
 
+            /** 内容驱动导出：用户没明说"下载"时，按回复内容反推格式（文档→docx/pdf，表格→xlsx） */
+            const replyHint = inferReplyExportHint(nextContent, userMessage.content);
+            const effectiveExportHint =
+              exportHint ?? (replyHint ? { ...replyHint } : undefined);
+
             ui.updateMessage(sendSessionId, assistantId, {
               content: nextContent,
               files: mergeAssistantFiles(sendSessionId, assistantId, nextFiles as FileInfo[] | undefined),
-              ...(exportHint ? { exportHint } : {}),
+              ...(effectiveExportHint ? { exportHint: effectiveExportHint } : {}),
               imageGenProgress: undefined,
             });
           }

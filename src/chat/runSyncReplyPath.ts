@@ -1,4 +1,6 @@
+import { imageTaskWasCancelled, releaseImageTask, replyRunWasCancelled } from './imageTaskState';
 import type { Message, ModelConfig } from '../types';
+import { inferReplyExportHint } from '../utils/documentExportIntent';
 import {
   fulfillDocumentArtifact,
   mergeAssistantFiles,
@@ -32,6 +34,7 @@ export async function runSyncReplyPath(args: RunSyncReplyPathArgs): Promise<void
   } = args;
 
   let documentArtifactAssistantId = '';
+  let replyAssistantId = '';
   try {
     if (exportHint?.document) {
       documentArtifactAssistantId = resolveOrCreateAssistantBubble(
@@ -45,6 +48,12 @@ export async function runSyncReplyPath(args: RunSyncReplyPathArgs): Promise<void
       );
     }
     const response = await window.electron.callModel(plainMessages, plainModel, { locale: ui.locale });
+    if (replyRunWasCancelled(sendSessionId, userMessage.id)) return;
+    if (exportHint?.document && response.truncated) {
+      ui.updateMessage(sendSessionId, documentArtifactAssistantId, { content: response.content || ui.t('chat.fallbackReply'), exportHint: { ...exportHint, status: 'failed', error: '模型达到输出长度上限，正文尚未完整生成。请增加模型输出长度或分章节生成后重试。' } });
+      return;
+    }
+    if (exportHint?.document && !response.content?.trim()) throw new Error('模型未返回文档正文，请重试。');
     const content0 = response.content || ui.t('chat.fallbackReply');
     const reasoningIn = typeof response.reasoning === 'string' ? response.reasoning.trim() : '';
     if (exportHint?.document) {
@@ -52,6 +61,7 @@ export async function runSyncReplyPath(args: RunSyncReplyPathArgs): Promise<void
         ui,
         sendSessionId,
         assistantId: documentArtifactAssistantId,
+        shouldCancel: () => replyRunWasCancelled(sendSessionId, userMessage.id),
         rawText: content0,
         userText: userMessage.content,
         exportHint,
@@ -65,6 +75,7 @@ export async function runSyncReplyPath(args: RunSyncReplyPathArgs): Promise<void
       ...(reasoningIn ? { reasoning: reasoningIn } : {}),
       ...(exportHint ? { exportHint } : {}),
     });
+    replyAssistantId = assistantId;
     speakVoiceWakeReplyOnce(ui, content0);
     const { content: c, files } = await runImagePostProcess({
       ui,
@@ -75,18 +86,23 @@ export async function runSyncReplyPath(args: RunSyncReplyPathArgs): Promise<void
       activeModel,
       historyBeforeUser,
     });
+    /** 内容驱动导出：AI 回复含文档/表格特征时自动给出导出格式（用户不必明说"下载"） */
+    const replyHint = inferReplyExportHint(c, userMessage.content);
+    const effectiveExportHint = exportHint ?? replyHint;
     ui.updateMessage(sendSessionId, assistantId, {
       content: c,
       ...(reasoningIn ? { reasoning: reasoningIn } : {}),
-      ...(exportHint ? { exportHint } : {}),
+      ...(effectiveExportHint ? { exportHint: effectiveExportHint } : {}),
       files: mergeAssistantFiles(sendSessionId, assistantId, files),
       imageGenProgress: undefined,
     });
   } catch (error) {
+    if (replyRunWasCancelled(sendSessionId, userMessage.id)) return;
     const msg = error instanceof Error ? error.message : String(error);
     if (documentArtifactAssistantId) {
       ui.updateMessage(sendSessionId, documentArtifactAssistantId, {
         content: ui.t('chat.requestFailed') + msg,
+        exportHint: { ...exportHint, status: 'failed', error: msg },
       });
       return;
     }
@@ -95,6 +111,7 @@ export async function runSyncReplyPath(args: RunSyncReplyPathArgs): Promise<void
       content: ui.t('chat.requestFailed') + msg,
     });
   } finally {
-    ui.clearLoadingForSession(sendSessionId);
+    if (!imageTaskWasCancelled(replyAssistantId) && !replyRunWasCancelled(sendSessionId, userMessage.id)) ui.clearLoadingForSession(sendSessionId);
+    releaseImageTask(replyAssistantId);
   }
 }

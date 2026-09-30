@@ -36,8 +36,6 @@ describe('sendPipeline', () => {
       ],
       currentSessionId: 's1',
       loadingSessionIds: new Set<string>(),
-      loadingSessionIds: new Set<string>(),
-      compressingSessionIds: new Set<string>(),
       compressingSessionIds: new Set<string>(),
     });
   });
@@ -92,8 +90,6 @@ describe('resubmitEditedUserMessage', () => {
       ],
       currentSessionId: 's1',
       loadingSessionIds: new Set<string>(),
-      loadingSessionIds: new Set<string>(),
-      compressingSessionIds: new Set<string>(),
       compressingSessionIds: new Set<string>(),
     });
   });
@@ -146,6 +142,35 @@ describe('resubmitEditedUserMessage', () => {
     const [, prior, userMsg] = runModelReply.mock.calls[0];
     expect(prior.map((m: Message) => m.id)).toEqual(['u1', 'a1']);
     expect(userMsg.content).toBe('第二问改写');
+  });
+
+  it('消息提交后立即通知界面退出编辑态，不等待模型回复结束', async () => {
+    let finishReply: (() => void) | undefined;
+    const runModelReply = vi.fn(
+      () => new Promise<void>((resolve) => {
+        finishReply = resolve;
+      })
+    );
+    const onCommitted = vi.fn();
+
+    const pending = resubmitEditedUserMessage({
+      sessionId: 's1',
+      messageId: 'u2',
+      textContent: '立即变回气泡',
+      model: fakeModel,
+      locale: 'zh',
+      summaryTitle: '【上下文摘要】',
+      webEnabled: false,
+      runModelReply,
+      onCommitted,
+    });
+
+    await vi.waitFor(() => expect(onCommitted).toHaveBeenCalledOnce());
+    expect(runModelReply).toHaveBeenCalledOnce();
+    expect(useChatStore.getState().sessions[0].messages.at(-1)?.content).toBe('立即变回气泡');
+
+    finishReply?.();
+    await expect(pending).resolves.toEqual({ ok: true });
   });
 
   it('会话忙碌时返回 busy', async () => {

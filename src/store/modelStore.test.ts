@@ -162,3 +162,15 @@ describe('modelStore 持久化迁移', () => {
     expect(useModelStore.getState().routingRules.length).toBe(3);
   });
 });
+
+it('keeps automatic protocol dynamic and excludes image-only models from chat', () => {
+ resetModelStore();
+ useModelStore.getState().addModel({...oneModel('image'),isChatModel:false,isImageGenerator:true});
+ expect(useModelStore.getState().activeModelId).toBeNull();
+ useModelStore.getState().setActiveModel('image');
+ expect(useModelStore.getState().getActiveModel()).toBeNull();
+ useModelStore.getState().addModel({...oneModel('chat'),chatApiMode:'auto'});
+ useModelStore.getState().updateModel('chat',{apiUrl:'https://api.anthropic.com'});
+ expect(useModelStore.getState().getActiveModel()?.chatApiMode).toBe('auto');
+ expect(useModelStore.getState().getActiveModel()?.id).toBe('chat');
+});

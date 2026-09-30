@@ -31,3 +31,10 @@ describe('enrichMessagesForModel', () => {
     expect(out.map((m) => m.id)).toEqual(['a', 'b', 'c']);
   });
 });
+
+
+it('uses the retained artifact body in follow-up model context', async () => {
+  const message = { id: 'artifact', role: 'assistant' as const, content: '文件已生成', timestamp: 1, model: 'test', exportHint: { sourceContent: '# 完整报告\n\n不能丢失的原文' } };
+  const result = await enrichMessagesForModel([message], 'zh');
+  expect(result[0].content).toBe(message.exportHint.sourceContent);
+});

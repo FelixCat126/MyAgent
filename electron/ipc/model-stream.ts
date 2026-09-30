@@ -1,3 +1,4 @@
+import { completionWasTruncated } from '../../src/utils/completionStatus';
 import { ipcMain, WebContents } from 'electron';
 import axios, { type AxiosError } from 'axios';
 import { ModelConfig, Message } from '../../src/types';
@@ -5,6 +6,7 @@ import { mapModelCallError } from '../../src/utils/modelErrors';
 import {
   buildAnthropicAuthHeaders,
   buildAnthropicThinkingParams,
+  looksLikeMiniMaxChat,
   resolveAnthropicMessagesUrl,
   resolveChatApiMode,
 } from '../../src/utils/chatApiMode';
@@ -20,9 +22,15 @@ import {
 } from './openai-adapters';
 import {
   canFallbackAnthropicToOpenAi,
+  withAnthropicThinkingFallback,
   withOpenAiCompatibleFallbacks,
 } from './openai-chat-retry';
 import { StreamingDeltaSplitter } from '../utils/streamChatCompletionDelta';
+import { consumeSseLines } from '../utils/sseStreamCompletion';
+import {
+  MODEL_STREAM_FIRST_EVENT_TIMEOUT_MS,
+  MODEL_STREAM_IDLE_TIMEOUT_MS,
+} from '../constants/timeouts';
 
 const abortByStream = new Map<number, AbortController>();
 
@@ -44,6 +52,13 @@ function sendErr(wc: WebContents, message: string) {
   wc.send('model-stream-error', message);
 }
 
+function reportDocumentLimit(wc: WebContents, messages: Message[], raw: string) {
+  if (!messages.some(m => m.role === 'system' && m.model === 'myagent-document-export')) return;
+  try {
+    if (completionWasTruncated(JSON.parse(raw))) sendErr(wc, '模型达到输出长度上限，正文尚未完整生成。已保留部分内容；请增加模型输出长度或分章节生成后重试。');
+  } catch { /* Ignore non-JSON SSE markers. */ }
+}
+
 /** 通用 Anthropic Messages 流式（Claude / MiniMax / 兼容网关） */
 async function streamAnthropicMessages(opts: {
   wc: WebContents;
@@ -55,16 +70,19 @@ async function streamAnthropicMessages(opts: {
   const { wc, ac, config, temperature, messages } = opts;
   const { apiUrl, apiKey, modelName, maxTokens, provider } = config;
   const url = resolveAnthropicMessagesUrl(apiUrl);
-  const { system, messages: anthropicMessages } = formatAnthropicMessages(messages);
+  const isMiniMax = looksLikeMiniMaxChat(apiUrl, modelName);
+  const { system, messages: anthropicMessages } = formatAnthropicMessages(messages, {
+    includeAssistantThinking: isMiniMax,
+  });
   const headers = buildAnthropicAuthHeaders({ apiKey, provider, apiUrl });
-  let thinking = buildAnthropicThinkingParams({
+  const thinking = buildAnthropicThinkingParams({
     apiUrl,
     modelName,
     provider,
     maxTokens,
   });
 
-  const postStream = (thinkingParams: { thinking: Record<string, unknown> }) => {
+  const postStream = (thinkingParams: { thinking?: Record<string, unknown> }) => {
     const body: Record<string, unknown> = {
       model: modelName,
       max_tokens: Math.max(1, maxTokens || 4096),
@@ -77,19 +95,27 @@ async function streamAnthropicMessages(opts: {
     return axios.post(url, body, {
       headers,
       responseType: 'stream',
-      timeout: 300000,
+      timeout: MODEL_STREAM_IDLE_TIMEOUT_MS,
       signal: ac.signal,
       validateStatus: (s) => s >= 200 && s < 300,
     });
   };
 
-  const response = await postStream(thinking);
+  const response = await withAnthropicThinkingFallback({
+    thinkingParams: thinking,
+    request: postStream,
+    onFallback: () => {
+      if (process.env.MYAGENT_DEBUG) {
+        console.warn('[model-stream] Anthropic 思考参数被拒绝，已改为标准 Messages 请求重试', {
+          modelName,
+        });
+      }
+    },
+  });
 
   const stream = response.data as NodeJS.ReadableStream & {
     on: (ev: 'data' | 'end' | 'error', fn: (x?: string | Buffer | Error) => void) => void;
   };
-
-  let buffer = '';
 
   const handleSseLine = (line: string) => {
     const trimmed = line.replace(/\r$/, '').trim();
@@ -105,6 +131,7 @@ async function streamAnthropicMessages(opts: {
     } catch {
       return;
     }
+    reportDocumentLimit(wc, messages, raw);
     if (j.type !== 'content_block_delta' || !j.delta) return;
     const dt = j.delta.type;
     if (dt === 'thinking_delta' && typeof j.delta.thinking === 'string' && j.delta.thinking) {
@@ -114,21 +141,8 @@ async function streamAnthropicMessages(opts: {
     }
   };
 
-  stream.on('data', (chunk: string | Buffer) => {
-    buffer += chunk.toString();
-    const parts = buffer.split('\n');
-    buffer = parts.pop() || '';
-    for (const line of parts) handleSseLine(line);
-  });
-
-  await new Promise<void>((resolve, reject) => {
-    stream.on('end', () => {
-      if (buffer.trim()) {
-        for (const ln of buffer.split('\n')) handleSseLine(ln);
-      }
-      resolve();
-    });
-    stream.on('error', (e) => reject(e));
+  await consumeSseLines(stream, handleSseLine, {
+    firstEventTimeoutMs: MODEL_STREAM_FIRST_EVENT_TIMEOUT_MS,
   });
 }
 
@@ -171,7 +185,7 @@ async function streamOpenAiCompatible(opts: {
     return axios.post(`${apiBase}/chat/completions`, body, {
       headers,
       responseType: 'stream',
-      timeout: 300000,
+      timeout: MODEL_STREAM_IDLE_TIMEOUT_MS,
       signal: ac.signal,
       validateStatus: (s) => s >= 200 && s < 300,
     });
@@ -193,38 +207,21 @@ async function streamOpenAiCompatible(opts: {
     },
   });
 
-  let buffer = '';
   const stream = response.data as NodeJS.ReadableStream & {
     on: (ev: 'data' | 'end' | 'error', fn: (x?: string | Buffer | Error) => void) => void;
   };
 
   const splitter = new StreamingDeltaSplitter();
-  stream.on('data', (chunk: string | Buffer) => {
-    buffer += chunk.toString();
-    const parts = buffer.split('\n');
-    buffer = parts.pop() || '';
-    for (const line of parts) {
-      const trimmed = line.replace(/\r$/, '').trim();
-      const { content, reasoning } = splitter.feed(trimmed);
-      sendDelta(wc, content);
-      sendThinkingDelta(wc, reasoning);
+  await consumeSseLines(stream, (line) => {
+    const trimmed = line.trim();
+    const { content, reasoning } = splitter.feed(trimmed);
+    sendDelta(wc, content);
+    sendThinkingDelta(wc, reasoning);
+    if (trimmed.startsWith('data:')) {
+      reportDocumentLimit(wc, messages, trimmed.slice(5).trim());
     }
-  });
-  await new Promise<void>((resolve, reject) => {
-    stream.on('end', () => {
-      if (buffer.trim()) {
-        for (const ln of buffer.split('\n')) {
-          const trimmed = ln.replace(/\r$/, '').trim();
-          const { content, reasoning } = splitter.feed(trimmed);
-          sendDelta(wc, content);
-          sendThinkingDelta(wc, reasoning);
-        }
-      }
-      splitter.flush();
-      resolve();
-    });
-    stream.on('error', (e) => reject(e));
-  });
+  }, { firstEventTimeoutMs: MODEL_STREAM_FIRST_EVENT_TIMEOUT_MS });
+  splitter.flush();
 }
 
 function registerModelStreamIpc() {

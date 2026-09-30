@@ -15,6 +15,11 @@ describe('resolveOpenAiCompatibleBaseUrl', () => {
   it('非 ollama 不改动', () => {
     expect(resolveOpenAiCompatibleBaseUrl('https://api.openai.com/v1', 'openai')).toBe('https://api.openai.com/v1');
   });
+  it('允许直接粘贴完整 Chat Completions 地址', () => {
+    expect(resolveOpenAiCompatibleBaseUrl('https://gateway.example/v1/chat/completions', 'custom')).toBe(
+      'https://gateway.example/v1'
+    );
+  });
   it('带路径的反代不自动加 v1', () => {
     expect(resolveOpenAiCompatibleBaseUrl('https://proxy.example/llm', 'ollama')).toBe('https://proxy.example/llm');
   });

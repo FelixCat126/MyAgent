@@ -1,18 +1,51 @@
-// @vitest-environment node
-import { describe, expect, it } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import ExcelJS from 'exceljs';
-import {
-  markdownToXlsxBuffer,
-  parseMarkdownTables,
-  plainMarkdownToDocxBuffer,
-} from './markdownExport';
+import { unzipSync, strFromU8 } from 'fflate';
+import { markdownToCsv, markdownToXlsxBuffer, plainMarkdownToDocxBuffer, markdownToHtml, parseMarkdownTables } from './markdownExport';
+const md = '# 月度经营报告\n\n本月**收入**稳步增长。\n\n## 经营数据\n\n| 编号 | 金额 | 增长率 | 备注 |\n|---|---:|---:|---|\n| 0012 | 123.50 | 12.5% | 合同\\|续签 |\n| 0089 | -20 | 0% | =SUM(A1:A2) |\n\n- 第一项\n- 第二项\n\n```js\nconst x = 1;\n```';
+describe('document rendering', () => {
+  it('parses escaped table cells and retains headings as sheet names', () => {
+    const t = parseMarkdownTables(md)[0];
+    expect(t.name).toBe('经营数据'); expect(t.rows[1][3]).toBe('合同|续签');
+  });
+  it('creates styled Excel with numeric cells and text identifiers', async () => {
+    const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await markdownToXlsxBuffer(md) as never);
+    const ws = wb.worksheets[0];
+    expect(ws.getCell('A2').value).toBe('0012'); expect(ws.getCell('B2').value).toBe(123.5);
+    expect(ws.getCell('C2').value).toBe(0.125); expect(ws.getCell('C2').numFmt).toBe('0.00%');
+    expect(ws.getCell('D3').value).toBe('=SUM(A1:A2)'); expect(ws.views[0].state).toBe('frozen');
+    expect(ws.getRow(1).height).toBe(30); expect(ws.autoFilter).toBeTruthy();
+  });
+  it('rejects non-table spreadsheets instead of pretending to export successfully', async () => {
+    await expect(markdownToXlsxBuffer('没有表格')).rejects.toThrow('表格');
+    expect(() => markdownToCsv('没有表格')).toThrow('表格');
+  });
+  it('CSV protects formula-like text and refuses to silently discard extra tables', () => {
+    expect(markdownToCsv(md)).toContain("'=SUM(A1:A2)");
+    expect(() => markdownToCsv(md + '\n\n' + md)).toThrow('一张表');
+  });
+  it('Word includes real tables, styles, footer and untruncated body', async () => {
+    const long = '长'.repeat(9000);
+    const zip = unzipSync(await plainMarkdownToDocxBuffer(md + '\n\n' + long));
+    const xml = strFromU8(zip['word/document.xml']);
+    expect(xml).toContain('<w:tbl>'); expect(xml).toContain('w:tblHeader'); expect(xml).toContain(long);
+    expect(xml).not.toContain('**收入**'); expect(xml).toContain('Title');
+    expect(strFromU8(zip['word/footer1.xml'])).toContain('PAGE');
+  });
+  it('PDF HTML preserves formatting and prevents active content or remote resources', () => {
+    const html = markdownToHtml(md + '\n\n<script>alert(1)</script>\n\n[bad](javascript:alert)');
+    expect(html).toContain('<strong>收入</strong>'); expect(html).toContain('<thead>');
+    expect(html).toContain('table-header-group'); expect(html).not.toContain('<script>');
+    expect(html).not.toContain('href="javascript:'); expect(html).toContain("default-src 'none'");
+  });
+});
 
 describe('parseMarkdownTables', () => {
   it('解析最基本的 GFM 管道表格', () => {
     const md = `# 标题\n\n| 名称 | 数量 |\n| --- | --- |\n| 苹果 | 3 |\n| 梨 | 5 |\n`;
     const tables = parseMarkdownTables(md);
     expect(tables).toHaveLength(1);
-    expect(tables[0]!.name).toBe('Table1');
+    expect(tables[0]!.name).toBe('标题');
     expect(tables[0]!.rows).toEqual([
       ['名称', '数量'],
       ['苹果', '3'],
@@ -68,19 +101,13 @@ describe('markdownToXlsxBuffer', () => {
     const buf = await markdownToXlsxBuffer(md);
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(buf as unknown as ArrayBuffer);
-    expect(wb.worksheets.map((s) => s.name)).toEqual(['Table1', 'Table2']);
-    const s1 = wb.getWorksheet('Table1')!;
+    expect(wb.worksheets.map((s) => s.name)).toEqual(['Table1 1', 'Table2 2']);
+    const s1 = wb.getWorksheet('Table1 1')!;
     expect(s1.getCell(1, 1).value).toBe('列1');
-    expect(s1.getCell(3, 2).value).toBe('2');
+    expect(s1.getCell(3, 2).value).toBe(2);
   });
 
-  it('无表格时写一张 Content 占位', async () => {
-    const buf = await markdownToXlsxBuffer('没有任何管道表格的纯文本。');
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(buf as unknown as ArrayBuffer);
-    expect(wb.worksheets[0].name).toBe('Content');
-    expect(String(wb.worksheets[0].getCell(1, 1).value)).toMatch(/未识别到 Markdown 管道表格/);
-  });
+
 });
 
 describe('plainMarkdownToDocxBuffer', () => {
@@ -95,4 +122,12 @@ describe('plainMarkdownToDocxBuffer', () => {
     expect(buf.length).toBeGreaterThan(200);
     expect(buf.slice(0, 2).toString('binary')).toBe('PK');
   });
+});
+
+it('recognizes grouped numeric amounts without converting identifier columns', async () => {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(await markdownToXlsxBuffer('| 编号 | 金额 |\n|---|---|\n|0012|1,200.50|') as never);
+  expect(wb.worksheets[0].getCell('A2').value).toBe('0012');
+  expect(wb.worksheets[0].getCell('B2').value).toBe(1200.5);
+  expect(wb.worksheets[0].getCell('B2').numFmt).toBe('0.00');
 });

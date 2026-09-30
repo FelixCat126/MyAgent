@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 /** 距底部小于该值视为「在底部」，流式输出时可自动跟随滚动 */
 export const SCROLL_STICK_BOTTOM_PX = 120;
@@ -6,6 +6,8 @@ export const SCROLL_STICK_BOTTOM_PX = 120;
 export interface ChatScrollStickApi {
   scrollContainerRef: React.RefObject<HTMLDivElement>;
   stickToBottomRef: React.MutableRefObject<boolean>;
+  showScrollToLatest: boolean;
+  scrollToLatest: () => void;
 }
 
 /**
@@ -29,10 +31,24 @@ export function useChatScrollStick(deps: {
 }): ChatScrollStickApi {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
+  const [showScrollToLatest, setShowScrollToLatest] = useState(false);
+
+  const scrollToLatest = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    stickToBottomRef.current = true;
+    setShowScrollToLatest(false);
+    if (typeof el.scrollTo === 'function') {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    } else {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, []);
 
   // currentSessionId 变化时强制贴底
   useEffect(() => {
     stickToBottomRef.current = true;
+    setShowScrollToLatest(false);
   }, [deps.currentSessionId]);
 
   // 生图占位出现时贴底
@@ -48,8 +64,10 @@ export function useChatScrollStick(deps: {
     const el = scrollContainerRef.current;
     if (!el) return;
     const syncStickToBottom = () => {
-      stickToBottomRef.current =
+      const atBottom =
         el.scrollHeight - el.scrollTop - el.clientHeight <= SCROLL_STICK_BOTTOM_PX;
+      stickToBottomRef.current = atBottom;
+      setShowScrollToLatest(!atBottom);
     };
     el.addEventListener('scroll', syncStickToBottom, { passive: true });
     syncStickToBottom();
@@ -84,5 +102,10 @@ export function useChatScrollStick(deps: {
     deps.isCompressingCurrent,
   ]);
 
-  return { scrollContainerRef, stickToBottomRef };
+  return {
+    scrollContainerRef,
+    stickToBottomRef,
+    showScrollToLatest,
+    scrollToLatest,
+  };
 }

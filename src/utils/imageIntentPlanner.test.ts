@@ -22,7 +22,7 @@ describe('imageIntentPlanner', () => {
   it('识别口语中文数量', () => {
     expect(inferImageCountFromText('重新生4张内衣模特展示图')).toBe(4);
     expect(inferImageCountFromText('生成九张不同风格不同款式')).toBe(9);
-    expect(inferImageCountFromText('船上所有伙伴的相同风格图片，每人一张')).toBe(8);
+    expect(inferImageCountFromText('船上所有伙伴的相同风格图片，每人一张')).toBeUndefined();
   });
 
   it('普通重新生成不默认继承上一轮生图上下文', () => {
@@ -51,8 +51,8 @@ describe('imageIntentPlanner', () => {
     expect(intent.shouldGenerate).toBe(true);
     expect(intent.count).toBe(2);
     expect(intent.inheritStyle).toBe(true);
-    expect(intent.prompt).toContain('仅参考上一轮图片的风格');
-    expect(intent.prompt).toContain('不继承上一轮主体内容');
+    expect(intent.prompt).toContain('参考风格');
+    expect(intent.prompt).toContain('保留原图未要求修改的内容');
     expect(intent.prompt).toContain('本轮要求');
     expect(intent.prompt).toContain('雪山湖泊');
   });
@@ -88,7 +88,7 @@ describe('imageIntentPlanner', () => {
       historyBeforeUser: [],
     });
     expect(intent.shouldGenerate).toBe(true);
-    expect(intent.count).toBe(8);
+    expect(intent.count).toBeUndefined();
   });
 
   it('文本修订不被上一轮生图上下文劫持', () => {
@@ -111,4 +111,21 @@ describe('imageIntentPlanner', () => {
     expect(intent.prompt).not.toContain('模特');
     expect(intent.prompt).toContain('雪山湖泊');
   });
+});
+
+describe('image intent boundaries', () => {
+  it.each(['解释一下图片生成原理', '写一个生成图片的 Python 示例', '不要生图，只解释', "don't generate images"])('never executes discussion or prohibition: %s', userText => {
+    expect(planImageIntent({ userText, historyBeforeUser: [], toolCallCount: 1 }).shouldGenerate).toBe(false);
+  });
+  it('separates subjects, ordinals and output count', () => {
+    expect(inferImageCountFromText('生成一张图，里面有3个人')).toBe(1);
+    expect(inferImageCountFromText('生成十二张图片')).toBe(12);
+    expect(inferImageCountFromText('把第二张背景改白')).toBeUndefined();
+    expect(inferImageCountFromText('每个角色一张图片')).toBeUndefined();
+  });
+});
+
+it('does not confuse image content about code with a request for code',()=>{
+ expect(planImageIntent({userText:'画一张代码编辑器的图片',historyBeforeUser:[],toolCallCount:1}).shouldGenerate).toBe(true);
+ expect(planImageIntent({userText:'不要图片上的水印，改成透明背景',historyBeforeUser:[],toolCallCount:1}).shouldGenerate).toBe(true);
 });

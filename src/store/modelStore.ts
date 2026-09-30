@@ -24,8 +24,7 @@ export function suggestPersistedChatApiMode(
 }
 
 function withSuggestedChatApiMode(m: ModelConfig): ModelConfig {
-  if (m.chatApiMode === 'openai' || m.chatApiMode === 'anthropic') return m;
-  return { ...m, chatApiMode: suggestPersistedChatApiMode(m) };
+  return { ...m, chatApiMode: m.chatApiMode ?? 'auto' };
 }
 
 interface ModelStore {
@@ -113,7 +112,7 @@ export const useModelStore = create<ModelStore>()(
       addModel: (config: ModelConfig) => {
         set((state: ModelStore) => ({
           models: [...state.models, withSuggestedChatApiMode(config)],
-          activeModelId: state.activeModelId || config.id,
+          activeModelId: state.activeModelId || (config.isChatModel !== false ? config.id : null),
         }));
       },
 
@@ -123,7 +122,7 @@ export const useModelStore = create<ModelStore>()(
           return {
             models: newModels,
             activeModelId: state.activeModelId === id
-              ? (newModels.length > 0 ? newModels[0].id : null)
+              ? (newModels.find(m => m.isChatModel !== false)?.id ?? null)
               : state.activeModelId,
             /** 删除的恰好是生图模型 → 清空，回退到自动选择 */
             imageGenModelId: state.imageGenModelId === id ? null : state.imageGenModelId,
@@ -132,16 +131,16 @@ export const useModelStore = create<ModelStore>()(
       },
 
       updateModel: (id: string, config: Partial<ModelConfig>) => {
-        set((state: ModelStore) => ({
-          models: state.models.map((m: ModelConfig) =>
-            m.id === id ? withSuggestedChatApiMode({ ...m, ...config }) : m
-          ),
-        }));
+        set((state: ModelStore) => {
+          const models = state.models.map(m => m.id === id ? withSuggestedChatApiMode({ ...m, ...config }) : m);
+          const active = models.find(m => m.id === state.activeModelId && m.isChatModel !== false) ?? models.find(m => m.isChatModel !== false);
+          return { models, activeModelId: active?.id ?? null };
+        });
       },
 
       setActiveModel: (id: string) => {
         /** 校验 id 存在避免 setState 一个不存在的 activeModelId（getActiveModel 会返 null） */
-        if (!get().models.some((m) => m.id === id)) return;
+        if (!get().models.some((m) => m.id === id && m.isChatModel !== false)) return;
         set({ activeModelId: id });
       },
 
@@ -151,7 +150,7 @@ export const useModelStore = create<ModelStore>()(
 
       getActiveModel: () => {
         const { models, activeModelId } = get();
-        return models.find((m: ModelConfig) => m.id === activeModelId) || null;
+        return models.find((m: ModelConfig) => m.id === activeModelId && m.isChatModel !== false) || models.find(m => m.isChatModel !== false) || null;
       },
 
       getEffectiveImageGenModel: () => {

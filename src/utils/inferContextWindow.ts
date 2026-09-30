@@ -1,40 +1,39 @@
 import type { ModelConfig } from '../types';
 
-/**
- * 粗算：中英混合场景下「字符 → 约 token」。
- * 进度条/压缩用本地启发式，不追求精确 tokenizer。
- */
 export const APPROX_CHARS_PER_TOKEN = 2;
+/** Unknown service capability: use a conservative input budget, never claim a 1M window. */
+export const UNIFIED_CONTEXT_WINDOW_TOKENS = 32_768;
+export const PRODUCT_CONTEXT_SOFT_LIMIT_CHARS = (UNIFIED_CONTEXT_WINDOW_TOKENS - 4096) * APPROX_CHARS_PER_TOKEN;
+type ContextModel = Partial<Pick<ModelConfig, 'provider' | 'apiUrl' | 'modelName' | 'contextWindowTokens' | 'maxTokens'>>;
 
-/**
- * 产品约定：全应用统一按 1M token 估算本地软上限。
- * 这是刻意的产品边界（非 tokenizer / 非厂商真实窗口），进度条与压缩共用。
- */
-export const UNIFIED_CONTEXT_WINDOW_TOKENS = 1_000_000;
+/** Known, stable remote model limits. Explicit user configuration always wins. */
+function inferKnownRemoteContextWindow(input?: ContextModel): number | null {
+  const model = String(input?.modelName ?? '').trim().toLowerCase();
+  const url = String(input?.apiUrl ?? '').trim().toLowerCase();
 
-/** 产品软上限字符数（1M × APPROX_CHARS_PER_TOKEN） */
-export const PRODUCT_CONTEXT_SOFT_LIMIT_CHARS =
-  UNIFIED_CONTEXT_WINDOW_TOKENS * APPROX_CHARS_PER_TOKEN;
-
-/**
- * 上下文窗口（token）。按产品约定统一 1M，不再按厂商分支。
- */
-export function inferContextWindowTokens(_input?: {
-  provider?: string;
-  apiUrl?: string;
-  modelName?: string;
-}): number {
-  return UNIFIED_CONTEXT_WINDOW_TOKENS;
+  if (model === 'minimax-m3' || model.startsWith('minimax-m3-')) return 1_000_000;
+  if (model === 'k3-256k') return 262_144;
+  if (
+    model === 'k3' ||
+    model === 'kimi-k3' ||
+    model === 'k3[1m]' ||
+    ((url.includes('kimi.com') || url.includes('kimi.ai')) && model.includes('k3'))
+  ) return 1_000_000;
+  return null;
 }
 
+export function inferContextWindowTokens(input?: ContextModel): number {
+  const configured = input?.contextWindowTokens;
+  if (typeof configured === 'number' && Number.isFinite(configured) && configured >= 1024) return Math.floor(configured);
+  const knownRemote = inferKnownRemoteContextWindow(input);
+  if (knownRemote) return knownRemote;
+  return input?.provider === 'ollama' ? 8192 : UNIFIED_CONTEXT_WINDOW_TOKENS;
+}
 export function contextWindowTokensToSoftLimitChars(tokens: number): number {
-  const t = Math.max(1_024, Math.floor(tokens));
-  return t * APPROX_CHARS_PER_TOKEN;
+  return Math.max(1024, Math.floor(tokens)) * APPROX_CHARS_PER_TOKEN;
 }
-
-/** 当前模型的本地软上限（字符），供进度条与压缩共用 */
-export function resolveContextSoftLimitChars(
-  _model?: Pick<ModelConfig, 'provider' | 'apiUrl' | 'modelName'> | null
-): number {
-  return PRODUCT_CONTEXT_SOFT_LIMIT_CHARS;
+export function resolveContextSoftLimitChars(model?: ContextModel | null): number {
+  const window = inferContextWindowTokens(model ?? undefined);
+  const output = Math.min(Math.max(1, model?.maxTokens || 4096), Math.floor(window / 2));
+  return contextWindowTokensToSoftLimitChars(window - output);
 }

@@ -30,9 +30,9 @@ function msg(role: Message['role'], content: string, id?: string): Message {
 }
 
 describe('inferContextWindowTokens', () => {
-  it('产品约定统一 1M 软上限', () => {
-    expect(UNIFIED_CONTEXT_WINDOW_TOKENS).toBe(1_000_000);
-    expect(PRODUCT_CONTEXT_SOFT_LIMIT_CHARS).toBe(2_000_000);
+  it('未知模型保守估算并预留输出', () => {
+    expect(UNIFIED_CONTEXT_WINDOW_TOKENS).toBe(32_768);
+    expect(PRODUCT_CONTEXT_SOFT_LIMIT_CHARS).toBe(57_344);
     expect(
       inferContextWindowTokens({
         apiUrl: 'https://api.minimaxi.com/v1',
@@ -40,9 +40,9 @@ describe('inferContextWindowTokens', () => {
       })
     ).toBe(1_000_000);
     expect(inferContextWindowTokens({ provider: 'ollama', apiUrl: 'http://127.0.0.1:11434' })).toBe(
-      1_000_000
+      8192
     );
-    expect(resolveContextSoftLimitChars(null)).toBe(2_000_000);
+    expect(resolveContextSoftLimitChars(null)).toBe(57_344);
   });
 });
 
@@ -59,6 +59,16 @@ describe('contextBudget', () => {
     };
     expect(estimateMessageChars(withReason)).toBe(4);
     expect(estimateSessionChars([withReason], '')).toBe(4);
+  });
+
+  it('OpenAI 兼容链路不把未发送的历史 reasoning 计入上下文', () => {
+    const withReason: Message = { ...msg('assistant', '正文'), reasoning: 'r'.repeat(20_000) };
+    expect(estimateSessionChars([withReason], '', {
+      provider: 'custom', apiUrl: 'https://api.kimi.com', modelName: 'k3', chatApiMode: 'openai',
+    })).toBe(2);
+    expect(estimateSessionChars([withReason], '', {
+      provider: 'custom', apiUrl: 'https://api.minimaxi.com/v1', modelName: 'MiniMax-M3', chatApiMode: 'anthropic',
+    })).toBe(20_002);
   });
 
   it('进度条满格对齐压缩触发线', () => {
@@ -95,6 +105,15 @@ describe('contextBudget', () => {
     expect(keepFromIndex).toBeGreaterThan(0);
     expect(older.length + recent.length).toBe(messages.length);
     expect(recent[recent.length - 1]?.id).toBe('id-19');
+  });
+
+  it('默认只强制保留最近一轮，超大历史仍可实际压缩', () => {
+    const messages = Array.from({ length: 8 }, (_, i) =>
+      msg(i % 2 === 0 ? 'user' : 'assistant', 'x'.repeat(8_000), `large-${i}`)
+    );
+    const { older, recent } = splitMessagesForCompression(messages, 10_000, undefined, 30_000);
+    expect(older.length).toBe(6);
+    expect(recent.map((m) => m.id)).toEqual(['large-6', 'large-7']);
   });
 
   it('parseCompressionSummary 加前缀', () => {

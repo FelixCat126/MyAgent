@@ -5,6 +5,7 @@ import {
   resolveContextSoftLimitChars,
 } from './inferContextWindow';
 import { ATTACH_DOCUMENT_MAX_TEXT_CHARS } from '../chat/payloadBoundary';
+import { resolveChatApiMode } from './chatApiMode';
 
 /** @deprecated 请用 PRODUCT_CONTEXT_SOFT_LIMIT_CHARS；保留别名以免旧引用断裂 */
 export const CONTEXT_SOFT_LIMIT_CHARS = PRODUCT_CONTEXT_SOFT_LIMIT_CHARS;
@@ -13,6 +14,8 @@ export const CONTEXT_SOFT_LIMIT_CHARS = PRODUCT_CONTEXT_SOFT_LIMIT_CHARS;
 export const CONTEXT_COMPRESS_RATIO = 0.95;
 /** 压缩后希望近期消息约占预算的比例 */
 export const CONTEXT_KEEP_RECENT_RATIO = 0.4;
+/** 最近一轮问答优先完整保留；更多历史由实际预算决定。 */
+export const CONTEXT_MIN_RECENT_MESSAGES = 2;
 /** 摘要消息 content 前缀（可见） */
 export const CONTEXT_SUMMARY_PREFIX = '【上下文摘要】';
 /** 图片附件计入预算的字符上限 */
@@ -26,8 +29,9 @@ export type EstimableMessage = {
 };
 
 /** 单条消息对上下文压力的粗估（content + reasoning + 附件；文档上限对齐 enrich） */
-export function estimateMessageChars(m: EstimableMessage): number {
-  let n = String(m.content ?? '').length + String(m.reasoning ?? '').length;
+export function estimateMessageChars(m: EstimableMessage, includeReasoning = true): number {
+  let n = String(m.content ?? '').length;
+  if (includeReasoning) n += String(m.reasoning ?? '').length;
   for (const f of m.files ?? []) {
     n += String(f.name ?? '').length;
     const size = typeof f.size === 'number' && Number.isFinite(f.size) ? Math.max(0, f.size) : 0;
@@ -41,9 +45,12 @@ export function estimateMessageChars(m: EstimableMessage): number {
 
 export function estimateSessionChars(
   messages: EstimableMessage[],
-  draftInput = ''
+  draftInput = '',
+  model?: Pick<ModelConfig, 'provider' | 'apiUrl' | 'modelName' | 'chatApiMode'> | null
 ): number {
-  const msgLen = messages.reduce((acc, m) => acc + estimateMessageChars(m), 0);
+  /** OpenAI 兼容接口不回传历史 reasoning；Anthropic Messages 会。 */
+  const includeReasoning = model ? resolveChatApiMode(model) === 'anthropic' : true;
+  const msgLen = messages.reduce((acc, m) => acc + estimateMessageChars(m, includeReasoning), 0);
   return msgLen + String(draftInput ?? '').length;
 }
 
@@ -52,16 +59,16 @@ export function shouldCompressContext(
   draftInput = '',
   limit?: number,
   ratio = CONTEXT_COMPRESS_RATIO,
-  model?: Pick<ModelConfig, 'provider' | 'apiUrl' | 'modelName'> | null
+  model?: Pick<ModelConfig, 'provider' | 'apiUrl' | 'modelName' | 'chatApiMode' | 'contextWindowTokens' | 'maxTokens'> | null
 ): boolean {
   if (messages.length < 4) return false;
   const soft = limit ?? resolveContextSoftLimitChars(model ?? null);
-  return estimateSessionChars(messages, draftInput) >= soft * ratio;
+  return estimateSessionChars(messages, draftInput, model) >= soft * ratio;
 }
 
 /** 进度条「满格」对应的字符数 = 压缩触发线（soft * ratio），与发送前门禁对齐 */
 export function resolveContextProgressFullChars(
-  model?: Pick<ModelConfig, 'provider' | 'apiUrl' | 'modelName'> | null,
+  model?: Pick<ModelConfig, 'provider' | 'apiUrl' | 'modelName' | 'contextWindowTokens' | 'maxTokens'> | null,
   ratio = CONTEXT_COMPRESS_RATIO
 ): number {
   return Math.floor(resolveContextSoftLimitChars(model ?? null) * ratio);
@@ -74,8 +81,9 @@ export function resolveContextProgressFullChars(
 export function splitMessagesForCompression(
   messages: Message[],
   targetRecentChars?: number,
-  keepMin = 6,
-  softLimitChars?: number
+  keepMin = CONTEXT_MIN_RECENT_MESSAGES,
+  softLimitChars?: number,
+  model?: Pick<ModelConfig, 'provider' | 'apiUrl' | 'modelName' | 'chatApiMode'> | null
 ): { older: Message[]; recent: Message[]; keepFromIndex: number } {
   const soft = softLimitChars ?? PRODUCT_CONTEXT_SOFT_LIMIT_CHARS;
   const target =
@@ -86,7 +94,8 @@ export function splitMessagesForCompression(
   let keepFrom = messages.length;
   let recentChars = 0;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const len = estimateMessageChars(messages[i] ?? {});
+    const includeReasoning = model ? resolveChatApiMode(model) === 'anthropic' : true;
+    const len = estimateMessageChars(messages[i] ?? {}, includeReasoning);
     const wouldKeep = messages.length - i;
     if (wouldKeep > keepMin && recentChars + len > target) break;
     recentChars += len;
@@ -108,9 +117,10 @@ export function splitMessagesForCompression(
 /** 是否具备可执行的压缩切分（与 compressSessionContext 一致） */
 export function canPerformCompressionSplit(
   messages: Message[],
-  softLimitChars?: number
+  softLimitChars?: number,
+  model?: Pick<ModelConfig, 'provider' | 'apiUrl' | 'modelName' | 'chatApiMode'> | null
 ): boolean {
-  return splitMessagesForCompression(messages, undefined, 6, softLimitChars).older.length > 0;
+  return splitMessagesForCompression(messages, undefined, CONTEXT_MIN_RECENT_MESSAGES, softLimitChars, model).older.length > 0;
 }
 
 export function buildCompressionPrompt(
@@ -190,14 +200,16 @@ export function createContextSummaryMessage(content: string, modelName: string):
 export function compressMessagesLocally(
   messages: Message[],
   summaryTitle = CONTEXT_SUMMARY_PREFIX,
-  softLimitChars?: number
+  softLimitChars?: number,
+  model?: Pick<ModelConfig, 'provider' | 'apiUrl' | 'modelName' | 'chatApiMode'> | null
 ): { messages: Message[]; keepFromIndex: number; summaryMessage: Message } | null {
   const soft = softLimitChars ?? PRODUCT_CONTEXT_SOFT_LIMIT_CHARS;
   const { older, recent, keepFromIndex } = splitMessagesForCompression(
     messages,
     undefined,
-    6,
-    soft
+    CONTEXT_MIN_RECENT_MESSAGES,
+    soft,
+    model
   );
   if (older.length === 0) return null;
   const summaryMessage = createContextSummaryMessage(

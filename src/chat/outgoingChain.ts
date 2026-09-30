@@ -185,7 +185,7 @@ async function buildMessagesWithOptionalWebSearch(
 /** 已配置生图工具时注入系统说明，否则模型（如豆包）会按常识声称「不能生图」 */
 function shouldUseLocalCreativePolicy(imageGenModel: ModelConfig | undefined): boolean {
   if (!imageGenModel) return false;
-  return imageGenModel.provider === 'ollama' || imageGenModel.isLocal || imageGenModel.imageGeneratorConfig?.type === 'cli';
+  return imageGenModel.imageGeneratorConfig?.type === 'cli';
 }
 
 export function prependImageGenCapabilitySystem(

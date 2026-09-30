@@ -7,7 +7,6 @@ function reset() {
   useSettingStore.setState({
     theme: 'light',
     fontSize: 14,
-    autoSave: true,
     streamResponses: true,
     locale: 'zh',
   });
@@ -22,13 +21,11 @@ describe('settingStore', () => {
     document.body.classList.remove('dark');
   });
 
-  it('setStreamResponses 与 setFontSize、setAutoSave', () => {
+  it('setStreamResponses 与 setFontSize', () => {
     useSettingStore.getState().setStreamResponses(false);
     expect(useSettingStore.getState().streamResponses).toBe(false);
     useSettingStore.getState().setFontSize(16);
     expect(useSettingStore.getState().fontSize).toBe(16);
-    useSettingStore.getState().setAutoSave(false);
-    expect(useSettingStore.getState().autoSave).toBe(false);
   });
 
   it('setTheme dark 时 body 有 dark 类，light 时移除', () => {

@@ -1,10 +1,9 @@
 /**
- * 会话级图片画廊 modal（轮播主图 + 左右滑动 + 删除当前图 + 桌面壳另存）。
+ * 会话级图片画廊 modal（单一主图 + 缩略图 + 左右切换）。
  *
- * 抽离自 MessageItem.tsx（行 196-413），行为与拆分前完全一致。
+ * 采用常见的大图预览结构：单一主图、明确翻页操作和小范围缩略图导航。
  *
  * 关键技术细节：
- * - 内部包含 GalleryCarouselStage 3D 轮播舞台（紧密耦合，独占使用）
  * - 拖拽 / 滑动由 useGallerySwipeMomentum 控制（RAF 动量衰减）
  * - 鼠标滚轮 + 键盘左右箭头 + 上一张/下一张按钮四向交互
  * - 手势 UI phase 在打开时设置 gallery-preview，关闭时复位 idle
@@ -17,7 +16,6 @@ import { createPortal } from 'react-dom';
 import { FiDownload, FiTrash2, FiX, FiChevronLeft, FiChevronRight } from 'react-icons/fi';
 import { useI18n } from '../../hooks/useI18n';
 import { useGallerySwipeMomentum } from '../../hooks/useGallerySwipeMomentum';
-import { galleryCarouselCardMetricsSmooth } from '@/utils/galleryCarouselLayout';
 import { setGestureUiPhase } from '@/utils/gestureUiContext';
 import {
   DownloadLocalFileError,
@@ -26,9 +24,6 @@ import {
 } from '../../utils/imageDownload';
 import { showError } from '../../store/errorStore';
 import {
-  GALLERY_CAROUSEL_TRANSITION,
-  GALLERY_IMG_FRAME,
-  GALLERY_IMG,
   GALLERY_MODAL_ENTER_MS,
   MODAL_CLEAR_TITLEBAR_PT,
   MODAL_PORTAL_LAYER_CLASS,
@@ -36,12 +31,11 @@ import {
   PREVIEW_IMG_TOUCH_MENU_STYLE as previewImgTouchMenuStyle,
 } from './styleConstants';
 import type { ConversationImageGalleryItem } from '../../utils/conversationImageGallery';
+import { artifactDisplayName } from './DocumentAttachmentCard';
 
 interface GalleryCarouselStageProps {
   slides: ConversationImageGalleryItem[];
   scrollPos: number;
-  isDragging: boolean;
-  onSelect: (index: number) => void;
   altFallback: string;
   touchMenuStyle?: React.CSSProperties;
   stageRef?: React.Ref<HTMLDivElement>;
@@ -50,85 +44,27 @@ interface GalleryCarouselStageProps {
 const GalleryCarouselStage: React.FC<GalleryCarouselStageProps> = ({
   slides,
   scrollPos,
-  isDragging,
-  onSelect,
   altFallback,
   touchMenuStyle,
   stageRef,
 }) => {
-  const cardTransitionStyle: React.CSSProperties = {
-    transition: isDragging ? 'none' : GALLERY_CAROUSEL_TRANSITION,
-    transformStyle: 'preserve-3d',
-  };
-
-  const minI = Math.max(0, Math.floor(scrollPos) - 3);
-  const maxI = Math.min(slides.length - 1, Math.ceil(scrollPos) + 3);
+  const index = Math.min(slides.length - 1, Math.max(0, Math.round(scrollPos)));
+  const slide = slides[index]!;
 
   return (
     <div
       ref={stageRef}
-      className="relative mx-auto h-[min(72vh,880px)] w-full min-w-0 max-w-[min(78vw,1080px)]"
-      style={{ perspective: '1500px', perspectiveOrigin: '50% 45%' }}
+      className="flex h-[min(72vh,820px)] w-full min-w-0 items-center justify-center"
     >
-      <div className="relative h-full w-full" style={{ transformStyle: 'preserve-3d' }}>
-        {Array.from({ length: maxI - minI + 1 }, (_, k) => minI + k).map((slideIndex) => {
-          const slide = slides[slideIndex]!;
-          const offset = slideIndex - scrollPos;
-          const metrics = galleryCarouselCardMetricsSmooth(offset);
-          const isCenter = Math.abs(offset) < 0.45;
-          const img = (
-            <div className={GALLERY_IMG_FRAME}>
-              <img
-                src={slide.src}
-                alt={isCenter ? slide.defaultFileName || altFallback : ''}
-                aria-hidden={!isCenter}
-                draggable={false}
-                style={touchMenuStyle}
-                className={GALLERY_IMG}
-              />
-            </div>
-          );
-
-          if (isCenter) {
-            return (
-              <div
-                key={`${slide.messageId}-${slide.fileIndex}-${slideIndex}`}
-                className="absolute left-1/2 top-1/2 origin-center"
-                style={{
-                  ...cardTransitionStyle,
-                  transform: metrics.transform,
-                  opacity: metrics.opacity,
-                  zIndex: metrics.zIndex,
-                  pointerEvents: metrics.pointerEvents,
-                }}
-              >
-                {img}
-              </div>
-            );
-          }
-
-          return (
-            <button
-              key={`${slide.messageId}-${slide.fileIndex}-${slideIndex}`}
-              type="button"
-              aria-label={slide.defaultFileName || altFallback}
-              onClick={(e) => {
-                e.stopPropagation();
-                onSelect(slideIndex);
-              }}
-              className="absolute left-1/2 top-1/2 origin-center cursor-pointer rounded-lg border-0 bg-transparent p-0 outline-none transition-[filter] hover:brightness-105 focus-visible:ring-2 focus-visible:ring-white/50"
-              style={{
-                ...cardTransitionStyle,
-                transform: metrics.transform,
-                opacity: metrics.opacity,
-                zIndex: metrics.zIndex,
-                pointerEvents: metrics.pointerEvents,
-              }}
-            >
-              {img}
-            </button>
-          );
-        })}
+      <div className="flex max-h-full max-w-full items-center justify-center overflow-hidden rounded-xl bg-zinc-950 shadow-2xl ring-1 ring-white/10">
+        <img
+          key={`${slide.messageId}-${slide.fileIndex}-${index}`}
+          src={slide.src}
+          alt={slide.defaultFileName || altFallback}
+          draggable={false}
+          style={touchMenuStyle}
+          className="block max-h-[min(72vh,820px)] max-w-[min(78vw,1120px)] object-contain"
+        />
       </div>
     </div>
   );
@@ -150,7 +86,7 @@ export const ConversationImageGalleryModal: React.FC<ConversationImageGalleryMod
   const { t } = useI18n();
   const desktopShell = hasDesktopLocalSaveCapability();
   const stageRef = useRef<HTMLDivElement>(null);
-  const { scrollPos, settledIndex, setIndex, isDragging } = useGallerySwipeMomentum(
+  const { scrollPos, settledIndex, setIndex } = useGallerySwipeMomentum(
     slides.length,
     startIndex
   );
@@ -218,6 +154,17 @@ export const ConversationImageGalleryModal: React.FC<ConversationImageGalleryMod
   const slide = slides[displayIndex]!;
   const canPrev = scrollPos > 0.02;
   const canNext = scrollPos < slides.length - 1.02;
+  // 图片库可能有数百张图片。只挂载当前图附近的缩略图，避免打开预览时
+  // 一次解码整库图片，并让当前项始终处于导航条中央附近。
+  const thumbnailWindowSize = 11;
+  const thumbnailStart = Math.max(
+    0,
+    Math.min(displayIndex - Math.floor(thumbnailWindowSize / 2), slides.length - thumbnailWindowSize),
+  );
+  const visibleThumbnails = slides.slice(
+    thumbnailStart,
+    Math.min(slides.length, thumbnailStart + thumbnailWindowSize),
+  );
 
   const handleGallerySaveCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -260,44 +207,50 @@ export const ConversationImageGalleryModal: React.FC<ConversationImageGalleryMod
           transition: `transform ${GALLERY_MODAL_ENTER_MS}ms cubic-bezier(0.32, 0.72, 0, 1)`,
         }}
       >
-        <div
-          className={`pointer-events-auto relative z-[210] flex w-full shrink-0 flex-wrap justify-end gap-3 pb-4 [&_svg]:pointer-events-none sm:pb-5 ${MODAL_CLEAR_TITLEBAR_PT}`}
-        >
-          {desktopShell ? (
+        <div className={`pointer-events-auto relative z-[210] flex w-full shrink-0 items-center justify-between gap-4 pb-4 sm:pb-5 ${MODAL_CLEAR_TITLEBAR_PT}`}>
+          <p className="min-w-0 truncate text-sm font-medium text-white/85" title={slide.defaultFileName}>
+            {artifactDisplayName(
+              slide.defaultFileName || t('message.imageAlt'),
+              t('message.imageAlt'),
+            )}
+          </p>
+          <div className="flex shrink-0 items-center gap-2 [&_svg]:pointer-events-none">
+            {desktopShell ? (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2.5 py-1 text-sm text-white backdrop-blur-sm transition-colors hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
+                title={t('message.imagePreviewDownload')}
+                aria-label={t('message.imagePreviewDownload')}
+                onClick={(e) => void handleGallerySaveCopy(e)}
+              >
+                <FiDownload size={14} aria-hidden />
+                <span>{t('message.imagePreviewDownload')}</span>
+              </button>
+            ) : null}
+            {onDeleteCurrent ? (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-md bg-red-500/20 px-2.5 py-1 text-sm text-white backdrop-blur-sm transition-colors hover:bg-red-500/35 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
+                title={t('imageLibrary.delete')}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void onDeleteCurrent(slide);
+                }}
+              >
+                <FiTrash2 size={14} aria-hidden />
+                <span>{t('imageLibrary.delete')}</span>
+              </button>
+            ) : null}
             <button
               type="button"
-              className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2.5 py-1 text-sm text-white backdrop-blur-sm transition-colors hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
-              title={t('message.imagePreviewDownload')}
-              aria-label={t('message.imagePreviewDownload')}
-              onClick={(e) => void handleGallerySaveCopy(e)}
+              onClick={requestClose}
+              className="inline-flex items-center justify-center rounded-md bg-white/10 px-2 py-1 text-white backdrop-blur-sm transition-colors hover:bg-white/20 hover:text-primary-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
+              title={t('message.closePreview')}
+              aria-label={t('message.closePreview')}
             >
-              <FiDownload size={14} aria-hidden />
-              <span>{t('message.imagePreviewDownload')}</span>
+              <FiX size={18} aria-hidden />
             </button>
-          ) : null}
-          {onDeleteCurrent ? (
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 rounded-md bg-red-500/20 px-2.5 py-1 text-sm text-white backdrop-blur-sm transition-colors hover:bg-red-500/35 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
-              title={t('imageLibrary.delete')}
-              onClick={(e) => {
-                e.stopPropagation();
-                void onDeleteCurrent(slide);
-              }}
-            >
-              <FiTrash2 size={14} aria-hidden />
-              <span>{t('imageLibrary.delete')}</span>
-            </button>
-          ) : null}
-          <button
-            type="button"
-            onClick={requestClose}
-            className="inline-flex items-center justify-center rounded-md bg-white/10 px-2 py-1 text-white backdrop-blur-sm transition-colors hover:bg-white/20 hover:text-primary-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
-            title={t('message.closePreview')}
-            aria-label={t('message.closePreview')}
-          >
-            <FiX size={18} aria-hidden />
-          </button>
+          </div>
         </div>
 
         <div className="pointer-events-none relative z-0 flex min-h-0 w-full max-w-[min(96vw,1400px)] flex-1 items-center justify-center gap-1 self-center sm:gap-2">
@@ -321,8 +274,6 @@ export const ConversationImageGalleryModal: React.FC<ConversationImageGalleryMod
             <GalleryCarouselStage
               slides={slides}
               scrollPos={scrollPos}
-              isDragging={isDragging}
-              onSelect={setIndex}
               altFallback={t('message.imageAlt')}
               touchMenuStyle={desktopShell ? undefined : previewImgTouchMenuStyle}
               stageRef={stageRef}
@@ -330,6 +281,31 @@ export const ConversationImageGalleryModal: React.FC<ConversationImageGalleryMod
             <p className="text-center text-sm text-white/90 tabular-nums">
               {t('message.imageGalleryPosition', { current: displayIndex + 1, total: slides.length })}
             </p>
+            {slides.length > 1 ? (
+              <div className="flex max-w-[min(76vw,900px)] items-center gap-2 overflow-x-auto px-1 py-1">
+                {visibleThumbnails.map((thumb, offset) => {
+                  const index = thumbnailStart + offset;
+                  return (
+                  <button
+                    key={`${thumb.messageId}-${thumb.fileIndex}-thumb`}
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setIndex(index);
+                    }}
+                    className={`h-12 w-12 shrink-0 overflow-hidden rounded-lg border bg-zinc-900 transition ${
+                      index === displayIndex
+                        ? 'border-white ring-2 ring-white/35'
+                        : 'border-white/15 opacity-55 hover:opacity-90'
+                    }`}
+                    aria-label={thumb.defaultFileName || `${index + 1}`}
+                  >
+                    <img src={thumb.src} alt="" className="h-full w-full object-cover" />
+                  </button>
+                  );
+                })}
+              </div>
+            ) : null}
             {!desktopShell ? (
               <p className="mx-auto max-w-[min(90vw,24rem)] text-center text-[11px] leading-snug text-white/55 px-2">
                 {t('message.imageLongPressGalleryHint')}
@@ -351,7 +327,7 @@ export const ConversationImageGalleryModal: React.FC<ConversationImageGalleryMod
             aria-label={t('message.imageGalleryNext')}
           >
             <FiChevronRight size={22} aria-hidden />
-        </button>
+          </button>
         </div>
       </div>
     </div>

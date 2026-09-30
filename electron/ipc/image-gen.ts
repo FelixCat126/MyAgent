@@ -1,3 +1,4 @@
+import { imageTaskContext, checkImageTask } from './image-gen/task';
 import { ipcMain } from 'electron';
 import type { ModelConfig, ImageGenerationParams } from '../../src/types';
 import { enqueueSerializedImageGeneration } from './image-gen/queue';
@@ -13,19 +14,45 @@ function isUsableImageConfig(
   return Boolean(c.command && String(c.command).trim());
 }
 
-ipcMain.handle('generate-image', (event, params: ImageGenerationParams) =>
-  enqueueSerializedImageGeneration(() => invokeGenerateImageIpc(params, (image, index, total) => {
-    if (!params.streamRequestId) return;
-    event.sender.send('image-generation-image', {
-      requestId: params.streamRequestId,
-      image,
-      index,
-      total,
+const tasks = new Map<string, AbortController>();
+ipcMain.on('image-generation-cancel', (event, requestId: string) => {
+  tasks.get(`${event.sender.id}:${requestId}`)?.abort(new Error('已停止生图'));
+});
+ipcMain.handle('generate-image', (event, params: ImageGenerationParams) => {
+  const key = `${event.sender.id}:${params.streamRequestId}`;
+  if (tasks.has(key)) throw new Error('生图任务正在执行，请勿重复提交');
+  const controller = new AbortController();
+  tasks.set(key, controller);
+  const onDestroyed = () => controller.abort(new Error('窗口已关闭'));
+  event.sender.once('destroyed', onDestroyed);
+  let queueKey = 'local';
+  if (params.imageGeneratorConfig?.type === 'http') {
+    try {
+      const url = new URL(params.imageGeneratorConfig.endpoint || '');
+      if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) queueKey = url.origin;
+    } catch { /* Validation below reports an invalid endpoint. */ }
+  }
+  const job = enqueueSerializedImageGeneration(() => imageTaskContext.run(controller.signal, async () => {
+    checkImageTask();
+    return invokeGenerateImageIpc(params, (image, index, total) => {
+      checkImageTask();
+      if (!params.streamRequestId || event.sender.isDestroyed()) return;
+      event.sender.send('image-generation-image', { requestId: params.streamRequestId, image, index, total });
     });
-  }))
-);
+  }), queueKey);
+  return job.finally(() => {
+    event.sender.removeListener('destroyed', onDestroyed);
+    if (tasks.get(key) === controller) tasks.delete(key);
+  });
+});
 
 async function invokeGenerateImageIpc(params: ImageGenerationParams, onImage?: ImageGeneratedCallback) {
+  checkImageTask();
+  if (!params.prompt?.trim()) throw new Error('图片描述不能为空');
+  if (params.count !== undefined && (!Number.isInteger(params.count) || params.count < 1 || params.count > 12)) throw new Error('单次图片数量必须为 1–12 张');
+  for (const value of [params.width, params.height]) {
+    if (value !== undefined && (!Number.isFinite(value) || value <= 0 || value > 8192)) throw new Error('图片尺寸无效');
+  }
   const config = params.imageGeneratorConfig;
   if (!isUsableImageConfig(config)) {
     throw new Error(
@@ -43,6 +70,7 @@ async function invokeGenerateImageIpc(params: ImageGenerationParams, onImage?: I
       /** 安全上限：防止异常死循环 */
       const maxRounds = Math.min(12, Math.ceil(desiredCount / 1));
       for (let round = 0; round < maxRounds && collected.length < desiredCount; round++) {
+        checkImageTask();
         const remaining = desiredCount - collected.length;
         const roundParams: ImageGenerationParams = {
           ...params,
@@ -50,7 +78,7 @@ async function invokeGenerateImageIpc(params: ImageGenerationParams, onImage?: I
         };
         const imgs = await generateImageHttp(roundParams, config);
         if (imgs.length === 0) break; // 厂商没返回，继续也没意义
-        for (const img of imgs) {
+        for (const img of imgs.slice(0, remaining)) {
           collected.push(img);
           onImage?.(img, collected.length, desiredCount);
         }

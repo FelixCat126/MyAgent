@@ -29,7 +29,7 @@ export function buildAgentCapabilitySystem(
         '{"myagent_tool":"local_search","query":"...","mode":"semantic|filename|image","limit":3}\n' +
         '{"myagent_tool":"local_list","subpath":"~/Documents or absolute path","maxDepth":3}\n' +
         '{"myagent_tool":"local_read","path":"absolute or ~/relative path"}\n' +
-        '{"myagent_tool":"local_export","format":"md|docx|xlsx","content":"markdown body","name":"basename"}\n'
+        '{"myagent_tool":"local_export","format":"md|docx|xlsx|pdf|txt|csv","content":"markdown body","name":"basename"}\n'
       : 'Local file tools are disabled in Settings.\n';
     const webBlock = browserOn
       ? 'Web automation: use the **embedded panel below the chat** (not a separate window). ' +
@@ -62,7 +62,7 @@ export function buildAgentCapabilitySystem(
       '{"myagent_tool":"local_search","query":"...","mode":"semantic|filename|image","limit":3}\n' +
       '{"myagent_tool":"local_list","subpath":"~/Documents 或绝对路径","maxDepth":3}\n' +
       '{"myagent_tool":"local_read","path":"绝对路径或 ~/ 相对路径"}\n' +
-      '{"myagent_tool":"local_export","format":"md|docx|xlsx","content":"Markdown 正文","name":"文件名"}\n'
+      '{"myagent_tool":"local_export","format":"md|docx|xlsx|pdf|txt|csv","content":"Markdown 正文","name":"文件名"}\n'
     : '本机文件工具未在设置中开启。\n';
   const webBlockZh = browserOn
     ? '浏览器自动化：在**对话区下方的内嵌面板**中打开网页（不是弹新窗口）；窗口在多轮对话中保留，后续追问可继续 web_read / web_eval 操作同一页。' +

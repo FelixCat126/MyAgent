@@ -53,14 +53,14 @@ async function normalizeReferenceImageForApi(ref: string): Promise<string | null
     const buf = await fs.readFile(s);
     return `data:${imageMimeFromPath(s)};base64,${buf.toString('base64')}`;
   } catch (e) {
-    console.warn('[生图 HTTP] 参考图读取失败，已跳过:', typeof s === 'string' ? s.split(/[\\/]/).pop() : '', e instanceof Error ? e.message : e);
-    return null;
+    throw new Error(`参考图片无法读取：${s.split(/[\\/]/).pop()}`);
   }
 }
 
-async function normalizeReferenceImagesForApi(params: ImageGenerationParams): Promise<string[]> {
+async function normalizeReferenceImagesForApi(params: ImageGenerationParams, limit = 14): Promise<string[]> {
   /** 火山组图约束：参考图 + 输出图总数最多 15；保留至少 1 个输出名额 */
-  const refs = Array.isArray(params.referenceImages) ? params.referenceImages.slice(0, 14) : [];
+  const refs = Array.isArray(params.referenceImages) ? params.referenceImages : [];
+  if (refs.length > limit) throw new Error(`此服务单次最多支持 ${limit} 张参考图片`);
   const normalized = await Promise.all(refs.map((r) => normalizeReferenceImageForApi(r)));
   return normalized.filter((r): r is string => Boolean(r));
 }

@@ -1,3 +1,4 @@
+import { bindImageTask, checkImageTask } from './task';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 import fs from 'fs/promises';
@@ -56,7 +57,9 @@ async function finalizeOnePngBuffer(
 }
 
 async function fetchImageBinaryFromUrl(imageUrl: string, timeoutMs: number): Promise<Buffer> {
+  checkImageTask();
   const ctrl = new AbortController();
+  const unbind = bindImageTask(ctrl);
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(imageUrl, { method: 'GET', redirect: 'follow', signal: ctrl.signal });
@@ -69,6 +72,7 @@ async function fetchImageBinaryFromUrl(imageUrl: string, timeoutMs: number): Pro
     return buf;
   } finally {
     clearTimeout(timer);
+    unbind();
   }
 }
 

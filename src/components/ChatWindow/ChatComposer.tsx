@@ -69,6 +69,9 @@ export interface ChatComposerProps {
 
   /** 布局 */
   footerH: number;
+  showScrollToLatest: boolean;
+  onScrollToLatest: () => void;
+  scrollToLatestLabel: string;
 }
 
 /**
@@ -117,6 +120,31 @@ export const ChatComposer: React.FC<ChatComposerProps> = (p) => {
       className="fixed bottom-0 right-0 z-30 flex w-[calc(100%-256px)] min-w-0 flex-col border-t border-stone-600/38 bg-stone-200/92 backdrop-blur-xl dark:border-white/10 dark:bg-darkChrome/80"
       style={{ left: SIDEBAR_W_PX, paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
     >
+      {p.showScrollToLatest ? (
+        <div className="pointer-events-none absolute inset-x-0 top-0 flex -translate-y-[calc(100%+10px)] justify-center">
+          <button
+            type="button"
+            className="pointer-events-auto inline-flex h-10 w-10 items-center justify-center rounded-full border border-stone-300/80 bg-white/95 text-stone-600 shadow-[0_8px_24px_rgba(15,23,42,0.18)] backdrop-blur-md transition-[transform,background-color,color,border-color] duration-150 hover:-translate-y-0.5 hover:border-primary-400 hover:text-primary-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/65 dark:border-white/15 dark:bg-slate-800/95 dark:text-slate-200 dark:hover:border-primary-400/70 dark:hover:bg-slate-700 dark:hover:text-primary-200"
+            onClick={p.onScrollToLatest}
+            title={p.scrollToLatestLabel}
+            aria-label={p.scrollToLatestLabel}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="h-[18px] w-[18px]"
+              aria-hidden="true"
+            >
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
+        </div>
+      ) : null}
+
       <AttachmentStrip
         attachments={p.attachments}
         attachmentPreviews={p.attachmentPreviews}

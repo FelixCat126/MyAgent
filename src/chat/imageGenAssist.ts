@@ -6,7 +6,7 @@ import {
   stripRedundantAssistantImagePromptBlocks,
   stripGenerateImageArtifactsForDisplay,
 } from '../utils/toolCalls';
-import { inferImageCountFromText, type ImageIntent } from '../utils/imageIntentPlanner';
+import { inferImageCountFromText, imageRequestIsDiscussion, type ImageIntent } from '../utils/imageIntentPlanner';
 import { useModelStore } from '../store/modelStore';
 
 async function yieldToMain(): Promise<void> {
@@ -73,28 +73,6 @@ function formatImageGenUserError(raw: string): string {
   return readable.length > 1200 ? `${readable.slice(0, 1200)}\n\n[错误信息过长，已截断]` : readable;
 }
 
-/** 云端 HTTPS API（方舟/阿里云/通用 SaaS）不削减像素；仅 CLI、http:// 本地/内网减负 */
-function shouldClampDimensionsForHeavyLocalGen(c: NonNullable<ModelConfig['imageGeneratorConfig']>): boolean {
-  if (c.type === 'cli') return true;
-  const ep = (c.endpoint || '').trim();
-  if (!ep) return false;
-  return !/^https:\/\//i.test(ep);
-}
-
-function clampDimensionsForLocalImageGen(width?: number, height?: number, maxSide = 1024): { width?: number; height?: number } {
-  if (typeof width !== 'number' || typeof height !== 'number' || !Number.isFinite(width) || !Number.isFinite(height)) {
-    return { width, height };
-  }
-  if (width <= 0 || height <= 0) return { width, height };
-  const m = Math.max(width, height);
-  if (m <= maxSide) return { width: Math.round(width), height: Math.round(height) };
-  const scale = maxSide / m;
-  return {
-    width: Math.max(256, Math.round(width * scale)),
-    height: Math.max(256, Math.round(height * scale)),
-  };
-}
-
 export function imageReferencePathsFromFiles(files?: FileInfo[]): string[] {
   return (files ?? [])
     .filter((f) => f.type?.startsWith('image/') && f.path)
@@ -103,7 +81,7 @@ export function imageReferencePathsFromFiles(files?: FileInfo[]): string[] {
 
 export async function createDocumentArtifactsFromMarkdown(
   content: string,
-  formats: Array<'md' | 'docx'>,
+  formats: import('../types/document').DocumentFormat[],
   baseName: string
 ): Promise<FileInfo[]> {
   const files: FileInfo[] = [];
@@ -114,47 +92,9 @@ export async function createDocumentArtifactsFromMarkdown(
       defaultBaseName: baseName,
     });
     if (r.ok && r.file) files.push(r.file);
+    else throw new Error(r.error || `无法生成 ${format.toUpperCase()} 文件`);
   }
   return files;
-}
-
-function inferRequestedImageCount(prompt: string, explicit?: number, context?: string): number | undefined {
-  if (typeof explicit === 'number' && Number.isFinite(explicit) && explicit > 0) {
-    return Math.max(1, Math.min(12, Math.round(explicit)));
-  }
-  const text = [context, prompt].filter(Boolean).join('\n');
-  return inferImageCountFromText(text);
-}
-
-/**
- * @param options.forLocalCli — 本地 CLI/SD 主干为英文时，多图说明用英文后缀，避免中文污染 MYAGENT_PROMPT。
- */
-function enhancePromptForMultiImage(
-  prompt: string,
-  count?: number,
-  options?: { forLocalCli?: boolean }
-): string {
-  if (!count || count <= 1) return prompt;
-  const p = prompt.trim();
-  const isLandscape =
-    /风景|景观|山|海|湖|森林|草原|城市|建筑|夜景|日出|日落|天空|云|河流|峡谷|landscape|scenery|mountain|ocean|lake|forest|city|architecture|sunset|sunrise|sky|cloud|river|valley/i.test(p);
-
-  if (options?.forLocalCli) {
-    const diversityAxis = isLandscape
-      ? 'Make each image clearly different in subject matter, composition, light, weather, color, and camera angle, while keeping consistent overall quality.'
-      : 'Make each image clearly different in subject pose, framing, outfit or color palette, action, and viewpoint, while keeping consistent quality and a polished photographic look.';
-    const diversityHint =
-      `Generate exactly ${count} separate full images—one finished image per generation, not a grid, collage, or contact sheet. ${diversityAxis}`;
-    return `${p}\n${diversityHint}`;
-  }
-
-  const diversityAxisZh = isLandscape
-    ? '主体景观、构图、光线、天气、色彩、镜头角度需要明显不同，但整体影像质量保持统一。'
-    : '主体、构图、动作、服装款式、配色、镜头角度需要明显不同，但整体质量和商业摄影风格保持统一。';
-  const diversityHintZh =
-    `本次需要一次性生成 ${count} 张成品图。每张都必须是独立完整图片，不能拼成九宫格或合照；` +
-    diversityAxisZh;
-  return `${p}\n${diversityHintZh}`;
 }
 
 function containsCjk(text: string): boolean {
@@ -185,19 +125,8 @@ function cleanLocalCliPromptRewrite(raw: string): string {
 }
 
 function isCliImageGenerator(model: ModelConfig | undefined): boolean {
-  return model?.imageGeneratorConfig?.type === 'cli';
-}
-
-function shouldUseToolPromptForCli(
-  planned: ImageIntent | undefined,
-  toolPrompt: string,
-  model: ModelConfig | undefined
-): boolean {
-  if (!planned?.shouldGenerate || planned.inheritStyle || !isCliImageGenerator(model)) return false;
-  const p = toolPrompt.trim();
-  if (!p) return false;
-  if (containsCjk(p)) return false;
-  return countAsciiWords(p) >= 8;
+  const cfg = model?.imageGeneratorConfig;
+  return cfg?.type === 'cli' && (cfg.promptLanguage === 'en' || (cfg.promptLanguage !== 'auto' && Boolean(cfg.env?.MYAGENT_SD_MODEL || /sd15|sdxl|diffusers/i.test(cfg.cliArgLines || ''))));
 }
 
 async function rewritePromptForLocalCliIfNeeded(
@@ -262,11 +191,11 @@ export async function postProcessAssistantContent(
   activeModel: ModelConfig,
   imageIndexBase: number,
   setInlineImageIndex: React.Dispatch<React.SetStateAction<number>>,
-  opts?: { imageGenHooks?: ImageGenProgressHooks; referenceImages?: string[]; userPromptContext?: string; plannedIntent?: ImageIntent; shouldCancel?: () => boolean }
+  opts?: { imageGenHooks?: ImageGenProgressHooks; referenceImages?: string[]; userPromptContext?: string; plannedIntent?: ImageIntent; requestId?: string; shouldCancel?: () => boolean }
 ): Promise<{ content: string; files?: FileInfo[] }> {
   let text = responseContent;
 
-  const launches = extractLaunchAppNames(text);
+  const launches = /打开|启动|运行|\b(?:open|launch|start)\b/i.test(opts?.userPromptContext || '') ? extractLaunchAppNames(text) : [];
   for (const { name, raw } of launches) {
     try {
       await window.electron.launchApp(name);
@@ -280,7 +209,9 @@ export async function postProcessAssistantContent(
     /** 生图模型独立于对话模型：优先用户选定的，否则自动找第一个可用 */
     return useModelStore.getState().getEffectiveImageGenModel();
   };
+  if (opts?.plannedIntent?.shouldGenerate === false || opts?.shouldCancel?.() || imageRequestIsDiscussion(opts?.userPromptContext || '')) return { content: stripGenerateImageArtifactsForDisplay(text) };
   const imgGenModel = resolveImageGeneratorModel();
+  if (!imgGenModel && opts?.plannedIntent?.shouldGenerate) return { content: '请先在设置中添加图片服务，然后重试。' };
   const hooks = opts?.imageGenHooks;
   const allowBarePromptJson =
     Boolean(opts?.plannedIntent?.shouldGenerate) ||
@@ -304,37 +235,18 @@ export async function postProcessAssistantContent(
       );
       continue;
     }
-    const planned = opts?.plannedIntent;
-    const useToolPromptForCli = shouldUseToolPromptForCli(planned, prompt, imgGenModel);
-    const shouldUseCurrentTurnPrompt =
-      planned?.shouldGenerate &&
-      !planned.inheritStyle &&
-      planned.prompt.trim().length > 0 &&
-      !useToolPromptForCli;
-    toGenerate.push({
-      prompt: shouldUseCurrentTurnPrompt ? planned.prompt : prompt,
-      width: shouldUseCurrentTurnPrompt ? undefined : width,
-      height: shouldUseCurrentTurnPrompt ? undefined : height,
-      count: count ?? planned?.count,
-      raw,
-      isolatedPrompt: shouldUseCurrentTurnPrompt,
-    });
+    toGenerate.push({ prompt, width, height, count, raw, isolatedPrompt: !opts?.plannedIntent?.inheritStyle });
   }
 
-  const planned = opts?.plannedIntent;
-  if (toGenerate.length === 0 && imgGenModel?.imageGeneratorConfig && planned?.shouldGenerate) {
-    toGenerate.push({
-      prompt: planned?.prompt?.trim() || opts?.userPromptContext?.trim() || text.trim(),
-      count: planned?.count ?? inferRequestedImageCount(text, undefined, opts?.userPromptContext),
-      raw: '',
-      isolatedPrompt: !planned.inheritStyle,
-    });
-  }
-
+  // Only execute a structured model tool call. Keywords must never turn a
+  // clarification, refusal or explanatory answer into a paid generation.
+  const userCount = inferImageCountFromText(opts?.userPromptContext || '');
   const expectedCounts = toGenerate.map((g) =>
-    inferRequestedImageCount(g.prompt, g.count, opts?.userPromptContext) ?? 1
+    (toGenerate.length === 1 ? userCount : undefined) ?? g.count ?? 1
   );
   const expectedTotal = expectedCounts.reduce((sum, n) => sum + Math.max(1, n), 0);
+  if (userCount && toGenerate.length > 1 && expectedTotal !== userCount) return { content: `图片计划数量与要求的 ${userCount} 张不一致，尚未执行，请重试。` };
+  if (expectedTotal > 12) return { content: '单次最多生成 12 张图片，请减少数量或分批生成。' };
   const generatedFiles: Array<{ path: string; url: string; width: number; height: number; size?: number }> = [];
   if (toGenerate.length > 0) {
     hooks?.onBegin?.({ total: expectedTotal });
@@ -356,30 +268,25 @@ export async function postProcessAssistantContent(
           /** 生图密钥为空时回退同一模型顶部 API Key（用户常只填一处） */
           ...(cfg.apiKey?.trim()
             ? {}
-            : m.apiKey?.trim()
+            : cfg.apiKeySource !== 'independent' && m.apiKey?.trim()
               ? { apiKey: m.apiKey.trim() }
               : {}),
         };
-        let widthOut = width;
-        let heightOut = height;
-        if (shouldClampDimensionsForHeavyLocalGen(cfg)) {
-          const clipped = clampDimensionsForLocalImageGen(width, height);
-          widthOut = clipped.width;
-          heightOut = clipped.height;
-        }
         const requestedCount = expectedCounts[i];
-        const forCli = isCliImageGenerator(m);
         const promptForCli = await rewritePromptForLocalCliIfNeeded(
           prompt,
           activeModel,
           m,
           requestedCount > 1 ? requestedCount : undefined
         );
+        if (opts?.shouldCancel?.()) break;
         const imgs = await window.electron.generateImage(
           {
-            prompt: enhancePromptForMultiImage(promptForCli, requestedCount, { forLocalCli: forCli }),
-            width: widthOut,
-            height: heightOut,
+            streamRequestId: opts?.requestId,
+            ...(/透明背景|背景透明|去[除掉]?背景|transparent background|remove.*background/i.test(opts?.userPromptContext || '') ? { background: 'transparent' as const } : {}),
+            prompt: promptForCli,
+            width,
+            height,
             count: requestedCount,
             referenceImages: opts?.referenceImages,
             modelId: m.id,
@@ -388,18 +295,21 @@ export async function postProcessAssistantContent(
           },
           {
             onImage: ({ image, index, total }) => {
+              if (opts?.shouldCancel?.()) return;
+              if (!generatedFiles.some(f => f.path === image.path)) generatedFiles.push(image);
               hooks?.onImage?.({ image, index, total });
             },
           }
         );
         if (opts?.shouldCancel?.()) break;
         for (const img of imgs) {
-          generatedFiles.push(img);
+          if (!generatedFiles.some(f => f.path === img.path)) generatedFiles.push(img);
         }
         expectedDone += Math.max(1, imgs.length || requestedCount || 1);
         hooks?.onEachDone?.({ done: Math.min(expectedDone, expectedTotal), total: expectedTotal });
         if (raw) text = text.replace(raw, '');
       } catch (e: unknown) {
+        if (opts?.shouldCancel?.()) break;
         const msg = formatImageGenUserError(e instanceof Error ? e.message : String(e));
         text = text.replace(raw, `\n*[系统提示: 图片生成失败 - ${msg}]*\n`);
       }
@@ -410,6 +320,9 @@ export async function postProcessAssistantContent(
       hooks?.onDone?.();
     }
   }
+
+  if (opts?.shouldCancel?.()) text = '已停止生成，已完成的图片已保留。';
+  else if (generatedFiles.length > 0 && generatedFiles.length < expectedTotal) text += `\n\n已完成 ${generatedFiles.length}/${expectedTotal} 张图片，未完成部分可重新生成。`;
 
   let files: FileInfo[] | undefined;
   if (generatedFiles.length > 0) {
@@ -434,7 +347,7 @@ export async function postProcessAssistantContent(
   text = stripGenerateImageArtifactsForDisplay(text);
 
   /** 修复言行不一：若实际已成功生成图，但模型文本里含「不能生图」类拒绝话术，则清除 */
-  if (generatedFiles.length > 0 && isImageRefusalText(text)) {
+  if (generatedFiles.length >= expectedTotal && expectedTotal > 0 && isImageRefusalText(text)) {
     text = '';
   }
 

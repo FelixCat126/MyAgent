@@ -29,7 +29,8 @@ export async function enrichMessagesForModel(
   _locale: Locale = 'zh'
 ): Promise<Message[]> {
   const out: Message[] = [];
-  for (const m of messages) {
+  for (const original of messages) {
+    const m = original.role === 'assistant' && original.exportHint?.sourceContent ? { ...original, content: original.exportHint.sourceContent } : original;
     if (m.role !== 'user' || !m.files?.length) {
       out.push(m);
       continue;

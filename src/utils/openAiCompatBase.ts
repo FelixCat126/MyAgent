@@ -10,6 +10,8 @@ function normalizeOllamaLoopbackHosts(trimmed: string): string {
 export function resolveOpenAiCompatibleBaseUrl(apiUrl: string, provider: string): string {
   let trimmed = apiUrl.trim().replace(/\/$/, '');
   if (provider === 'ollama') trimmed = normalizeOllamaLoopbackHosts(trimmed);
+  /** 允许直接粘贴厂商文档给出的完整 Chat Completions 地址。 */
+  trimmed = trimmed.replace(/\/chat\/completions(?=\?|$)/i, '');
   if (provider !== 'ollama') return trimmed;
   if (/\/v1(\/|$)/.test(trimmed)) return trimmed;
   try {
