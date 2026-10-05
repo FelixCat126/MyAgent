@@ -37,7 +37,7 @@ export const ChatToolbar: React.FC<ChatToolbarProps> = (p) => {
     'inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg px-2 py-1 text-xs';
 
   return (
-    <div className="flex min-w-0 shrink-0 items-center gap-2 overflow-x-auto border-b border-stone-600/20 bg-stone-100/50 px-6 py-2 dark:border-white/10 dark:bg-slate-900/40">
+    <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-stone-600/20 bg-stone-100/50 px-6 py-2.5 dark:border-white/10 dark:bg-slate-900/40">
       <div className="flex shrink-0 items-center gap-2.5 whitespace-nowrap text-xs text-stone-600 dark:text-slate-400">
         <div className="flex items-center gap-1.5">
           <FiGlobe size={14} className="shrink-0" aria-hidden />
@@ -49,7 +49,7 @@ export const ChatToolbar: React.FC<ChatToolbarProps> = (p) => {
           onChange={(v) => p.onWebChange(v)}
         />
       </div>
-      <div className="ml-auto flex min-w-0 shrink-0 items-center gap-1">
+      <div className="ml-auto flex min-w-0 shrink-0 flex-wrap items-center gap-1">
         {p.selectionMode ? (
           <>
             <span className="mr-1 shrink-0 whitespace-nowrap text-xs text-stone-500 dark:text-slate-400">

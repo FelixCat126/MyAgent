@@ -1,5 +1,7 @@
 import { imageTaskContext, checkImageTask } from './image-gen/task';
 import { ipcMain } from 'electron';
+import { getMediaVersionRepository } from './media-workbench';
+import { imageCapabilities } from '../../src/features/media/capabilities';
 import type { ModelConfig, ImageGenerationParams } from '../../src/types';
 import { enqueueSerializedImageGeneration } from './image-gen/queue';
 import { generateImageHttp } from './image-gen/http';
@@ -15,10 +17,21 @@ function isUsableImageConfig(
 }
 
 const tasks = new Map<string, AbortController>();
+const activeJobs = new Set<Promise<GeneratedImage[]>>();
+let shuttingDown = false; let shutdownPromise: Promise<void> | undefined;
+/** Wait for active CLI termination and queued requests before Electron exits. */
+export function shutdownImageGeneration(): Promise<void> {
+  if (shutdownPromise) return shutdownPromise;
+  shuttingDown = true;
+  for (const controller of tasks.values()) controller.abort(new Error('应用正在退出，已停止生图 / Image generation stopped for application shutdown'));
+  shutdownPromise = Promise.allSettled([...activeJobs]).then(() => undefined);
+  return shutdownPromise;
+}
 ipcMain.on('image-generation-cancel', (event, requestId: string) => {
   tasks.get(`${event.sender.id}:${requestId}`)?.abort(new Error('已停止生图'));
 });
 ipcMain.handle('generate-image', (event, params: ImageGenerationParams) => {
+  if (shuttingDown) throw new Error('应用正在退出，不能启动新的生图任务 / Application is shutting down');
   const key = `${event.sender.id}:${params.streamRequestId}`;
   if (tasks.has(key)) throw new Error('生图任务正在执行，请勿重复提交');
   const controller = new AbortController();
@@ -34,16 +47,21 @@ ipcMain.handle('generate-image', (event, params: ImageGenerationParams) => {
   }
   const job = enqueueSerializedImageGeneration(() => imageTaskContext.run(controller.signal, async () => {
     checkImageTask();
-    return invokeGenerateImageIpc(params, (image, index, total) => {
+    const images = await invokeGenerateImageIpc(params, (image, index, total) => {
       checkImageTask();
       if (!params.streamRequestId || event.sender.isDestroyed()) return;
       event.sender.send('image-generation-image', { requestId: params.streamRequestId, image, index, total });
     });
+    await getMediaVersionRepository().record(images, params);
+    return images;
   }), queueKey);
-  return job.finally(() => {
+  const settled = job.finally(() => {
     event.sender.removeListener('destroyed', onDestroyed);
     if (tasks.get(key) === controller) tasks.delete(key);
   });
+  activeJobs.add(settled);
+  void settled.then(() => activeJobs.delete(settled), () => activeJobs.delete(settled));
+  return settled;
 });
 
 async function invokeGenerateImageIpc(params: ImageGenerationParams, onImage?: ImageGeneratedCallback) {
@@ -60,6 +78,9 @@ async function invokeGenerateImageIpc(params: ImageGenerationParams, onImage?: I
     );
   }
 
+  const capabilities = imageCapabilities(config);
+  if (params.maskImage && !capabilities.mask) throw new Error('此服务未接入蒙版编辑 / Mask editing is not supported');
+  if (params.referenceImages?.length && !capabilities.editing) throw new Error(capabilities.reason || '不支持参考编辑 / Reference editing unavailable');
   try {
     if (config.type === 'http') {
       /** HTTP 多张补齐：各厂商单次请求有上限（百炼4、火山~15、OpenAI10、SDWebUI8、Ollama/raw1），

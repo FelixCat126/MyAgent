@@ -1,3 +1,4 @@
+import { resolveModelConnection } from './connectionStore';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { ModelConfig, type ChatApiMode } from '../types';
@@ -29,6 +30,8 @@ function withSuggestedChatApiMode(m: ModelConfig): ModelConfig {
 
 interface ModelStore {
   models: ModelConfig[];
+  connectionMigrationVersion: number;
+  pendingConnectionMigrationIds: string[];
   activeModelId: string | null;
   /** 独立生图模型 ID；null = 自动选择第一个可用的生图模型（向后兼容） */
   imageGenModelId: string | null;
@@ -94,6 +97,8 @@ export const useModelStore = create<ModelStore>()(
   persist(
     (set, get) => ({
       models: [],
+      connectionMigrationVersion: 0,
+      pendingConnectionMigrationIds: [],
       activeModelId: null,
       imageGenModelId: null,
       routingRules: [],
@@ -121,6 +126,7 @@ export const useModelStore = create<ModelStore>()(
           const newModels = state.models.filter((m: ModelConfig) => m.id !== id);
           return {
             models: newModels,
+            pendingConnectionMigrationIds: state.pendingConnectionMigrationIds.filter(value => value !== id),
             activeModelId: state.activeModelId === id
               ? (newModels.find(m => m.isChatModel !== false)?.id ?? null)
               : state.activeModelId,
@@ -134,7 +140,8 @@ export const useModelStore = create<ModelStore>()(
         set((state: ModelStore) => {
           const models = state.models.map(m => m.id === id ? withSuggestedChatApiMode({ ...m, ...config }) : m);
           const active = models.find(m => m.id === state.activeModelId && m.isChatModel !== false) ?? models.find(m => m.isChatModel !== false);
-          return { models, activeModelId: active?.id ?? null };
+          const independentlyEdited = ['connectionId','provider','apiUrl','apiKey','chatApiMode','isLocal','isChatModel','imageGeneratorConfig','videoGeneratorConfig'].some(key => Object.prototype.hasOwnProperty.call(config,key));
+          return { models, activeModelId: active?.id ?? null, ...(independentlyEdited ? {pendingConnectionMigrationIds:state.pendingConnectionMigrationIds.filter(value=>value!==id)} : {}) };
         });
       },
 
@@ -150,7 +157,8 @@ export const useModelStore = create<ModelStore>()(
 
       getActiveModel: () => {
         const { models, activeModelId } = get();
-        return models.find((m: ModelConfig) => m.id === activeModelId && m.isChatModel !== false) || models.find(m => m.isChatModel !== false) || null;
+        const model = models.find((m: ModelConfig) => m.id === activeModelId && m.isChatModel !== false) || models.find(m => m.isChatModel !== false);
+        return model ? resolveModelConnection(model) : null;
       },
 
       getEffectiveImageGenModel: () => {
@@ -158,10 +166,11 @@ export const useModelStore = create<ModelStore>()(
         /** 1) 显式选定的生图模型 */
         if (imageGenModelId) {
           const m = models.find((x) => x.id === imageGenModelId);
-          if (m && modelHasUsableImageGenerator(m)) return m;
+          if (m && modelHasUsableImageGenerator(m)) return resolveModelConnection(m);
         }
         /** 2) 自动选择第一个配置了可用生图工具的模型 */
-        return models.find((m) => modelHasUsableImageGenerator(m));
+        const model = models.find((m) => modelHasUsableImageGenerator(m));
+        return model ? resolveModelConnection(model) : undefined;
       },
 
       setRoutingRules: (rules) => set({ routingRules: rules }),
@@ -170,6 +179,10 @@ export const useModelStore = create<ModelStore>()(
       name: PERSIST_KEYS.model,
       storage: zustandPersistJson,
       version: 3,
+      merge: (persisted, current) => {
+        const saved = (persisted ?? {}) as Partial<ModelStore>;
+        return {...current,...saved,connectionMigrationVersion:saved.connectionMigrationVersion ?? 0,pendingConnectionMigrationIds:Array.isArray(saved.pendingConnectionMigrationIds)?saved.pendingConnectionMigrationIds:[]};
+      },
       migrate: (persistedState, fromVersion) => {
         const state = persistedState as {
           models?: ModelConfig[];

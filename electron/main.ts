@@ -22,14 +22,19 @@ import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 
 import './ipc/model';
+import './ipc/model-service';
+import { registerQuickWindow, shutdownQuickWindow } from './quick-window';
+import { registerRuntimeIpc, bootstrapRuntime, shutdownRuntime } from './workbench-runtime';
+import { createShutdownBarrier } from './utils/shutdownBarrier';
+registerRuntimeIpc();
 import './ipc/model-stream';
 import './ipc/export';
 import './ipc/file';
 import './ipc/documents';
-import './ipc/image-gen';
+import { shutdownImageGeneration } from './ipc/image-gen';
 import './ipc/video-gen';
 import './ipc/web-search';
-import './ipc/persist';
+import { readPersistParsedSync } from './ipc/persist';
 import './ipc/media-library';
 import './ipc/speech-transcribe';
 import './ipc/volc-stream-asr';
@@ -433,6 +438,8 @@ if (PRIMARY_INSTANCE) {
     });
 
     createWindow();
+    registerQuickWindow({preloadPath:path.join(__dirname,'preload-quick-window.cjs'),getMainWindow:()=>mainWindow,getLocale:()=>((readPersistParsedSync('setting-storage') as {state?:{locale?:string}}|null)?.state?.locale==='en'?'en':'zh')});
+    void bootstrapRuntime().catch(error => console.error('[Runtime]', error));
     attachRemoteGatewayMainWindow(() => mainWindow);
     void bootstrapRemoteGatewayFromDisk().catch((err) => {
       console.error('[RemoteGateway] 启动网关失败:', err);
@@ -450,7 +457,17 @@ if (PRIMARY_INSTANCE) {
       console.warn('[MyAgent] 全局快捷键未注册:', pasteHotkey);
     }
 
+    app.on('before-quit', createShutdownBarrier({
+      cleanup: async () => {
+        const results = await Promise.allSettled([shutdownRuntime(), shutdownImageGeneration()]);
+        const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+        if (errors.length) throw Object.assign(new Error('Application shutdown failed'), { errors });
+      },
+      quit: () => app.quit(),
+      onError: error => console.error('[Runtime] 退出清理失败:', error),
+    }));
     app.on('will-quit', () => {
+      shutdownQuickWindow();
       globalShortcut.unregisterAll();
     });
 

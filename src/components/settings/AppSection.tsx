@@ -1,25 +1,10 @@
-/**
- * 应用设置区：流式输出、语音输入/唤醒/语音回复、火山流式 ASR、手势识别、
- * 粒子场、Agent 工具（本地工具 / 拒绝路径 / 浏览器）、工作区、远端网关、隐私清空。
- *
- * 抽离自 SettingsPanel.tsx（aria-labelledby="settings-app-heading" 的 <section>），
- * 行为与拆分前完全一致。
- *
- * 状态拆分原则：
- *  - store 派生量（streamResponses / voiceWakeEnabled / rootPath 等）→ 本组件自己调对应 store hook
- *  - 折叠态、远端网关态（appBlockExpanded / gwStatus / gwCfg / showGatewayToken / gwPortDraft）→ 本组件内部 useState
- *  - 远端网关初始化（useEffect 获取配置）→ 本组件内部 useEffect
- *  - 硬件探测派生量（microphoneMissing / cameraMissing）与 TTS 可用性（systemTtsAvailable）→ 由父组件传入
- *    （这些 hook 在父组件挂载以驱动 useEffect 副作用，子组件只读结果即可）
- */
+/** 应用设置：手势、Agent 权限、工作区、远端网关与隐私。语音及回答设置由模型配置统一管理。 */
 
 import React, { useState, useEffect } from 'react';
 import {
   FiZap,
   FiChevronUp,
   FiChevronDown,
-  FiActivity,
-  FiMic,
   FiCamera,
   FiCpu,
   FiFolder,
@@ -45,19 +30,8 @@ export interface GatewayConfig {
 }
 
 export interface AppSectionProps {
-  /**
-   * 系统级 TTS 可用性（原父组件 useSystemTtsAvailable(locale) 返回值）。
-   * 三态：null=检测中；false=不可用；true=可用。
-   * - false 时显示「无系统 TTS」警告
-   * - true 时才允许开启语音回复（ttsPlaybackReady = systemTtsAvailable === true）
-   */
-  systemTtsAvailable: boolean | null;
-  /** 麦克风物理缺失（原父组件 useMediaInputAvailability 派生） */
-  microphoneMissing: boolean;
   /** 摄像头物理缺失（原父组件 useMediaInputAvailability 派生） */
   cameraMissing: boolean;
-  /** 当前语言，用于火山 ASR 文档链接（zh/en） */
-  locale: string;
   /** 卡片外壳 CSS（父组件常量） */
   cardShell: string;
   /** i18n 翻译函数 */
@@ -65,10 +39,7 @@ export interface AppSectionProps {
 }
 
 export const AppSection: React.FC<AppSectionProps> = ({
-  systemTtsAvailable,
-  microphoneMissing,
   cameraMissing,
-  locale,
   cardShell,
   t,
 }) => {
@@ -101,22 +72,6 @@ export const AppSection: React.FC<AppSectionProps> = ({
   }, []);
   // store 派生量本组件自己消费
   const {
-    streamResponses,
-    setStreamResponses,
-    speechInputEnabled,
-    setSpeechInputEnabled,
-    voiceWakeEnabled,
-    setVoiceWakeEnabled,
-    voiceWakePhrase,
-    setVoiceWakePhrase,
-    voiceReplyEnabled,
-    setVoiceReplyEnabled,
-    volcAsrAppKey,
-    setVolcAsrAppKey,
-    volcAsrAccessKey,
-    setVolcAsrAccessKey,
-    volcAsrResourceId,
-    setVolcAsrResourceId,
     gestureControlEnabled,
     setGestureControlEnabled,
     particleFieldEnabled,
@@ -130,12 +85,9 @@ export const AppSection: React.FC<AppSectionProps> = ({
   } = useSettingStore();
   const { rootPath, maxChars, setRootPath, setMaxChars } = useWorkspaceStore();
 
-  /** 系统级 TTS 是否已就绪可用于语音回复（原父组件派生量） */
-  const ttsPlaybackReady = systemTtsAvailable === true;
-
   return (
     <section
-      className={`${cardShell} mt-2 shrink-0`}
+      className={`${cardShell} shrink-0`}
       aria-labelledby="settings-app-heading"
     >
       <div className="flex items-center justify-between gap-2 border-b border-stone-300/38 px-3 py-2.5 dark:border-white/10">
@@ -157,166 +109,6 @@ export const AppSection: React.FC<AppSectionProps> = ({
       {appBlockExpanded && (
         <div className="space-y-3 px-3 pb-3 pt-3">
           <div>
-            <div className="mb-2.5 flex items-center gap-1.5 text-xs font-medium text-stone-700 dark:text-slate-300">
-              <FiActivity size={14} className="text-stone-500" aria-hidden />
-              {t('settings.streaming.sectionTitle')}
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-xs text-stone-700 dark:text-slate-300">{t('settings.stream')}</span>
-              <IosSwitch
-                checked={streamResponses}
-                aria-label={t('settings.stream')}
-                onChange={setStreamResponses}
-              />
-            </div>
-            <p className="mt-1.5 text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
-              {t('settings.streamDesc')}
-            </p>
-          </div>
-          <div className="border-t border-stone-300/35 pt-3 dark:border-white/8">
-            <div className="mb-2.5 flex items-center gap-1.5 text-xs font-medium text-stone-700 dark:text-slate-300">
-              <FiMic size={14} className="text-stone-500" aria-hidden />
-              {t('settings.speech.sectionTitle')}
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <span
-                className={`text-xs ${microphoneMissing ? 'text-stone-400 dark:text-slate-500' : 'text-stone-700 dark:text-slate-300'}`}
-              >
-                {t('settings.speech.enableMicUi')}
-              </span>
-              <IosSwitch
-                checked={!microphoneMissing && speechInputEnabled}
-                disabled={microphoneMissing}
-                aria-label={t('settings.speech.enableMicUi')}
-                onChange={setSpeechInputEnabled}
-              />
-            </div>
-            {microphoneMissing ? (
-              <p className="mt-1.5 text-[10px] leading-relaxed text-amber-800/90 dark:text-amber-200/90">
-                {t('settings.speech.noMicrophone')}
-              </p>
-            ) : null}
-            {speechInputEnabled ? (
-              <div className="mt-2 space-y-2">
-                {systemTtsAvailable === false ? (
-                  <p className="text-[10px] leading-snug text-amber-800/90 dark:text-amber-200/90">
-                    {t('settings.speech.noSystemTts')}
-                  </p>
-                ) : null}
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-xs text-stone-700 dark:text-slate-300">
-                    {t('settings.speech.enableWake')}
-                  </span>
-                  <IosSwitch
-                    checked={voiceWakeEnabled}
-                    aria-label={t('settings.speech.enableWake')}
-                    onChange={setVoiceWakeEnabled}
-                  />
-                </div>
-                {voiceWakeEnabled ? (
-                  <div>
-                    <label className="mb-0.5 block text-[10px] font-medium text-stone-600 dark:text-gray-400">
-                      {t('settings.speech.wakePhrase')}
-                    </label>
-                    <input
-                      type="text"
-                      autoComplete="off"
-                      value={voiceWakePhrase}
-                      onChange={(e) => setVoiceWakePhrase(e.target.value)}
-                      onBlur={(e) => setVoiceWakePhrase(e.target.value.trim())}
-                      placeholder={t('settings.speech.wakePhrasePh')}
-                      className="w-full rounded-md border border-stone-400/25 bg-stone-100/90 px-2 py-1.5 text-xs text-stone-900 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-slate-700 dark:text-white"
-                    />
-                    <p className="mt-1 text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
-                      {t('settings.speech.wakeDesc', {
-                        phrase: voiceWakePhrase.trim() || t('settings.speech.wakePhrasePh'),
-                      })}
-                    </p>
-                  </div>
-                ) : null}
-                {voiceWakeEnabled ? (
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <span
-                        className={`text-xs ${ttsPlaybackReady ? 'text-stone-700 dark:text-slate-300' : 'text-stone-400 dark:text-slate-500'}`}
-                      >
-                        {t('settings.speech.voiceReply')}
-                      </span>
-                      <p
-                        className={`mt-0.5 text-[10px] leading-relaxed ${ttsPlaybackReady ? 'text-stone-500 dark:text-slate-500' : 'text-stone-400 dark:text-slate-600'}`}
-                      >
-                        {t('settings.speech.voiceReplyDesc')}
-                      </p>
-                    </div>
-                    <IosSwitch
-                      checked={ttsPlaybackReady && voiceReplyEnabled}
-                      aria-label={t('settings.speech.voiceReply')}
-                      disabled={!ttsPlaybackReady}
-                      onChange={setVoiceReplyEnabled}
-                    />
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-            {speechInputEnabled && (
-              <div className="mt-2 space-y-2" data-section="volc-asr-keys">
-                <p className="text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
-                  {t('settings.streamingAsr.volcOnly')}{' '}
-                  <a
-                    className="text-primary-600 underline dark:text-primary-400"
-                    href={
-                      locale === 'en'
-                        ? 'https://www.volcengine.com/docs/6561/1354869?lang=en'
-                        : 'https://www.volcengine.com/docs/6561/1354869?lang=zh'
-                    }
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    {t('settings.streamingAsr.docVolcExample')}
-                  </a>
-                </p>
-                <div className="space-y-2">
-                  <div>
-                    <label className="mb-0.5 block text-[10px] font-medium text-stone-600 dark:text-gray-400">
-                      {t('settings.streamingAsr.fieldAppKey')}
-                    </label>
-                    <input
-                      type="password"
-                      autoComplete="off"
-                      value={volcAsrAppKey}
-                      onChange={(e) => setVolcAsrAppKey(e.target.value)}
-                      className="w-full rounded-md border border-stone-400/25 bg-stone-100/90 px-2 py-1.5 font-mono text-xs text-stone-900 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-slate-700 dark:text-white"
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-0.5 block text-[10px] font-medium text-stone-600 dark:text-gray-400">
-                      {t('settings.streamingAsr.fieldAccess')}
-                    </label>
-                    <input
-                      type="password"
-                      autoComplete="off"
-                      value={volcAsrAccessKey}
-                      onChange={(e) => setVolcAsrAccessKey(e.target.value)}
-                      className="w-full rounded-md border border-stone-400/25 bg-stone-100/90 px-2 py-1.5 font-mono text-xs text-stone-900 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-slate-700 dark:text-white"
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-0.5 block text-[10px] font-medium text-stone-600 dark:text-gray-400">
-                      {t('settings.streamingAsr.fieldResource')}
-                    </label>
-                    <input
-                      type="text"
-                      autoComplete="off"
-                      value={volcAsrResourceId}
-                      onChange={(e) => setVolcAsrResourceId(e.target.value)}
-                      className="w-full rounded-md border border-stone-400/25 bg-stone-100/90 px-2 py-1.5 font-mono text-xs text-stone-900 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-slate-700 dark:text-white"
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-          <div className="border-t border-stone-300/35 pt-3 dark:border-white/8">
             <div className="mb-2.5 flex items-center gap-1.5 text-xs font-medium text-stone-700 dark:text-slate-300">
               <FiCamera size={14} className="text-stone-500" aria-hidden />
               {t('settings.gesture.sectionTitle')}

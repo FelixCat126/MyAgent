@@ -104,62 +104,56 @@ async function generateImageCliOneShot(
 
   const useShell = process.platform === 'win32' && looksLikeWindowsExec(exe);
 
+  checkImageTask();
+  const signal = imageTaskContext.getStore();
   const proc = spawn(exe, argv, {
     env: { ...process.env, ...envVars },
     cwd: electronApp.getPath('home'),
     shell: useShell,
-    signal: imageTaskContext.getStore(),
   });
 
   return await new Promise<CliGeneratedImage>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      proc.kill();
-      const min = Math.max(1, Math.round(IMAGE_GEN_TIMEOUT_MS / 60_000));
-      reject(new Error(`生图命令超时（${min} 分钟）`));
-    }, IMAGE_GEN_TIMEOUT_MS);
-
-    proc.on('error', (error) => { clearTimeout(timeout); reject(error); });
+    let settled = false; let closed = false; let stopReason: Error | undefined;
+    let forceKill: ReturnType<typeof setTimeout> | undefined; let stopDeadline: ReturnType<typeof setTimeout> | undefined;
     let output = '';
-    proc.stdout?.on('data', (data) => {
-      output = appendCappedCliLog(output, data);
-    });
-    proc.stderr?.on('data', (data) => {
-      output = appendCappedCliLog(output, data);
-    });
-    proc.on('close', (code) => {
-      clearTimeout(timeout);
-      if (imageTaskContext.getStore()?.aborted) return;
+    const cleanup = () => { clearTimeout(timeout); if (forceKill) clearTimeout(forceKill); if (stopDeadline) clearTimeout(stopDeadline); signal?.removeEventListener('abort', abort); };
+    const fail = async (error: unknown) => {
+      if (settled) return; settled = true; cleanup();
+      await fs.unlink(outputPath).catch(() => {});
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+    const stop = (reason: Error) => {
+      if (settled || stopReason) return; stopReason = reason;
+      if (closed) { void fail(reason); return; }
+      proc.kill('SIGTERM');
+      forceKill = setTimeout(() => { proc.kill('SIGKILL'); }, 1000); forceKill.unref();
+      // A descendant retaining stdout can delay close even after the direct child dies.
+      stopDeadline = setTimeout(() => { void fail(reason); }, 2500); stopDeadline.unref();
+    };
+    const abort = () => stop(signal?.reason instanceof Error ? signal.reason : new Error('已停止生图 / Image generation stopped'));
+    const timeout = setTimeout(() => stop(new Error(`生图命令超时（${Math.max(1, Math.round(IMAGE_GEN_TIMEOUT_MS / 60_000))} 分钟）`)), IMAGE_GEN_TIMEOUT_MS);
+    signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort();
+    proc.on('error', error => { void fail(error); });
+    proc.stdout?.on('data', data => { output = appendCappedCliLog(output, data); });
+    proc.stderr?.on('data', data => { output = appendCappedCliLog(output, data); });
+    proc.on('close', code => {
+      closed = true;
       void (async () => {
+        if (settled) { if (stopReason) await fs.unlink(outputPath).catch(() => {}); return; }
         try {
-          await fs.access(outputPath);
-        } catch {
-          reject(
-            new Error(
-              `未在预期路径生成图片文件：${outputPath}\n子进程退出码=${code}\n输出：\n${output.slice(0, 4000)}`
-            )
-          );
-          return;
-        }
-
-        if (code !== 0) {
-          console.warn('[生图 CLI] 进程退出码非 0，但输出文件已存在:', code);
-        }
-
-        const { width, height } = await readImageSizeWithFallback(outputPath, params);
-        const size = await fs
-          .stat(outputPath)
-          .then((s) => s.size)
-          .catch(() => undefined);
-        resolve({
-          url: `file://${outputPath}`,
-          path: outputPath,
-          width,
-          height,
-          size,
-        });
+          if (stopReason || signal?.aborted) throw stopReason ?? signal?.reason ?? new Error('已停止生图');
+          try { await fs.access(outputPath); }
+          catch { throw new Error(`未在预期路径生成图片文件：${outputPath}\n子进程退出码=${code}\n输出：\n${output.slice(0, 4000)}`); }
+          const { width, height } = await readImageSizeWithFallback(outputPath, params);
+          if (stopReason || signal?.aborted) throw stopReason ?? signal?.reason ?? new Error('已停止生图');
+          const size = (await fs.stat(outputPath)).size;
+          if (stopReason || signal?.aborted) throw stopReason ?? signal?.reason ?? new Error('已停止生图');
+          if (code !== 0) console.warn('[生图 CLI] 进程退出码非 0，但有效图片已生成:', code);
+          if (!settled) { settled = true; cleanup(); resolve({ url: `file://${outputPath}`, path: outputPath, width, height, size }); }
+        } catch (error) { await fail(error); }
       })();
-          });
-        });
+    });
+  });
 }
 
 async function generateImageCli(

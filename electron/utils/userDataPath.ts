@@ -5,8 +5,15 @@
  */
 import { app } from 'electron';
 import path from 'path';
+import fs from 'node:fs';
 
-const myAgentData = path.join(app.getPath('appData'), 'MyAgent');
+const isolatedTest = process.env.MYAGENT_TEST_MODE === '1' && process.env.MYAGENT_TEST_DATA_DIR && path.isAbsolute(process.env.MYAGENT_TEST_DATA_DIR);
+const myAgentData = isolatedTest ? process.env.MYAGENT_TEST_DATA_DIR! : path.join(app.getPath('appData'), 'MyAgent');
+if(isolatedTest){
+  fs.mkdirSync(myAgentData,{recursive:true});
+  const documents=process.env.MYAGENT_TEST_DOCUMENTS_DIR;
+  if(documents&&path.isAbsolute(documents)){fs.mkdirSync(documents,{recursive:true});app.setPath('documents',documents);}
+}
 if (app.getPath('userData') !== myAgentData) {
   app.setPath('userData', myAgentData);
 }

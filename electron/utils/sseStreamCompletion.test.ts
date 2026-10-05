@@ -7,6 +7,25 @@ class FakeStream extends EventEmitter {
 }
 
 describe('SSE stream completion', () => {
+  it('保留在网络分块边界拆开的中文和 emoji', async () => {
+    const stream = new FakeStream();
+    const lines: string[] = [];
+    const completed = consumeSseLines(stream, line => lines.push(line));
+    const bytes = Buffer.from('data: {"text":"中文🙂"}\n');
+    for (const byte of bytes) stream.emit('data', Buffer.from([byte]));
+    stream.emit('end');
+    await completed;
+    expect(lines).toEqual(['data: {"text":"中文🙂"}']);
+  });
+
+  it('解析器抛错会拒绝请求并关闭连接，不留下悬空运行态', async () => {
+    const stream = new FakeStream();
+    const completed = consumeSseLines(stream, () => { throw new Error('bad tool JSON'); });
+    const rejected = expect(completed).rejects.toThrow('bad tool JSON');
+    expect(() => stream.emit('data', 'data: {}\n')).not.toThrow();
+    await rejected;
+    expect(stream.destroy).toHaveBeenCalledOnce();
+  });
   it('识别 OpenAI、GLM、MiMo 与 Anthropic 常见完成信号', () => {
     expect(isTerminalSseLine('data: [DONE]')).toBe(true);
     expect(isTerminalSseLine('data: {"choices":[{"finish_reason":"stop"}]}')).toBe(true);

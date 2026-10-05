@@ -23,6 +23,7 @@ export type BuiltImageHttpRequest = {
   mode: HttpImageMode;
   endpoint: string;
   body: Record<string, unknown>;
+  formData?: FormData;
   headers?: Record<string, string>;
   readBodyAsStreamingText?: boolean;
   volcOpenAi?: boolean;

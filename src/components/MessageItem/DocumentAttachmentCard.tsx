@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   FiDownload,
+  FiEye,
   FiExternalLink,
   FiFileText,
   FiMoreHorizontal,
@@ -8,6 +9,8 @@ import {
 import type { FileInfo } from '../../types';
 import type { DocumentFormat } from '../../types/document';
 import { useI18n } from '../../hooks/useI18n';
+import { openDocumentWorkbench } from '../../features/documents/events';
+import type { DocumentWorkbenchAPI } from '../../features/documents/types';
 
 const FORMAT_LABEL: Record<DocumentFormat, string> = {
   docx: 'Word',
@@ -69,12 +72,14 @@ export const DocumentAttachmentCard: React.FC<DocumentAttachmentCardProps> = ({
   onDownload,
   onExport,
 }) => {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const ext = extensionOf(file.name);
   const badge = FORMAT_BADGE[ext] || {
     label: ext.toUpperCase(),
     tone: 'bg-stone-500/12 text-stone-700 dark:bg-slate-400/15 dark:text-slate-300',
   };
+  const previewAvailable = /^(md|markdown|txt|docx|pdf|xlsx|xlsm|csv)$/.test(ext) && typeof (window.electron as unknown as Partial<DocumentWorkbenchAPI>)?.inspectDocument === 'function';
+  const openPreview = () => previewAvailable ? openDocumentWorkbench(file) : void onOpen(file.path);
   const displayName = artifactDisplayName(file.name);
   const size = readableSize(file.size);
   const subtitle = [FORMAT_LABEL[ext as DocumentFormat] || badge.label, size]
@@ -91,7 +96,7 @@ export const DocumentAttachmentCard: React.FC<DocumentAttachmentCardProps> = ({
       <button
         type="button"
         className="min-w-0 flex-1 text-left outline-none"
-        onClick={() => void onOpen(file.path)}
+        onClick={openPreview}
         title={file.name}
         aria-label={`${t('message.fileOpen')} ${displayName}`}
       >
@@ -104,6 +109,7 @@ export const DocumentAttachmentCard: React.FC<DocumentAttachmentCardProps> = ({
       </button>
 
       <div className="flex shrink-0 items-center gap-1">
+        {previewAvailable && <button type="button" className="inline-flex h-8 items-center gap-1 rounded-lg px-2 text-[11px] font-medium text-primary-700 hover:bg-primary-500/10 dark:text-primary-200" onClick={openPreview} title={locale === 'en' ? 'Preview and edit' : '预览与编辑'} aria-label={`${locale === 'en' ? 'Preview and edit' : '预览与编辑'} ${displayName}`}><FiEye size={14} /><span className="hidden sm:inline">{locale === 'en' ? 'Preview' : '预览'}</span></button>}
         <button
           type="button"
           className="inline-flex h-8 items-center gap-1 rounded-lg px-2 text-[11px] font-medium text-stone-600 hover:bg-stone-100 hover:text-primary-700 dark:text-slate-300 dark:hover:bg-slate-700/80 dark:hover:text-primary-200"

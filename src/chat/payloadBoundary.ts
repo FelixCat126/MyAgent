@@ -28,8 +28,9 @@ export function estimateInjectedPayloadOverheadChars(opts: {
   workspaceLikely?: boolean;
   ragMaxChars?: number;
   workspaceMaxChars?: number;
+  personalMaxChars?: number;
 }): number {
-  let n = 0;
+  let n = Math.max(0, Math.min(opts.personalMaxChars||0,30000));
   if (opts.webEnabled) n += 12_000;
   if (opts.ragLikely) n += Math.min(opts.ragMaxChars ?? 24_000, 80_000);
   if (opts.workspaceLikely) n += Math.min(opts.workspaceMaxChars ?? 40_000, 200_000);

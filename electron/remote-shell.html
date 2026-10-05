@@ -16,12 +16,12 @@
   <meta name="application-name" content="MyAgent" />
   <meta name="format-detection" content="telephone=no" />
   <!-- Safari 需在解析早期就有 apple-touch-icon；仅靠 JS append 易导致仍用缓存占位图 -->
-  <link id="myagent-pwa-touch" rel="apple-touch-icon" sizes="180x180" href="/remote/apple-touch-icon.png?v=3" />
-  <link id="myagent-pwa-manifest" rel="manifest" href="/remote/manifest.webmanifest?v=3" />
+  <link id="myagent-pwa-touch" rel="apple-touch-icon" sizes="180x180" href="/remote/apple-touch-icon.png?v=4" />
+  <link id="myagent-pwa-manifest" rel="manifest" href="/remote/manifest.webmanifest?v=4" />
   <script>
     (function () {
       /** 与子路径挂载时 gatewayBaseHrefDir 同源：重写为 .../前缀/remote/... */
-      var PWA_ICON_Q = 'v=3';
+      var PWA_ICON_Q = 'v=4';
       function pwaHrefBaseDir() {
         var u = window.location;
         var pn = u.pathname || '/';

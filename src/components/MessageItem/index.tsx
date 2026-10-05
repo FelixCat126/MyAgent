@@ -278,6 +278,7 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
 
   const standaloneCode =
     message.role !== 'user' &&
+    !isThoughtStreaming &&
     !(message.files && message.files.length > 0) &&
     looksLikeStandaloneCodeSnippet(assistantDisplayBody);
   const showDocumentGeneratingPlaceholder =
@@ -328,8 +329,9 @@ const MessageItemBase: React.FC<MessageItemProps> = ({
     hasReadyDocumentFiles && cannedReadyText.has(assistantDisplayBody.trim().replace(/[.。，,].*$/, ''));
   const renderedMarkdownBody = hideCannedDocumentReadyBody ? '' : markdownBody;
   const hasExportableAssistantText =
-    message.role === 'assistant' && !showInlineStreamPlaceholder && assistantExportBody.trim().length > 0;
-  const hasMarkdownTable = assistantExportBody.trim().length > 0 && markdownContainsPipeTable(assistantExportBody);
+    message.role === 'assistant' && !isThoughtStreaming && !showInlineStreamPlaceholder && assistantExportBody.trim().length > 0;
+  /** 输入期间无需反复扫描增长中的全文；完整导出选项在结束后一次计算。 */
+  const hasMarkdownTable = !isThoughtStreaming && assistantExportBody.trim().length > 0 && markdownContainsPipeTable(assistantExportBody);
   const documentExportFormats: DocumentFormat[] = (() => {
     if (!message.exportHint?.document) return [];
     const base: DocumentFormat[] = message.exportHint?.formats ?? ['md', 'docx', 'pdf', 'xlsx'];

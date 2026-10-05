@@ -1,238 +1,86 @@
-/**
- * MiniMax 视频生成 adapter（异步任务 + 轮询）。
- *
- * 调用流程：
- *  1) POST  /v1/video_generation     -> { task_id, base_resp }
- *  2) GET   /v1/video_generation/{task_id}  -> { status: PENDING|IN_PROGRESS|COMPLETED|FAILED, file_id?, base_resp }
- *  3) GET   /v1/files/retrieve?file_id=...  -> { file: { download_url } }
- *
- * 支持国内/国际站自动切换（与 image adapter 同策略）。
- */
-
+/** MiniMax v1 asynchronous video jobs. Persist task_id before polling; resume never resubmits. */
 import axios, { type AxiosInstance } from 'axios';
-import path from 'path';
-import os from 'os';
-import fs from 'fs/promises';
-import { randomUUID } from 'crypto';
-
-const HOST_INTL = 'api.minimax.io';
-const HOST_CN = 'api.minimaxi.com';
+import path from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 
 export interface MiniMaxVideoConfig {
-  apiKey: string;
-  endpoint?: string;
-  model: string;
-  prompt: string;
-  resolution?: '480' | '720' | '768' | '1080';
-  duration?: 5 | 10;
-  /** 轮询间隔 ms */
-  pollIntervalMs?: number;
-  /** 总超时 ms */
-  timeoutMs?: number;
+  apiKey: string; endpoint?: string; model: string; prompt: string;
+  resolution?: '480' | '720' | '768' | '1080'; duration?: 5 | 6 | 10;
+  pollIntervalMs?: number; timeoutMs?: number; signal?: AbortSignal;
+  existingTaskId?: string; outputDir?: string;
+  onSubmitted?: (taskId: string, endpoint: string) => Promise<void>;
+  onProgress?: (status: string) => void;
 }
-
-export interface MiniMaxVideoResult {
-  /** 本地文件绝对路径（mp4） */
-  localPath: string;
-  /** 原始远程 URL（如果可获取） */
-  remoteUrl?: string;
-  /** 时长（毫秒，秒 * 1000），如果可从响应解析 */
-  durationMs?: number;
+export interface MiniMaxVideoResult { localPath: string; remoteUrl?: string; durationMs?: number; taskId: string; endpoint: string }
+export class MiniMaxVideoError extends Error { constructor(public code: number | string, message: string) { super(message); this.name = 'MiniMaxVideoError'; } }
+export function normalizeEndpoint(endpoint?: string): string {
+  const url = new URL((endpoint || 'https://api.minimaxi.com/v1/video_generation').trim());
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new MiniMaxVideoError('endpoint', '无效视频接口地址 / Invalid video endpoint');
+  if (/^api\.minimax\.chat$/i.test(url.hostname)) url.hostname = 'api.minimax.io';
+  url.pathname = '/v1/video_generation'; url.search = ''; url.hash = ''; return url.toString();
 }
-
-export class MiniMaxVideoError extends Error {
-  constructor(public code: number | string, message: string) {
-    super(message);
-    this.name = 'MiniMaxVideoError';
-  }
-}
-
-function normalizeEndpoint(endpoint?: string): string {
-  const raw = (endpoint || `https://${HOST_CN}/v1/video_generation`).trim();
-  try {
-    const u = new URL(raw);
-    if (/^api\.minimax\.chat$/i.test(u.hostname)) {
-      u.hostname = HOST_INTL;
-    }
-    u.pathname = '/v1/video_generation';
-    u.search = '';
-    u.hash = '';
-    return u.toString().replace(/\/$/, '');
-  } catch {
-    return raw;
-  }
-}
-
 function alternateEndpoint(endpoint: string): string | null {
-  try {
-    const u = new URL(normalizeEndpoint(endpoint));
-    if (new RegExp(`^${HOST_CN}$`, 'i').test(u.hostname)) {
-      u.hostname = HOST_INTL;
-      return u.toString().replace(/\/$/, '');
-    }
-    if (new RegExp(`^${HOST_INTL}$`, 'i').test(u.hostname)) {
-      u.hostname = HOST_CN;
-      return u.toString().replace(/\/$/, '');
-    }
-  } catch {
-    /* ignore */
-  }
-  return null;
+  const url = new URL(endpoint);
+  if (['api.minimaxi.com', 'api.minimax.cn'].includes(url.hostname)) url.hostname = 'api.minimax.io';
+  else if (url.hostname === 'api.minimax.io') url.hostname = 'api.minimaxi.com'; else return null;
+  return url.toString();
 }
-
-function readBaseRespCode(data: unknown): number | null {
-  if (!data || typeof data !== 'object') return null;
-  const br = (data as Record<string, unknown>).base_resp;
-  if (!br || typeof br !== 'object') return null;
-  const code = Number((br as Record<string, unknown>).status_code);
-  return Number.isFinite(code) ? code : null;
+function validateResponse(data: unknown): Record<string, unknown> {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw new MiniMaxVideoError('invalid_response', '视频服务返回非 JSON 结果 / Invalid video service response');
+  const result = data as Record<string, unknown>; const base = result.base_resp as { status_code?: number; status_msg?: string } | undefined;
+  if (base?.status_code !== undefined && Number(base.status_code) !== 0) throw new MiniMaxVideoError(Number(base.status_code), `MiniMax 视频错误 ${base.status_code}: ${String(base.status_msg ?? '')}`);
+  return result;
 }
-
-function formatBaseRespError(code: number, msg: string): string {
-  return `MiniMax 视频生成失败（status_code=${code}）：${msg || '请查阅 MiniMax 开放平台错误码说明'}`;
+export function createMiniMaxClient(apiKey: string, endpoint: string): AxiosInstance {
+  return axios.create({ baseURL: endpoint.replace(/\/v1\/.*$/, '/v1'), timeout: 60_000, maxContentLength: 2 * 1024 * 1024, maxBodyLength: 2 * 1024 * 1024, headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' } });
 }
-
-export function createMiniMaxClient(apiKey: string, baseEndpoint: string): AxiosInstance {
-  const baseURL = baseEndpoint.replace(/\/v1\/.*$/, '/v1');
-  return axios.create({
-    baseURL,
-    timeout: 60_000,
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
+async function pause(milliseconds: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted(); await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => { signal.removeEventListener('abort', onAbort); resolve(); }, milliseconds);
+    const onAbort = () => { clearTimeout(timer); signal.removeEventListener('abort', onAbort); reject(signal.reason); };
+    signal.addEventListener('abort', onAbort, { once: true });
   });
 }
-
-interface PollTaskResult {
-  status?: string;
-  file_id?: string;
-  /** 任务最终原始响应（保留以便解析更多字段） */
-  raw?: Record<string, unknown>;
-}
-
-/** 轮询任务状态，直到 COMPLETED / FAILED 或超时 */
-async function pollTaskUntilDone(
-  client: AxiosInstance,
-  taskId: string,
-  pollIntervalMs: number,
-  timeoutMs: number
-): Promise<PollTaskResult> {
-  const deadline = Date.now() + timeoutMs;
-  let attempt = 0;
-  while (Date.now() < deadline) {
-    attempt++;
-    const { data } = await client.get(`/video_generation/${encodeURIComponent(taskId)}`);
-    const code = readBaseRespCode(data);
-    if (code !== null && code !== 0) {
-      const br = (data as { base_resp?: { status_msg?: string } } | undefined)?.base_resp;
-      const msg = String(br?.status_msg ?? '');
-      throw new MiniMaxVideoError(code, formatBaseRespError(code, msg));
-    }
-    const d = (data as Record<string, unknown>) ?? {};
-    const status = typeof d.status === 'string' ? d.status.toUpperCase() : '';
-    if (status === 'COMPLETED' || status === 'SUCCESS' || status === 'FINISHED') {
-      return {
-        status: 'COMPLETED',
-        file_id: typeof d.file_id === 'string' ? d.file_id : undefined,
-        raw: d,
-      };
-    }
-    if (status === 'FAILED' || status === 'ERROR' || status === 'CANCELLED') {
-      const br = d.base_resp as { status_msg?: string } | undefined;
-      const msg = String(br?.status_msg ?? status);
-      throw new MiniMaxVideoError(status, `MiniMax 视频任务失败：${msg}`);
-    }
-    await new Promise((r) => setTimeout(r, pollIntervalMs));
-  }
-  throw new MiniMaxVideoError('timeout', `MiniMax 视频任务超过 ${Math.round(timeoutMs / 1000)}s 仍未完成`);
-}
-
-/** 拿 file_id 下载视频；MiniMax 的 file 接口标准：GET /v1/files/retrieve?file_id=... */
-async function downloadByFileId(
-  client: AxiosInstance,
-  fileId: string,
-  destPath: string
-): Promise<string> {
-  /** 先尝试 retrieve 拿 download_url，再直下；retrieve 失败时直接 GET task 取 video_url */
-  let videoUrl: string | null = null;
+export async function generateMiniMaxVideo(config: MiniMaxVideoConfig): Promise<MiniMaxVideoResult> {
+  if (!config.apiKey?.trim() || !config.model?.trim() || !config.prompt?.trim()) throw new MiniMaxVideoError('config', '请配置视频密钥、模型和描述 / Video key, model and prompt required');
+  if (/^MiniMax-H3/i.test(config.model)) throw new MiniMaxVideoError('unsupported_model', 'H3 使用 v2 多模态协议，当前适配器支持 Hailuo v1，请选择已支持的模型。 / H3 requires a separate v2 adapter.');
+  const controller = new AbortController(); const externalAbort = () => controller.abort(config.signal?.reason ?? new Error('视频已取消 / Video canceled'));
+  if (config.signal?.aborted) externalAbort(); else config.signal?.addEventListener('abort', externalAbort, { once: true });
+  const timeout = setTimeout(() => controller.abort(new MiniMaxVideoError('timeout', '视频等待超时，可从任务列表继续 / Video wait timed out; resume from Tasks')), config.timeoutMs ?? 10 * 60_000);
+  const signal = controller.signal; let temp: string | undefined;
   try {
-    const { data } = await client.get('/files/retrieve', { params: { file_id: fileId } });
-    const d = data as Record<string, unknown>;
-    const file = (d.file && typeof d.file === 'object' ? d.file : null) as
-      | Record<string, unknown>
-      | null;
-    const u = file?.download_url ?? file?.url;
-    if (typeof u === 'string' && /^https?:\/\//i.test(u)) videoUrl = u;
-  } catch {
-    /* retrieve 接口不可用 → 走 task 兜底 */
-  }
-  if (!videoUrl) {
-    throw new MiniMaxVideoError(
-      'no_url',
-      'MiniMax 视频任务完成但未返回 download_url；可能是接口差异，需扩展 adapter'
-    );
-  }
-  const resp = await axios.get<ArrayBuffer>(videoUrl, { responseType: 'arraybuffer', timeout: 120_000 });
-  await fs.writeFile(destPath, Buffer.from(resp.data));
-  return videoUrl;
-}
-
-export async function generateMiniMaxVideo(
-  config: MiniMaxVideoConfig
-): Promise<MiniMaxVideoResult> {
-  const pollIntervalMs = config.pollIntervalMs ?? 8000;
-  const timeoutMs = config.timeoutMs ?? 10 * 60 * 1000;
-  const endpoint = normalizeEndpoint(config.endpoint);
-  const client = createMiniMaxClient(config.apiKey, endpoint);
-
-  /** 提交任务；MiniMax 2049 = 站点与 Key 不匹配 → 自动切站重试一次 */
-  const submitBody: Record<string, unknown> = {
-    model: config.model,
-    prompt: config.prompt,
-  };
-  if (config.resolution) submitBody.resolution = config.resolution;
-  if (config.duration) submitBody.duration = config.duration;
-
-  let submitResp;
-  let usedEndpoint = endpoint;
-  try {
-    submitResp = await client.post('/video_generation', submitBody);
-  } catch (e) {
-    const alt = alternateEndpoint(endpoint);
-    if (!alt) throw e;
-    usedEndpoint = alt;
-    const altClient = createMiniMaxClient(config.apiKey, alt);
-    submitResp = await altClient.post('/video_generation', submitBody);
-  }
-
-  const submitCode = readBaseRespCode(submitResp.data);
-  if (submitCode !== null && submitCode !== 0) {
-    const br = (submitResp.data as { base_resp?: { status_msg?: string } } | undefined)?.base_resp;
-    const msg = String(br?.status_msg ?? '');
-    throw new MiniMaxVideoError(submitCode, formatBaseRespError(submitCode, msg));
-  }
-  const taskId = String((submitResp.data as Record<string, unknown>)?.task_id ?? '');
-  if (!taskId) {
-    throw new MiniMaxVideoError('no_task_id', 'MiniMax 视频创建任务未返回 task_id');
-  }
-
-  const usedClient = usedEndpoint === endpoint ? client : createMiniMaxClient(config.apiKey, usedEndpoint);
-  const done = await pollTaskUntilDone(usedClient, taskId, pollIntervalMs, timeoutMs);
-
-  /** 落盘：~/Documents/MyAgent/GeneratedVideos/<taskId>.mp4 */
-  const docsDir = path.join(os.homedir(), 'Documents', 'MyAgent', 'GeneratedVideos');
-  await fs.mkdir(docsDir, { recursive: true });
-  const fileName = `minimax-video-${taskId}-${randomUUID().slice(0, 6)}.mp4`;
-  const localPath = path.join(docsDir, fileName);
-
-  if (!done.file_id) {
-    throw new MiniMaxVideoError(
-      'no_file_id',
-      'MiniMax 视频任务完成但未返回 file_id；无法下载'
-    );
-  }
-  const remoteUrl = await downloadByFileId(usedClient, done.file_id, localPath);
-
-  return { localPath, remoteUrl };
+    signal.throwIfAborted(); let endpoint = normalizeEndpoint(config.endpoint); let client = createMiniMaxClient(config.apiKey, endpoint); let taskId = config.existingTaskId;
+    if (!taskId) {
+      const body = { model: config.model, prompt: config.prompt, ...(config.resolution ? { resolution: config.resolution } : {}), ...(config.duration ? { duration: config.duration } : {}) };
+      let submitted: Record<string, unknown>;
+      try { submitted = validateResponse((await client.post('/video_generation', body, { signal })).data); }
+      catch (e) { const alternate = e instanceof MiniMaxVideoError && e.code === 2049 ? alternateEndpoint(endpoint) : null; if (!alternate) throw e; endpoint = alternate; client = createMiniMaxClient(config.apiKey, endpoint); submitted = validateResponse((await client.post('/video_generation', body, { signal })).data); }
+      taskId = typeof submitted.task_id === 'string' || typeof submitted.task_id === 'number' ? String(submitted.task_id) : '';
+      if (!taskId) throw new MiniMaxVideoError('no_task_id', '视频创建结果没有 task_id / Video response has no task_id');
+      await config.onSubmitted?.(taskId, endpoint);
+    }
+    signal.throwIfAborted(); let fileId: string | undefined;
+    while (!fileId) {
+      signal.throwIfAborted(); const status = validateResponse((await client.get('/query/video_generation', { params: { task_id: taskId }, signal })).data);
+      const state = String(status.status ?? '').toUpperCase(); config.onProgress?.(state);
+      if (['SUCCESS', 'COMPLETED', 'FINISHED'].includes(state)) {
+        fileId = typeof status.file_id === 'string' || typeof status.file_id === 'number' ? String(status.file_id) : undefined;
+        if (!fileId) throw new MiniMaxVideoError('no_file_id', '视频已完成但没有 file_id / Completed video has no file_id');
+      } else if (['FAIL', 'FAILED', 'ERROR', 'CANCELLED', 'CANCELED'].includes(state)) throw new MiniMaxVideoError(state, `视频任务失败 / Video task failed: ${state}`);
+      else if (!['PREPARING', 'QUEUEING', 'PROCESSING', 'PENDING', 'IN_PROGRESS'].includes(state)) throw new MiniMaxVideoError('unknown_status', `未知视频状态 / Unknown video status: ${state || '(empty)'}`);
+      else await pause(Math.max(1, config.pollIntervalMs ?? 8000), signal);
+    }
+    const retrieved = validateResponse((await client.get('/files/retrieve', { params: { file_id: fileId }, signal })).data); const file = retrieved.file as { download_url?: string; url?: string } | undefined;
+    const remoteUrl = file?.download_url ?? file?.url;
+    if (!remoteUrl || !/^https?:\/\//i.test(remoteUrl)) throw new MiniMaxVideoError('no_url', '视频下载链接缺失 / Video download URL missing');
+    const response = await axios.get<ArrayBuffer>(remoteUrl, { responseType: 'arraybuffer', timeout: 120_000, maxContentLength: 200 * 1024 * 1024, signal });
+    const bytes = Buffer.from(response.data);
+    if (bytes.length < 12 || bytes.toString('ascii', 4, 8) !== 'ftyp') throw new MiniMaxVideoError('invalid_video', '下载结果不是有效 MP4 容器 / Download is not an MP4 container');
+    signal.throwIfAborted(); const directory = config.outputDir ?? path.join(os.homedir(), 'Documents', 'MyAgent', 'GeneratedVideos'); await fs.mkdir(directory, { recursive: true });
+    const localPath = path.join(directory, `minimax-video-${taskId.replace(/[^a-z0-9-]/gi, '_')}-${randomUUID().slice(0, 8)}.mp4`); temp = localPath + '.tmp';
+    await fs.writeFile(temp, bytes, { mode: 0o600 }); signal.throwIfAborted(); await fs.rename(temp, localPath); temp = undefined;
+    return { localPath, remoteUrl, taskId, endpoint };
+  } finally { clearTimeout(timeout); config.signal?.removeEventListener('abort', externalAbort); if (temp) await fs.unlink(temp).catch(() => {}); }
 }

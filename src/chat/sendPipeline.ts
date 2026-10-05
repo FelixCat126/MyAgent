@@ -1,3 +1,5 @@
+import { resolveSessionProjectContext, personalContextMessage, isExplicitMemoryCommand,tryHandleMemoryCommand, reviewMemoryCandidatesFromMessage } from '../features/personal/context';
+import { createSessionTask, saveSessionCheckpoint } from '../features/runtime/taskBridge';
 import type { FileInfo, Message, ModelConfig } from '../types';
 import { useChatStore } from '../store/chatStore';
 import { useWorkspaceStore } from '../store/workspaceStore';
@@ -16,11 +18,12 @@ export type InjectExtras = {
   /** 覆盖默认粗估（例如用当前 RAG maxChars） */
   ragMaxChars?: number;
   workspaceMaxChars?: number;
+  personalMaxChars?: number;
 };
 
 /** 从当前 store 推导发送时注入开销（桌面/远端共用） */
-export function resolveInjectExtras(opts: { webEnabled: boolean }): InjectExtras {
-  const root = useWorkspaceStore.getState().rootPath.trim();
+export function resolveInjectExtras(opts: { webEnabled: boolean; sessionId?: string; userText?: string }): InjectExtras {
+  const root = resolveSessionProjectContext(opts.sessionId).rootPath.trim();
   const maxChars = useWorkspaceStore.getState().maxChars;
   const { vectorRagEnabled, ragMaxInjectChars } = useKnowledgeStore.getState();
   return {
@@ -29,6 +32,7 @@ export function resolveInjectExtras(opts: { webEnabled: boolean }): InjectExtras
     workspaceLikely: Boolean(root),
     ragMaxChars: ragMaxInjectChars,
     workspaceMaxChars: maxChars,
+    personalMaxChars:personalContextMessage(opts.userText||'',opts.sessionId)?.content.length||0,
   };
 }
 
@@ -38,7 +42,7 @@ export function resolveInjectExtras(opts: { webEnabled: boolean }): InjectExtras
  */
 export function tryClaimSessionSend(sessionId: string): boolean {
   const chat = useChatStore.getState();
-  if (chat.isLoadingSession(sessionId) || chat.isCompressingSession(sessionId)) {
+  if (chat.loadingSessionIds.size > 0 || chat.compressingSessionIds.size > 0) {
     return false;
   }
   chat.setLoadingSession(sessionId);
@@ -104,14 +108,14 @@ export async function commitUserMessageAndReply(opts: {
   const sess = chat.sessions.find((s) => s.id === opts.sessionId);
   let priorMessages = getActiveMessages(sess?.messages ?? [], sess?.activeLeafId);
 
-  const ensured = await ensureContextBeforeSend({
+  const ensured = isExplicitMemoryCommand(opts.textContent) ? { priorMessages, didCompress: false } : await ensureContextBeforeSend({
     sessionId: opts.sessionId,
     priorMessages,
     draftInput: opts.textContent,
     model: opts.model,
     locale: opts.locale,
     summaryTitle: opts.summaryTitle,
-    injectExtras: resolveInjectExtras({ webEnabled: opts.webEnabled }),
+    injectExtras: resolveInjectExtras({ webEnabled: opts.webEnabled, sessionId: opts.sessionId, userText:opts.textContent }),
   });
   priorMessages = ensured.priorMessages;
   if (ensured.didCompress) opts.onDidCompress?.();
@@ -136,7 +140,15 @@ export async function commitUserMessageAndReply(opts: {
     model: opts.model.name,
   };
   chat.addMessage(opts.sessionId, userMessage);
+  await saveSessionCheckpoint(opts.sessionId, { userMessageId: userMessage.id, modelId: opts.model.id });
 
+  const memoryCommand = tryHandleMemoryCommand(opts.textContent,opts.sessionId,userMessage.id);
+  if(memoryCommand.handled){
+    chat.addMessage(opts.sessionId,{id:newId(),role:'assistant',content:memoryCommand.reply||'',timestamp:Date.now(),model:'本地记忆'});
+    chat.clearLoadingForSession(opts.sessionId);
+    return {priorMessages,userMessage,didCompress:ensured.didCompress,bypassed:true};
+  }
+  reviewMemoryCandidatesFromMessage(opts.sessionId,userMessage);
   const bypassed = addFullTextBypassIfNeeded({
     sessionId: opts.sessionId,
     modelName: opts.model.name,
@@ -144,7 +156,14 @@ export async function commitUserMessageAndReply(opts: {
     hasAttachments: Boolean(files?.length),
   });
   if (!bypassed) {
-    await opts.runModelReply(opts.sessionId, priorMessages, userMessage, opts.model);
+    await createSessionTask(opts.sessionId,userMessage);
+    if(!useChatStore.getState().isLoadingSession(opts.sessionId)) return {priorMessages,userMessage,didCompress:ensured.didCompress,bypassed:true};
+    try { await opts.runModelReply(opts.sessionId, priorMessages, userMessage, opts.model); }
+    catch(error){
+      chat.addMessage(opts.sessionId,{id:newId(),role:'assistant',content:error instanceof Error?error.message:String(error),meta:{taskError:error instanceof Error?error.message:String(error)},timestamp:Date.now(),model:opts.model.name});
+      chat.clearLoadingForSession(opts.sessionId);
+      throw error;
+    }
   }
   return {
     priorMessages,

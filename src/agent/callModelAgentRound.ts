@@ -1,3 +1,5 @@
+import { resolveModelConnection, hasCurrentCapability } from '../store/connectionStore';
+import type { NativeToolDefinition, NativeToolCall } from '../features/connections/api';
 import type { Locale } from '../i18n/types';
 import type { Message, ModelConfig } from '../types';
 import { canUseSseStream } from '../utils/chatModelPolicy';
@@ -9,11 +11,15 @@ export type AgentModelRoundHandlers = {
   onDelta?: (chunk: string) => void;
   onThinkingDelta?: (chunk: string) => void;
   shouldCancel?: () => boolean;
+  tools?: NativeToolDefinition[];
 };
 
 export type AgentModelRoundResult = {
   content: string;
   reasoning?: string;
+  toolCalls?: NativeToolCall[];
+  nativeTools?: boolean;
+  assistantBlocks?: Array<Record<string,unknown>>;
 };
 
 /** Agent 单轮调用强制低温，提高工具调用与摘录序列的确定性；与主聊天分离 */
@@ -31,6 +37,25 @@ export async function callModelAgentRound(
   handlers?: AgentModelRoundHandlers
 ): Promise<AgentModelRoundResult> {
   throwIfCancelled(handlers?.shouldCancel);
+  model = resolveModelConnection(model);
+  const tools = handlers?.tools ?? [];
+  if (tools.length && model.provider !== 'gemini' && hasCurrentCapability(model,'tools') !== false && window.electron.callAgentModel) {
+    const requestId = crypto.randomUUID();
+    const unsubscribe = window.electron.onMessage('model-agent-thinking', (event) => {
+      const payload = event as { requestId: string; text: string };
+      if (payload.requestId === requestId && !handlers?.shouldCancel?.()) handlers?.onThinkingDelta?.(payload.text);
+    });
+    const poll = window.setInterval(() => { if (handlers?.shouldCancel?.()) window.electron.abortAgentModel(requestId); }, 100);
+    try {
+      const result = await window.electron.callAgentModel({requestId, config:model, messages, tools, stream:canUseSseStream(model)});
+      throwIfCancelled(handlers?.shouldCancel);
+      return result;
+    } catch (error) {
+      throwIfCancelled(handlers?.shouldCancel);
+      if (!(error instanceof Error) || !error.message.includes('NATIVE_TOOLS_UNSUPPORTED')) throw error;
+      // Only protocol rejection falls back; authentication, timeouts and invalid context remain visible.
+    } finally { window.clearInterval(poll); unsubscribe(); }
+  }
 
   if (canUseSseStream(model)) {
     return new Promise((resolve, reject) => {

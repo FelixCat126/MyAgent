@@ -57,6 +57,7 @@ function needsCompression(
     workspaceLikely: extras?.workspaceLikely,
     ragMaxChars: extras?.ragMaxChars,
     workspaceMaxChars: extras?.workspaceMaxChars,
+    personalMaxChars:extras?.personalMaxChars,
   });
   const effectiveLimit = Math.max(soft - overhead, Math.floor(soft * 0.5));
   /**

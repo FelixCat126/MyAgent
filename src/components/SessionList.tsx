@@ -10,6 +10,7 @@ import { useImageLibraryOpener } from '../context/ImageLibraryContext';
 import FloatingParticleWindow from './FloatingParticleWindow';
 import { formatDateTime } from '../utils/formatDateTime';
 import { confirmDestructive } from '../store/confirmStore';
+import { showWarning } from '../store/errorStore';
 
 const SessionList: React.FC = () => {
   const { t, locale } = useI18n();
@@ -26,10 +27,7 @@ const SessionList: React.FC = () => {
   const [editTitle, setEditTitle] = useState('');
   const [search, setSearch] = useState('');
 
-  const filtered = useMemo(
-    () => filterSessionsByQuery(sessions, search),
-    [sessions, search]
-  );
+  const filtered = useMemo(() => filterSessionsByQuery(sessions, search), [sessions, search]);
 
   const exportAllJson = async () => {
     const raw = JSON.stringify(
@@ -46,8 +44,16 @@ const SessionList: React.FC = () => {
 
   const handleDelete = (e: React.MouseEvent, sessionId: string) => {
     e.stopPropagation();
+    const chat = useChatStore.getState();
+    if (chat.isLoadingSession(sessionId) || chat.isCompressingSession(sessionId)) {
+      showWarning('chat.anotherConversationBusy');
+      return;
+    }
     void confirmDestructive(t('sessionList.confirmDelete')).then((ok) => {
-      if (ok) deleteSession(sessionId);
+      if (!ok) return;
+      const latest = useChatStore.getState();
+      if (latest.isLoadingSession(sessionId) || latest.isCompressingSession(sessionId)) showWarning('chat.anotherConversationBusy');
+      else deleteSession(sessionId);
     });
   };
 
@@ -78,6 +84,10 @@ const SessionList: React.FC = () => {
         {particleFieldEnabled ? (
           <FloatingParticleWindow visible themeMode={resolvedTheme} />
         ) : null}
+        <div className="flex items-center justify-between px-1 py-1">
+          <h2 className="text-sm font-semibold text-stone-800 dark:text-slate-100">{locale === 'zh' ? '对话' : 'Conversations'}</h2>
+          <span className="text-xs tabular-nums text-stone-500 dark:text-slate-400">{sessions.length}</span>
+        </div>
         <div className="relative">
           <FiSearch
             className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-stone-600 dark:text-slate-300"
@@ -86,6 +96,7 @@ const SessionList: React.FC = () => {
           />
           <input
             type="search"
+            aria-label={locale === 'zh' ? '搜索对话' : 'Search conversations'}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder={t('sessionList.search')}
@@ -117,15 +128,19 @@ const SessionList: React.FC = () => {
           </button>
         </div>
       </div>
-      {sessions.length === 0 ? (
+      {filtered.length === 0 ? (
         <div className="flex-1 flex items-center justify-center text-stone-500 dark:text-slate-500 p-4">
-          <p className="text-sm font-medium">{t('sessionList.empty')}</p>
+          <div className="space-y-1.5 text-center">
+            <p className="text-sm font-medium">{search.trim() ? t('sessionList.noMatch') : t('sessionList.empty')}</p>
+            <p className="text-xs leading-relaxed">{search.trim() ? (locale === 'zh' ? '试试其他关键词。' : 'Try another keyword.') : (locale === 'zh' ? '点击下方「新对话」即可开始。' : 'Use New below to get started.')}</p>
+          </div>
         </div>
       ) : (
     <div className="flex-1 min-h-0 overflow-y-auto px-2 py-1 space-y-1">
       {filtered.map((session: ChatSession) => (
         <div
           key={session.id}
+          data-testid={`conversation-row-${session.id}`}
           onClick={() => {
             if (editingId !== session.id) switchSession(session.id);
           }}
@@ -228,9 +243,6 @@ const SessionList: React.FC = () => {
           </div>
         </div>
       ))}
-      {filtered.length === 0 && search.trim() && (
-        <p className="px-2 py-4 text-center text-xs text-stone-500 dark:text-slate-500">{t('sessionList.noMatch')}</p>
-      )}
     </div>
       )}
     </div>

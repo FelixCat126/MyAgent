@@ -3,6 +3,7 @@ import { pickSpeakVoice, speechLangFromUiLocale, waitForVoices } from './speechV
 export type SpeakTextOptions = {
   /** 播完后的尾静音（ms）；唤醒场景可设为 0 以尽快开麦 */
   tailSilenceMs?: number;
+  signal?: AbortSignal;
 };
 
 /**
@@ -17,7 +18,7 @@ export async function speakText(
 ): Promise<void> {
   const tailSilenceMs = opts?.tailSilenceMs ?? 180;
   const trimmed = text.trim();
-  if (!trimmed) return;
+  if (!trimmed || opts?.signal?.aborted) return;
 
   const syn = typeof window !== 'undefined' ? window.speechSynthesis : null;
   if (!syn) return;
@@ -27,7 +28,7 @@ export async function speakText(
   const lang = speechLangFromUiLocale(locale);
   const voices = await waitForVoices(syn);
   const pick = pickSpeakVoice(voices, lang);
-  if (!pick) return;
+  if (!pick || opts?.signal?.aborted) return;
 
   await new Promise<void>((resolve) => {
     const utter = new SpeechSynthesisUtterance(trimmed);
@@ -35,12 +36,16 @@ export async function speakText(
     if (pick.voice) utter.voice = pick.voice;
     utter.rate = 0.96;
     utter.pitch = 1;
+    let settled=false;
+    const watchdog=window.setTimeout(()=>{try{syn.cancel();}catch{}finish();},Math.max(10000,Math.min(60000,trimmed.length*300)));
     const finish = () => {
+      if(settled)return;settled=true;if(opts?.signal?.aborted){try{syn.cancel();}catch{}}window.clearTimeout(watchdog);opts?.signal?.removeEventListener('abort',finish);
       if (tailSilenceMs <= 0) resolve();
       else window.setTimeout(resolve, tailSilenceMs);
     };
     utter.onend = finish;
     utter.onerror = finish;
-    syn.speak(utter);
+    opts?.signal?.addEventListener('abort',finish,{once:true});
+    if(opts?.signal?.aborted)finish();else syn.speak(utter);
   });
 }

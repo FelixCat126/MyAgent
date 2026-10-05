@@ -25,6 +25,7 @@ const ALLOWED_EXT = new Set([
   '.docx',
   '.xlsx',
   '.xlsm',
+  '.pdf',
 ]);
 
 const MAX_DEPTH = 8;
@@ -55,6 +56,8 @@ export function toRelPosix(normRoot: string, absolutePath: string): string {
 async function listIndexedFileMetas(root: string): Promise<WorkspaceIndexedFileMeta[]> {
   const out: WorkspaceIndexedFileMeta[] = [];
   const normRoot = path.resolve(root);
+  const rootStat = await fs.stat(normRoot);
+  if (!rootStat.isDirectory()) throw new Error('资料路径不是目录');
 
   async function walk(dir: string, depth: number) {
     if (depth > MAX_DEPTH || out.length >= MAX_FILES) return;
@@ -78,11 +81,12 @@ async function listIndexedFileMetas(root: string): Promise<WorkspaceIndexedFileM
       try {
         const st = await fs.stat(full);
         if (st.size > MAX_INDEX_FILE_BYTES) continue;
-        if (!full.startsWith(normRoot)) continue;
+        const relative = path.relative(normRoot, full);
+        if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
         out.push({
           absolutePath: full,
           relPosix: toRelPosix(normRoot, full),
-          mtimeMs: Math.trunc(st.mtimeMs),
+          mtimeMs: st.mtimeMs,
           size: st.size,
         });
       } catch {

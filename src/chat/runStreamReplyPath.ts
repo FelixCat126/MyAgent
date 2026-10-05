@@ -10,6 +10,7 @@ import {
   createVoiceWakeReplyReader,
   fulfillDocumentArtifact,
   mergeAssistantFiles,
+  markAssistantTaskError,
   planAssistantImageIntent,
   resetStreamingUi,
   runImagePostProcess,
@@ -82,6 +83,7 @@ function runDocumentStreamReply(args: RunStreamReplyPathArgs): void {
       ui.updateMessage(sendSessionId, assistantId, {
         content: artifactBuffer || ui.t('chat.requestFailed') + m,
         exportHint: { ...exportHint, status: 'failed', error: m },
+        meta: { taskError:m },
       });
     },
     locale: ui.locale,
@@ -207,7 +209,7 @@ function runSseStreamReply(args: RunStreamReplyPathArgs): void {
       const injected = prior
         ? `${prior}\n\n---\n\n${ui.t('chat.streamInterrupted')}\n${m}`
         : `${ui.t('chat.streamInterrupted')}\n${m}`;
-      ui.updateMessage(sendSessionId, assistantId, { content: injected });
+      ui.updateMessage(sendSessionId, assistantId, { content: injected, meta: {taskError:m} });
     },
     locale: ui.locale,
     onEnd: () => {
@@ -288,20 +290,10 @@ function runSseStreamReply(args: RunStreamReplyPathArgs): void {
             /** 视频生成：客户端代理 + 后台模式。
              *  视频生成耗时 30s~几分钟，绝不阻塞消息收尾——消息先正常显示，
              *  视频在后台生成，完成后由 videoGenAssist 直接 updateMessage 追加附件。 */
-            void runVideoPostProcess({
-              ui,
-              sendSessionId,
-              assistantId,
-              rawText: nextContent,
-              userMessage,
-              activeModel,
-              historyBeforeUser,
-              currentMsg: msg,
-            }).catch((e) => {
-              console.warn('[videoGenAssist] 后台视频生成失败', e);
-            });
-            if (!nextContent.trim() && !nextFiles?.length && reasoningText) {
-              nextContent = ui.t('chat.emptyAfterReasoning');
+            const mergedFiles = mergeAssistantFiles(sendSessionId, assistantId, nextFiles as FileInfo[] | undefined);
+            if (!aborted && !nextContent.trim() && !mergedFiles?.length) {
+              nextContent = ui.t(reasoningText ? 'chat.emptyAfterReasoning' : 'chat.fallbackReply');
+              markAssistantTaskError(ui, sendSessionId, assistantId, '模型返回空回答');
             }
 
             /** 内容驱动导出：用户没明说"下载"时，按回复内容反推格式（文档→docx/pdf，表格→xlsx） */
@@ -311,10 +303,11 @@ function runSseStreamReply(args: RunStreamReplyPathArgs): void {
 
             ui.updateMessage(sendSessionId, assistantId, {
               content: nextContent,
-              files: mergeAssistantFiles(sendSessionId, assistantId, nextFiles as FileInfo[] | undefined),
+              files: mergedFiles,
               ...(effectiveExportHint ? { exportHint: effectiveExportHint } : {}),
               imageGenProgress: undefined,
             });
+            if (!aborted && !replyRunWasCancelled(sendSessionId, userMessage.id)) void runVideoPostProcess({ ui, sendSessionId, assistantId, rawText: nextContent, userMessage, activeModel, historyBeforeUser, currentMsg: useChatStore.getState().sessions.find(s => s.id === sendSessionId)?.messages.find(m => m.id === assistantId) }).catch(error => console.warn('[videoGenAssist]', error));
           }
         );
       })();

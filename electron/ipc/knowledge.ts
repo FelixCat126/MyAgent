@@ -89,8 +89,9 @@ ipcMain.handle(
   }
 );
 
-ipcMain.handle('knowledge-index-status', async () => {
-  const idx = await readVectorIndex();
+ipcMain.handle('knowledge-index-status', async (_event, arg?: { root?: string }) => {
+  const rawRoot = typeof arg?.root === 'string' ? arg.root.trim() : undefined;
+  const idx = arg && !rawRoot ? null : await readVectorIndex(rawRoot);
   if (!idx) {
     return {
       ok: true as const,

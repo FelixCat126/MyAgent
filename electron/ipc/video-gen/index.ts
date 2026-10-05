@@ -1,116 +1,69 @@
-/**
- * 视频生成 IPC：api:generate-video 接 minimaxVideoAdapter（异步任务 + 轮询 + 落盘）。
- * v1 切片只支持 minimax provider；后续可扩 runway/kling。
- */
-import { ipcMain } from 'electron';
-import fs from 'fs/promises';
+import { app, ipcMain, safeStorage } from 'electron';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { generateMiniMaxVideo, MiniMaxVideoError } from './minimaxVideoAdapter';
 import type { ModelConfig } from '../../../src/types';
-
-export interface GenerateVideoParams {
-  /** 视频生成模型 ID（对应 model-store 中的 model.id），渲染端从 modelStore 取出 config 后传入 */
-  modelId: string;
-  prompt: string;
-  /** 透传 videoGeneratorConfig（避免让 renderer 读 model-store） */
-  videoGeneratorConfig?: ModelConfig['videoGeneratorConfig'];
-  /** 流式事件 requestId（renderer 端发起的任务 ID，用于回调关联） */
-  streamRequestId?: string;
+import type { RuntimeTask } from '../../../src/features/runtime/api';
+import { getRuntimeLedger, notifyRuntimeChanged, registerRuntimeTaskCanceller, registerRuntimeTaskExecutor } from '../../workbench-runtime';
+import { isAgentPathAllowed } from '../../utils/agentPathScope';
+export interface GenerateVideoParams { modelId: string; prompt: string; videoGeneratorConfig?: ModelConfig['videoGeneratorConfig']; streamRequestId?: string }
+interface VideoCheckpoint {
+  version: 1; config: Omit<NonNullable<ModelConfig['videoGeneratorConfig']>, 'apiKey'>; sealedApiKey: string; prompt: string; modelId: string;
+  submissionStarted?: boolean; remoteJobId?: string; endpoint?: string; localPath?: string; remoteUrl?: string;
 }
-
-interface VideoProgressEvent {
-  requestId?: string;
-  status: 'started' | 'polling' | 'completed' | 'failed';
-  message?: string;
-  localPath?: string;
-  url?: string;
-  /** 单文件场景；后续多文件模型可扩展 */
+const controllers = new Map<string, AbortController>(); const requestTasks = new Map<string, string>();
+function protectKey(key: string): string { if (!safeStorage.isEncryptionAvailable()) throw new Error('系统密钥存储不可用，无法安全保存视频任务 / Secure credential storage is unavailable'); return safeStorage.encryptString(key).toString('base64'); }
+function revealKey(key: string): string { try { return safeStorage.decryptString(Buffer.from(key, 'base64')); } catch { throw new Error('视频任务密钥无法在本机解密，请重新配置后创建新任务 / Video credential cannot be decrypted on this machine'); } }
+async function executeVideoTask(task: RuntimeTask, emit?: (p: Record<string, unknown>) => void) {
+  const ledger = await getRuntimeLedger(); const checkpoint = task.checkpoint as unknown as VideoCheckpoint;
+  if (!checkpoint || checkpoint.version !== 1 || !checkpoint.config?.model || !checkpoint.sealedApiKey) throw new Error('视频恢复数据不完整 / Video checkpoint is incomplete');
+  if (controllers.has(task.id)) throw new Error('视频任务正在运行 / Video task already running');
+  const controller = new AbortController(); controllers.set(task.id, controller);
+  const checkRunning = () => { if (controller.signal.aborted || ledger.task(task.id).status === 'cancelled') { controller.abort(new Error('视频等待已取消 / Video wait cancelled')); throw controller.signal.reason; } };
+  try {
+    checkRunning();
+    if (checkpoint.localPath && await fs.stat(checkpoint.localPath).then((s) => s.isFile() && s.size > 12).catch(() => false)) { const result = { localPath: checkpoint.localPath, remoteUrl: checkpoint.remoteUrl }; await ledger.finish(task.id, result); notifyRuntimeChanged(); return result; }
+    if (checkpoint.submissionStarted && !checkpoint.remoteJobId) throw new Error('之前提交结果不确定；为避免重复付费不会自动重发，请先在厂商平台核对 / Prior submission outcome is unknown; automatic resubmission is disabled');
+    if (!checkpoint.remoteJobId) { checkpoint.submissionStarted = true; await ledger.checkpoint(task.id, { ...checkpoint }); await ledger.step({ taskId: task.id, key: 'submit', title: '提交视频任务 / Submit video', status: 'running' }); notifyRuntimeChanged(); }
+    checkRunning();
+    const result = await generateMiniMaxVideo({ ...checkpoint.config, apiKey: revealKey(checkpoint.sealedApiKey), prompt: checkpoint.prompt, endpoint: checkpoint.endpoint ?? checkpoint.config.endpoint, existingTaskId: checkpoint.remoteJobId, signal: controller.signal, outputDir: path.join(app.getPath('documents'), 'MyAgent', 'GeneratedVideos'),
+      onSubmitted: async (remoteJobId, endpoint) => { checkpoint.remoteJobId = remoteJobId; checkpoint.endpoint = endpoint; await ledger.recoveryCheckpoint(task.id, { ...checkpoint }); await ledger.step({ taskId: task.id, key: 'submit', title: '提交视频任务 / Submit video', status: 'completed', result: { remoteJobId } }); notifyRuntimeChanged(); },
+      onProgress: status => { emit?.({ status: 'polling', message: status, taskId: task.id }); },
+    });
+    checkRunning(); checkpoint.localPath = result.localPath; checkpoint.remoteUrl = result.remoteUrl; await ledger.checkpoint(task.id, { ...checkpoint });
+    await ledger.step({ taskId: task.id, key: 'download', title: '下载视频 / Download video', status: 'completed', result: { path: result.localPath } });
+    checkRunning(); await ledger.finish(task.id, { localPath: result.localPath, url: result.remoteUrl }); checkRunning(); notifyRuntimeChanged(); return result;
+  } catch (e) { if (controller.signal.aborted) await ledger.cancel(task.id); else await ledger.finish(task.id, undefined, e instanceof Error ? e.message : String(e)); notifyRuntimeChanged(); throw e; }
+  finally { controllers.delete(task.id); }
 }
-
-/**
- * 主 IPC：生成视频。返回本地路径 + 远端 URL；中间状态经 video-generation-progress 推送。
- */
+registerRuntimeTaskExecutor('video-generation', async task => { await executeVideoTask(task); });
+registerRuntimeTaskCanceller('video-generation', task => { controllers.get(task.id)?.abort(new Error('已停止本机视频等待 / Local video wait stopped')); });
 ipcMain.handle('api:generate-video', async (event, params: GenerateVideoParams) => {
-  const { videoGeneratorConfig, streamRequestId, prompt } = params || {};
-  if (!prompt || !String(prompt).trim()) {
-    return { ok: false as const, error: 'prompt 不能为空' };
-  }
-  const cfg = videoGeneratorConfig;
-  if (!cfg || !cfg.provider || !cfg.model) {
-    return { ok: false as const, error: '未配置视频生成工具：请在设置中添加视频模型' };
-  }
-
-  const emit = (payload: VideoProgressEvent) => {
-    if (!streamRequestId) return;
-    event.sender.send('video-generation-progress', payload);
-  };
-
+  const cfg = params?.videoGeneratorConfig; const requestKey = `${event.sender.id}:${params?.streamRequestId}`;
+  if (requestTasks.has(requestKey)) return { ok: false, error: '视频任务正在运行 / Video task already running' };
+  if (!params?.prompt?.trim() || !cfg?.model || cfg.provider !== 'minimax' || !cfg.apiKey) return { ok: false, error: '请配置可用的 MiniMax 视频模型、密钥和描述 / Configure a supported MiniMax video model and key' };
+  const emit = (payload: Record<string, unknown>) => { if (params.streamRequestId && !event.sender.isDestroyed()) event.sender.send('video-generation-progress', { requestId: params.streamRequestId, ...payload }); };
   try {
-    emit({ requestId: streamRequestId, status: 'started' });
-    if (cfg.provider === 'minimax') {
-      if (!cfg.apiKey) {
-        return { ok: false as const, error: 'MiniMax 视频模型未配置 API Key' };
-      }
-      emit({ requestId: streamRequestId, status: 'polling', message: '提交任务' });
-      const result = await generateMiniMaxVideo({
-        apiKey: cfg.apiKey,
-        endpoint: cfg.endpoint,
-        model: cfg.model,
-        prompt: String(prompt).trim(),
-        resolution: cfg.resolution,
-        duration: cfg.duration,
-      });
-      emit({
-        requestId: streamRequestId,
-        status: 'completed',
-        localPath: result.localPath,
-        url: result.remoteUrl,
-      });
-      return { ok: true as const, localPath: result.localPath, url: result.remoteUrl };
-    }
-    return { ok: false as const, error: `视频 provider 「${cfg.provider}」未实现（v1 只支持 minimax）` };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (e instanceof MiniMaxVideoError) {
-      return { ok: false as const, error: msg, code: e.code };
-    }
-    return { ok: false as const, error: msg };
-  }
+    const ledger = await getRuntimeLedger(); const { apiKey, ...publicConfig } = cfg;
+    const checkpoint: VideoCheckpoint = { version: 1, config: publicConfig, sealedApiKey: protectKey(apiKey), prompt: params.prompt.trim(), modelId: params.modelId };
+    const task = await ledger.create({ title: `视频 / Video: ${params.prompt.slice(0, 80)}`, kind: 'video-generation', prompt: params.prompt, checkpoint: { ...checkpoint } });
+    requestTasks.set(requestKey, task.id); await ledger.start(task.id); notifyRuntimeChanged(); emit({ status: 'started', taskId: task.id });
+    const result = await executeVideoTask(task, emit); emit({ status: 'completed', taskId: task.id, localPath: result.localPath, url: result.remoteUrl });
+    return { ok: true, taskId: task.id, localPath: result.localPath, url: result.remoteUrl };
+  } catch (e) { const error = e instanceof Error ? e.message : String(e); emit({ status: 'failed', message: error }); return { ok: false, error, ...(e instanceof MiniMaxVideoError ? { code: e.code } : {}) }; }
+  finally { requestTasks.delete(requestKey); }
 });
-
-/**
- * 读视频文件转 data URL（renderer 加载 local-file:// 受限，用 base64 即可显示）。
- * 限制大小：超过 50MB 直接拒，提示用户改用外部播放器。
- */
-ipcMain.handle('api:read-video', async (_e, filePath: string) => {
-  const p = String(filePath || '').trim();
-  if (!p) return { ok: false as const, error: '路径为空' };
-  try {
-    const st = await fs.stat(p);
-    if (st.size > 50 * 1024 * 1024) {
-      return { ok: false as const, error: `文件过大（${Math.round(st.size / 1024 / 1024)}MB > 50MB），请改用外部播放器` };
-    }
-    const buf = await fs.readFile(p);
-    return { ok: true as const, dataUrl: `data:video/mp4;base64,${buf.toString('base64')}` };
-  } catch (e) {
-    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
-  }
+ipcMain.handle('api:cancel-video', async (event, requestId: string) => {
+  const id = requestTasks.get(`${event.sender.id}:${requestId}`); if (id) { controllers.get(id)?.abort(new Error('已停止本机等待；远端任务可能继续 / Local wait stopped; remote task may continue')); const ledger = await getRuntimeLedger(); await ledger.cancel(id); notifyRuntimeChanged(); }
+  return { ok: true, canceled: true };
 });
-
-/** 用户主动取消：中止当前 minimax 任务（保留扩展点；v1 取消主要靠 renderer 端忽略结果） */
-ipcMain.handle('api:cancel-video', async (_e, taskId: string) => {
-  void taskId;
-  return { ok: true as const, canceled: true as const };
+async function localVideoPath(raw: string) {
+  const real = await fs.realpath(String(raw || '').trim()); if (!isAgentPathAllowed(real, [])) throw new Error('禁止读取系统路径 / System path denied'); return real;
+}
+ipcMain.handle('api:read-video', async (_event, raw: string) => {
+  try { const file = await localVideoPath(raw); const stat = await fs.stat(file); if (!stat.isFile() || stat.size > 50 * 1024 * 1024) throw new Error('视频超过 50MB，请使用外部播放器 / Video exceeds 50MB; open in an external player'); const bytes = await fs.readFile(file); if (bytes.toString('ascii', 4, 8) !== 'ftyp') throw new Error('不是有效 MP4 / Not a valid MP4'); return { ok: true, dataUrl: `data:video/mp4;base64,${bytes.toString('base64')}` }; }
+  catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e) }; }
 });
-
-/** 拿视频文件大小（视频附件注入 message.files 时需要 size 字段） */
-ipcMain.handle('app:get-local-file-size', async (_e, filePath: string) => {
-  const p = String(filePath || '').trim();
-  if (!p) return { ok: false as const, error: '路径为空' };
-  try {
-    const { stat } = await import('fs/promises');
-    const s = await stat(p);
-    return { ok: true as const, size: s.size };
-  } catch (e) {
-    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
-  }
+ipcMain.handle('app:get-local-file-size', async (_event, raw: string) => {
+  try { const file = await localVideoPath(raw); return { ok: true, size: (await fs.stat(file)).size }; } catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e) }; }
 });

@@ -6,7 +6,7 @@ import {
   stripRedundantAssistantImagePromptBlocks,
   stripGenerateImageArtifactsForDisplay,
 } from '../utils/toolCalls';
-import { inferImageCountFromText, imageRequestIsDiscussion, type ImageIntent } from '../utils/imageIntentPlanner';
+import { inferImageCountFromText, imageRequestIsDiscussion, imageRequestIsDataVisualization, type ImageIntent } from '../utils/imageIntentPlanner';
 import { useModelStore } from '../store/modelStore';
 
 async function yieldToMain(): Promise<void> {
@@ -26,6 +26,13 @@ export type ImageGenProgressHooks = {
     total: number;
   }) => void;
   onDone?: () => void;
+};
+
+export type AssistantPostProcessResult = {
+  content: string;
+  files?: FileInfo[];
+  /** Keep execution failures distinct from readable assistant text. */
+  taskError?: string;
 };
 
 /**
@@ -192,8 +199,9 @@ export async function postProcessAssistantContent(
   imageIndexBase: number,
   setInlineImageIndex: React.Dispatch<React.SetStateAction<number>>,
   opts?: { imageGenHooks?: ImageGenProgressHooks; referenceImages?: string[]; userPromptContext?: string; plannedIntent?: ImageIntent; requestId?: string; shouldCancel?: () => boolean }
-): Promise<{ content: string; files?: FileInfo[] }> {
+): Promise<AssistantPostProcessResult> {
   let text = responseContent;
+  const failures: string[] = [];
 
   const launches = /打开|启动|运行|\b(?:open|launch|start)\b/i.test(opts?.userPromptContext || '') ? extractLaunchAppNames(text) : [];
   for (const { name, raw } of launches) {
@@ -209,9 +217,9 @@ export async function postProcessAssistantContent(
     /** 生图模型独立于对话模型：优先用户选定的，否则自动找第一个可用 */
     return useModelStore.getState().getEffectiveImageGenModel();
   };
-  if (opts?.plannedIntent?.shouldGenerate === false || opts?.shouldCancel?.() || imageRequestIsDiscussion(opts?.userPromptContext || '')) return { content: stripGenerateImageArtifactsForDisplay(text) };
+  if (opts?.plannedIntent?.shouldGenerate === false || opts?.shouldCancel?.() || imageRequestIsDiscussion(opts?.userPromptContext || '') || imageRequestIsDataVisualization(opts?.userPromptContext || '')) return { content: stripGenerateImageArtifactsForDisplay(text) };
   const imgGenModel = resolveImageGeneratorModel();
-  if (!imgGenModel && opts?.plannedIntent?.shouldGenerate) return { content: '请先在设置中添加图片服务，然后重试。' };
+  if (!imgGenModel && opts?.plannedIntent?.shouldGenerate) return { content: '请先在设置中添加图片服务，然后重试。', taskError: '未配置图片服务' };
   const hooks = opts?.imageGenHooks;
   const allowBarePromptJson =
     Boolean(opts?.plannedIntent?.shouldGenerate) ||
@@ -229,6 +237,7 @@ export async function postProcessAssistantContent(
   for (const match of imageCalls) {
     const { prompt, width, height, count, raw } = match;
     if (!imgGenModel?.imageGeneratorConfig) {
+      failures.push('未配置图片服务');
       text = text.replace(
         raw,
         `\n*[系统提示: 未配置生图——请在「设置 → 模型配置」中添加模型，勾选「生图工具」并填写 CLI 可执行文件或 HTTP 生图接口]*\n`
@@ -245,8 +254,8 @@ export async function postProcessAssistantContent(
     (toGenerate.length === 1 ? userCount : undefined) ?? g.count ?? 1
   );
   const expectedTotal = expectedCounts.reduce((sum, n) => sum + Math.max(1, n), 0);
-  if (userCount && toGenerate.length > 1 && expectedTotal !== userCount) return { content: `图片计划数量与要求的 ${userCount} 张不一致，尚未执行，请重试。` };
-  if (expectedTotal > 12) return { content: '单次最多生成 12 张图片，请减少数量或分批生成。' };
+  if (userCount && toGenerate.length > 1 && expectedTotal !== userCount) return { content: `图片计划数量与要求的 ${userCount} 张不一致，尚未执行，请重试。`, taskError: '图片计划数量与要求不一致' };
+  if (expectedTotal > 12) return { content: '单次最多生成 12 张图片，请减少数量或分批生成。', taskError: '图片计划超出单次 12 张上限' };
   const generatedFiles: Array<{ path: string; url: string; width: number; height: number; size?: number }> = [];
   if (toGenerate.length > 0) {
     hooks?.onBegin?.({ total: expectedTotal });
@@ -311,6 +320,7 @@ export async function postProcessAssistantContent(
       } catch (e: unknown) {
         if (opts?.shouldCancel?.()) break;
         const msg = formatImageGenUserError(e instanceof Error ? e.message : String(e));
+        failures.push(msg);
         text = text.replace(raw, `\n*[系统提示: 图片生成失败 - ${msg}]*\n`);
       }
       await yieldToMain();
@@ -322,7 +332,13 @@ export async function postProcessAssistantContent(
   }
 
   if (opts?.shouldCancel?.()) text = '已停止生成，已完成的图片已保留。';
-  else if (generatedFiles.length > 0 && generatedFiles.length < expectedTotal) text += `\n\n已完成 ${generatedFiles.length}/${expectedTotal} 张图片，未完成部分可重新生成。`;
+  else if (generatedFiles.length < expectedTotal) {
+    const incomplete = `图片仅完成 ${generatedFiles.length}/${expectedTotal} 张`;
+    if (!failures.length) failures.push(incomplete);
+    text += generatedFiles.length > 0
+      ? `\n\n已完成 ${generatedFiles.length}/${expectedTotal} 张图片，未完成部分可重新生成。`
+      : failures.length === 1 && failures[0] === incomplete ? `\n\n图片生成失败：未收到有效图片（0/${expectedTotal}）。` : '';
+  }
 
   let files: FileInfo[] | undefined;
   if (generatedFiles.length > 0) {
@@ -351,5 +367,5 @@ export async function postProcessAssistantContent(
     text = '';
   }
 
-  return { content: text, files };
+  return { content: text, files, ...(!opts?.shouldCancel?.() && failures.length ? { taskError: [...new Set(failures)].join('；') } : {}) };
 }

@@ -1,3 +1,4 @@
+import { resolveModelConnection, hasCurrentCapability } from '../store/connectionStore';
 /**
  * 发送前按路由规则挑选模型；未命中则回退 activeModel。
  */
@@ -37,7 +38,8 @@ export function resolveSendModel(opts: {
     averageMessageLen: msgs.length ? totalLen / msgs.length : 0,
     lastRole: 'user',
   };
-  const picked = pickModelId(rules, ctx, opts.models);
-  if (!picked) return opts.activeModel;
-  return opts.models.find((m) => m.id === picked) ?? opts.activeModel;
+  const available=opts.models.filter(model=>hasCurrentCapability(model,'chat')!==false&&(!opts.hasImages||hasCurrentCapability(model,'vision')!==false));
+  const picked = pickModelId(rules, ctx, available);
+  if (!picked) return resolveModelConnection(opts.activeModel);
+  return resolveModelConnection(opts.models.find((m) => m.id === picked) ?? opts.activeModel);
 }

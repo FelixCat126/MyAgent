@@ -1,3 +1,4 @@
+import { useSettingStore } from '../store/settingStore';
 import { generateDocumentArtifacts } from './documentArtifacts';
 import { imageTaskWasCancelled, replyRunWasCancelled } from './imageTaskState';
 import { resolveImageReferences } from '../utils/imageReferences';
@@ -5,7 +6,7 @@ import type { FileInfo, Message, ModelConfig } from '../types';
 import { useChatStore } from '../store/chatStore';
 import { StreamingSpeechReader } from '../utils/streamingSpeech';
 import { extractGenerateImageCalls, stripGenerateImageArtifactsForDisplay } from '../utils/toolCalls';
-import { planImageIntent, type ImageIntent } from '../utils/imageIntentPlanner';
+import { independentCreativeImagePrompt, planImageIntent, type ImageIntent } from '../utils/imageIntentPlanner';
 import {
   documentArtifactBaseName,
   documentArtifactBaseNameFromContent,
@@ -73,10 +74,12 @@ export function mergeAssistantFiles(
   return merged.length ? merged : undefined;
 }
 
-/**
- * 自适应流式渲染：小缓冲稳定推进，大缓冲自动追赶。
- * 同一帧只写一次 store，避免 Markdown 频繁重绘；结束时可自然排空而非整段闪现。
- */
+export function markAssistantTaskError(ui: RunModelReplyUi, sessionId: string, assistantId: string, error: string): void {
+  const assistant = useChatStore.getState().sessions.find(s => s.id === sessionId)?.messages.find(m => m.id === assistantId);
+  ui.updateMessage(sessionId, assistantId, { meta: { ...assistant?.meta, taskError: error } });
+}
+
+/** 按墙钟节拍逐字显示，渲染较慢时有限追赶，避免定时器和渲染耗时叠加。 */
 
 export interface StreamLifecycleOptions {
   /** 流式开始前调用；通常用于 setIsStreaming(true) + setStreamingTargetAssistantId(id) */
@@ -132,17 +135,21 @@ export function createAnimStream(
   sendSessionId: string,
   assistantId: string,
   appendFn: (sessionId: string, msgId: string, chunk: string) => void,
-  options: { pace?: 'answer' | 'reasoning'; startPaused?: boolean } = {}
+  options: { pace?: 'answer' | 'reasoning' | 'completed'; startPaused?: boolean } = {}
 ) {
   let buffer = '';
   let timerId: ReturnType<typeof setTimeout> | null = null;
   let finishPromise: Promise<void> | null = null;
   let resolveFinish: (() => void) | null = null;
   let paused = Boolean(options.startPaused);
+  let cancelled = false;
+  let nextDueAt: number | null = null;
 
-  const isReasoning = options.pace === 'reasoning';
-  /** 正文约 50 个中文视觉单位/秒；思考约 100 个/秒，仍逐字推进。 */
-  const BASE_TICK_MS = isReasoning ? 10 : 20;
+  const isFastPace = options.pace === 'reasoning' || options.pace === 'completed';
+  /** 实时正文约 50 字/秒；思考及已完成的 Agent 答案约 100 字/秒，仍逐字推进。 */
+  const UNIT_MS = isFastPace ? 10 : 20;
+  /** 掉帧后每次最多补 2 字，避免恢复时整段跳出。 */
+  const MAX_VISUAL_UNITS_PER_TICK = 2;
 
   const visualCost = (grapheme: string): number => {
     if (/^\s$/u.test(grapheme)) return 0.3;
@@ -153,9 +160,7 @@ export function createAnimStream(
     return 1;
   };
 
-  const takeComfortableChunk = (): string => {
-    /** 固定视觉预算，不因模型返回过快或缓冲积压而突然提速。 */
-    const budget = 1;
+  const takeComfortableChunk = (budget: number): { chunk: string; cost: number } => {
     let spent = 0;
     let consumedUnits = 0;
     let consumedCodeUnits = 0;
@@ -170,20 +175,7 @@ export function createAnimStream(
     }
     const chunk = buffer.slice(0, consumedCodeUnits);
     buffer = buffer.slice(consumedCodeUnits);
-    return chunk;
-  };
-
-  const nextDelayAfter = (chunk: string): number => {
-    /** 思考过程优先快速连续输出，不在标点处额外等待。 */
-    if (isReasoning) return BASE_TICK_MS;
-    const units = Array.from(chunk);
-    const tail = units[units.length - 1] ?? '';
-    if (tail === '\n') return BASE_TICK_MS + 70;
-    if (/[。！？]/u.test(tail)) return BASE_TICK_MS + 75;
-    if (/[，、；：]/u.test(tail)) return BASE_TICK_MS + 24;
-    if (/[.!?]/u.test(tail) && (!buffer || /^\s/u.test(buffer))) return BASE_TICK_MS + 60;
-    if (/[,;:]/u.test(tail) && /^\s/u.test(buffer)) return BASE_TICK_MS + 20;
-    return BASE_TICK_MS;
+    return { chunk, cost: spent };
   };
 
   const settleFinish = () => {
@@ -199,24 +191,39 @@ export function createAnimStream(
     timerId = null;
   };
 
+  const schedule = () => {
+    if (paused || timerId !== null || !buffer) return;
+    const now = performance.now();
+    if (nextDueAt === null) nextDueAt = now + UNIT_MS;
+    /** 追赶时给浏览器留出绘制机会；正常时按绝对时间抵消渲染耗时。 */
+    const delayMs = nextDueAt <= now
+      ? (isFastPace ? 5 : 12)
+      : nextDueAt - now;
+    timerId = setTimeout(drain, delayMs);
+  };
+
   const drain = () => {
     timerId = null;
     if (!buffer) {
+      nextDueAt = null;
       settleFinish();
       return;
     }
-    const chunk = takeComfortableChunk();
+    const now = performance.now();
+    const dueAt = nextDueAt ?? now;
+    const visualBudget = Math.min(
+      MAX_VISUAL_UNITS_PER_TICK,
+      1 + Math.max(0, now - dueAt) / UNIT_MS,
+    );
+    const { chunk, cost } = takeComfortableChunk(visualBudget);
+    nextDueAt = dueAt + cost * UNIT_MS;
     appendFn(sendSessionId, assistantId, chunk);
     if (buffer) {
-      schedule(nextDelayAfter(chunk));
+      schedule();
     } else {
+      nextDueAt = null;
       settleFinish();
     }
-  };
-
-  const schedule = (delayMs = BASE_TICK_MS) => {
-    if (paused || timerId !== null) return;
-    timerId = setTimeout(drain, delayMs);
   };
 
   const flush = () => {
@@ -224,17 +231,25 @@ export function createAnimStream(
     if (!buffer) return;
     const chunk = buffer;
     buffer = '';
+    nextDueAt = null;
     appendFn(sendSessionId, assistantId, chunk);
     settleFinish();
   };
 
   return {
     push(d: string) {
-      if (!d) return;
+      if (!d || cancelled) return;
       buffer += d;
       schedule();
     },
     flush,
+    cancel() {
+      cancelled = true;
+      cancelScheduled();
+      buffer = '';
+      nextDueAt = null;
+      settleFinish();
+    },
     resume() {
       if (!paused) return;
       paused = false;
@@ -340,6 +355,7 @@ export function createVoiceWakeReplyReader(ui: RunModelReplyUi): StreamingSpeech
   ui.speechReaderRef.current?.cancel();
   const reader = new StreamingSpeechReader(ui.locale, {
     onSpeakingChange: ui.setVoiceReplySpeaking,
+    mode: useSettingStore.getState().voiceReplyMode,
   });
   ui.speechReaderRef.current = reader;
   return reader;
@@ -382,33 +398,54 @@ export async function runImagePostProcess(opts: {
   userMessage: Message;
   activeModel: ModelConfig;
   historyBeforeUser: Message[];
+  /** Actual files returned by this turn's tools, not uploaded reference images. */
+  generatedFiles?: FileInfo[];
   /** 已预计算的意图；缺省时内部计算 */
   plannedIntent?: ImageIntent;
-}): Promise<{ content: string; files: FileInfo[] | undefined; plannedIntent: ImageIntent }> {
+}): Promise<{ content: string; files: FileInfo[] | undefined; plannedIntent: ImageIntent; taskError?: string }> {
   const { ui, sendSessionId, assistantId, rawText, userMessage, activeModel, historyBeforeUser } = opts;
-  const plannedIntent =
+  let plannedIntent =
     opts.plannedIntent ?? planAssistantImageIntent(userMessage, historyBeforeUser, rawText);
+  const hasGeneratedChart = opts.generatedFiles?.some(file => file.type === 'image/svg+xml' && /(?:chart|plot|图表)/i.test(file.name));
+  let imageWorkText = rawText;
+  let completedChartCreativePrompt: string | undefined;
+  if (hasGeneratedChart && !extractGenerateImageCalls(rawText).length) {
+    completedChartCreativePrompt = independentCreativeImagePrompt(userMessage.content);
+    if (completedChartCreativePrompt) {
+      plannedIntent = { ...plannedIntent, shouldGenerate: true, prompt: completedChartCreativePrompt };
+      // A real completed chart plus an explicit separate creative request is an
+      // execution boundary; ordinary image keywords or explanations never use this fallback.
+      imageWorkText += '\n' + JSON.stringify({ myagent_tool: 'generate_image', prompt: completedChartCreativePrompt });
+    } else plannedIntent = { ...plannedIntent, shouldGenerate: false };
+  }
   const imageGenHooks = makeImageGenHooks({
     assistantId,
     syncImgGenUi: (v) => { if (!imageTaskWasCancelled(assistantId)) syncImgGenUi(ui, sendSessionId, v); },
     imageGenCancelledRef: ui.imageGenCancelledRef,
     onImage: (image) => { if (!imageTaskWasCancelled(assistantId)) appendGeneratedImageToAssistant(ui, sendSessionId, assistantId, image); },
   });
-  const { content, files } = await postProcessAssistantContent(
-    rawText,
-    activeModel,
-    ui.inlineImageIndexRef.current,
-    ui.setInlineImageIndex,
-    {
-      imageGenHooks,
-      requestId: assistantId,
-      referenceImages: plannedIntent.shouldGenerate ? resolveImageReferences(userMessage, historyBeforeUser) : [],
-      userPromptContext: userMessage.content,
-      plannedIntent,
-      shouldCancel: () => imageTaskWasCancelled(assistantId) || replyRunWasCancelled(sendSessionId, userMessage.id),
-    }
-  );
-  return { content, files, plannedIntent };
+  let result: Awaited<ReturnType<typeof postProcessAssistantContent>>;
+  try {
+    result = await postProcessAssistantContent(
+      imageWorkText,
+      activeModel,
+      ui.inlineImageIndexRef.current,
+      ui.setInlineImageIndex,
+      {
+        imageGenHooks,
+        requestId: assistantId,
+        referenceImages: plannedIntent.shouldGenerate ? resolveImageReferences(userMessage, historyBeforeUser) : [],
+        userPromptContext: completedChartCreativePrompt ?? userMessage.content,
+        plannedIntent,
+        shouldCancel: () => imageTaskWasCancelled(assistantId) || replyRunWasCancelled(sendSessionId, userMessage.id),
+      }
+    );
+  } catch (error) {
+    markAssistantTaskError(ui, sendSessionId, assistantId, error instanceof Error ? error.message : String(error));
+    throw error;
+  }
+  if (result.taskError) markAssistantTaskError(ui, sendSessionId, assistantId, result.taskError);
+  return { ...result, files: result.files, plannedIntent };
 }
 
 /** 文档产物生成：strip → createDocumentArtifactsFromMarkdown → ready/failed 更新 */

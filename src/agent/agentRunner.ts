@@ -1,3 +1,8 @@
+import { executeDurableToolBatch } from './tools/durableTools';
+import { sessionTask, saveSessionCheckpoint } from '../features/runtime/taskBridge';
+import { availableNativeTools, nativeCallToAgentCall, setMcpToolDescriptions } from './toolRegistry';
+import { resolveSessionProjectContext } from '../features/personal/context';
+import { refreshRuntimeContext } from '../utils/runtimeContext';
 import type { Locale } from '../i18n/types';
 import type { FileInfo, KnowledgeEmbedConfig, Message, ModelConfig } from '../types';
 import { useKnowledgeStore } from '../store/knowledgeStore';
@@ -27,7 +32,6 @@ import {
   AGENT_CANCELLED_CODE,
 } from './browser/agentBrowserController';
 import { useAgentBrowserStore } from '../store/agentBrowserStore';
-import { useWorkspaceStore } from '../store/workspaceStore';
 import { buildAgentCapabilitySystem } from './systemPrompts';
 import { callModelAgentRound } from './callModelAgentRound';
 import {
@@ -49,7 +53,7 @@ import {
   stripAgentLocalToolArtifacts,
   toolCallSignature,
 } from './parseAgentTools';
-import { executeAgentLocalTool, findLocalImagesByKeyword, runAgentLocalToolBatch } from './tools/localTools';
+import { executeAgentLocalTool, findLocalImagesByKeyword } from './tools/localTools';
 import type { AgentLocalToolContext } from './tools/localTools';
 
 const MAX_AGENT_ROUNDS = 10;
@@ -426,9 +430,10 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
     browserLockToken = lock.token;
   }
 
-  const workspaceRoot = useWorkspaceStore.getState().rootPath.trim();
+  const workspaceRoot = resolveSessionProjectContext(args.chatSessionId).rootPath.trim();
   const deniedPaths = useSettingStore.getState().agentDeniedPaths;
-  const toolCtx = { deniedPaths, workspaceRoot, shouldCancel: args.shouldCancel };
+  const attachmentPaths=args.chainMessages.filter(m=>m.role==='user').flatMap(m=>(m.files||[]).map(file=>file.path)).filter(Boolean);
+  const toolCtx = { deniedPaths, workspaceRoot, attachmentPaths, shouldCancel: args.shouldCancel };
   const embed = useKnowledgeStore.getState().getEmbedConfigForIpc();
   const agentSystem: Message = {
     id: `agent-sys-${Date.now()}`,
@@ -436,7 +441,7 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
     content: buildAgentCapabilitySystem(args.locale, workspaceRoot, '~', {
       localEnabled,
       browserEnabled,
-    }),
+    }) + '\n确定性数据计算必须调用 data_calculate，使用真实Excel/CSV来源路径，禁止心算或编造汇总。原生工具不可用时使用 JSON {myagent_tool:"data_calculate",path,sheet,range,steps:[{op:"group",by:["分组列"],aggregates:[{column:"数值列",function:"sum",as:"汇总"}]}],chart:{type:"bar",x:"分组列",y:"汇总"}}；支持filter/select/dedupe/group/yoy，不要对同一内容重复计算。',
     timestamp: Date.now(),
     model: 'agent-capability',
   };
@@ -453,10 +458,12 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
     }),
   ];
 
-  const executedTools = new Map<string, string>();
+  const saved=sessionTask(args.chatSessionId)?.checkpoint?.agentState as {messages?:Message[];executed?:Array<[string,string]>;exportFiles?:FileInfo[];attachFiles?:FileInfo[]}|undefined;
+  if(saved?.messages?.length)messages=refreshRuntimeContext(saved.messages,messages);
+  const executedTools = new Map<string, string>(saved?.executed||[]);
   let duplicateOnlyRounds = 0;
-  let collectedExportFiles: FileInfo[] = [];
-  let collectedAttachFiles: FileInfo[] = [];
+  let collectedExportFiles: FileInfo[] = saved?.exportFiles||[];
+  let collectedAttachFiles: FileInfo[] = saved?.attachFiles||[];
   let lastReasoning = '';
   let autoSearchDone = false;
   let autoSearchEmpty = false;
@@ -570,11 +577,21 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
     }
   }
 
+  if(window.electron.runtimeGetState){
+    const state=await window.electron.runtimeGetState();
+    const descriptions:string[]=[];
+    for(const connection of state.connections.filter(c=>c.enabled&&c.status==='connected')){
+      for(const tool of await window.electron.runtimeListTools(connection.id))descriptions.push(JSON.stringify({connectionId:connection.id,name:tool.name,description:tool.description,inputSchema:tool.inputSchema,readOnly:tool.readOnly}));
+    }
+    setMcpToolDescriptions(descriptions.join('\n'));
+    if(descriptions.length)messages.unshift({id:'mcp-tools',role:'system',content:'可用外部工具：\n'+descriptions.join('\n')+'\n使用 mcp_call 原生工具，或输出 {myagent_tool:"mcp_call",connectionId,name,args}。数据计算用 {myagent_tool:"data_calculate",path,sheet,steps,chart}。工具声明并不授权写入，应用会请求单次批准。',timestamp:Date.now(),model:'agent-capability'});
+  }
   for (let round = 0; round < MAX_AGENT_ROUNDS; round++) {
     assertAgentNotCancelled(args.shouldCancel);
     const response = await callModelAgentRound(messages, args.model, args.locale, {
       onThinkingDelta: args.onThinkingDelta,
       shouldCancel: args.shouldCancel,
+      tools: availableNativeTools(),
     });
     const content = String(response.content ?? '').trim();
     const reasoningIn = response.reasoning?.trim() ?? '';
@@ -582,7 +599,14 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
       lastReasoning = lastReasoning ? `${lastReasoning}\n\n${reasoningIn}` : reasoningIn;
     }
 
-    const toolCalls = extractAgentLocalToolCalls(content);
+    let toolCalls;
+    try { toolCalls = response.toolCalls?.length ? response.toolCalls.map(nativeCallToAgentCall) : extractAgentLocalToolCalls(content); }
+    catch(error) {
+      if(!response.toolCalls?.length)throw error;
+      const text=error instanceof Error?error.message:String(error);
+      messages=[...messages,{id:`agent-invalid-${round}`,role:'assistant',content,nativeToolCalls:response.toolCalls,nativeAssistantBlocks:response.assistantBlocks,timestamp:Date.now(),model:args.model.name},{id:`agent-invalid-result-${round}`,role:'system',content:`工具参数无效：${text}。请修正参数再试。`,nativeToolResults:response.toolCalls.map(call=>({id:call.id,content:text,isError:true})),timestamp:Date.now(),model:'agent-tool'}];
+      continue;
+    }
     if (!toolCalls.length) {
       const isWebTask = looksLikeWebBrowseRequest(args.userText);
       const shouldRetryWithSearch =
@@ -708,6 +732,7 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
     }
 
     const assistantMsg: Message = {
+      ...(response.toolCalls?.length ? { nativeToolCalls: response.toolCalls, nativeAssistantBlocks: response.assistantBlocks } : {}),
       id: `agent-asst-${Date.now()}-${round}`,
       role: 'assistant',
       content,
@@ -719,9 +744,7 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
 
     assertAgentNotCancelled(args.shouldCancel);
     const { resultText, exportFiles, attachFiles, skippedDuplicate } =
-      await runAgentLocalToolBatch(toolCalls, toolCtx, embed, executedTools, {
-        shouldCancel: args.shouldCancel,
-      });
+      await executeDurableToolBatch(args.chatSessionId,toolCalls,toolCtx,embed,executedTools);
     assertAgentNotCancelled(args.shouldCancel);
     if (toolCalls.some((t) => t.tool === 'local_read' || t.tool === 'web_read')) {
       didReadSource = true;
@@ -738,7 +761,10 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
     }
     collectedExportFiles = [...collectedExportFiles, ...exportFiles];
     collectedAttachFiles = [...collectedAttachFiles, ...attachFiles];
-    messages = [...messages, toolResultMessage(toolCalls.map((t) => t.tool).join(','), resultText)];
+    const resultMessage = toolResultMessage(toolCalls.map((t) => t.tool).join(','), resultText);
+    if (response.toolCalls?.length) resultMessage.nativeToolResults = response.toolCalls.map((call, index) => ({ id:call.id, content: executedTools.get(toolCallSignature(toolCalls[index])) ?? resultText }));
+    messages = [...messages, resultMessage];
+    await saveSessionCheckpoint(args.chatSessionId,{agentState:{messages,executed:[...executedTools.entries()],exportFiles:collectedExportFiles,attachFiles:collectedAttachFiles}});
 
     if (skippedDuplicate > 0 && skippedDuplicate === toolCalls.length) {
       duplicateOnlyRounds += 1;

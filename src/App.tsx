@@ -10,7 +10,7 @@ import ErrorToast from './components/ErrorToast';
 import ConfirmDialog from './components/ConfirmDialog';
 import ImageLibraryDrawer from './components/ImageLibraryDrawer';
 import GazeIndicator from './components/GazeIndicator';
-import { FiSettings, FiPlus, FiMoon, FiSun, FiMessageSquare, FiX, FiMonitor } from 'react-icons/fi';
+import { FiSettings, FiPlus, FiMoon, FiSun, FiMessageSquare, FiX, FiMonitor, FiClock } from 'react-icons/fi';
 import { useResolvedTheme } from './hooks/useResolvedTheme';
 import { useI18n } from './hooks/useI18n';
 import { useGestureControl } from './hooks/useGestureControl';
@@ -23,6 +23,10 @@ import { installGestureScrollMomentum } from './utils/gestureScrollMomentum';
 import { getGestureUiPhase, setGestureUiPhase } from './utils/gestureUiContext';
 import { ImageLibraryContext } from './context/ImageLibraryContext';
 import { FOOTER_H_PX, SIDEBAR_W_PX, TITLEBAR_H_PX } from './constants/layout';
+import RuntimePanel from './features/runtime/RuntimePanel';
+import { DocumentWorkbenchPanel } from './features/documents/DocumentWorkbenchPanel';
+import { installRuntimeDispatchBridge } from './features/personal/runtimeDispatcher';
+import { installModelConnectionMigration } from './features/connections/modelConnectionMigration';
 
 const TITLEBAR_H = TITLEBAR_H_PX;
 /** 底部输入区：输入条（内含模型）+ 发送，单行紧凑高度 */
@@ -46,6 +50,21 @@ const App: React.FC = () => {
   const gesture = useGestureControl(gestureControlEnabled);
   useFaceTracking(gestureControlEnabled, gesture.videoElement, true);
   const [showSettings, setShowSettings] = useState(false);
+  const [showTaskCenter, setShowTaskCenter] = useState(false);
+  const taskCenterLabel = locale === 'en' ? 'Task center' : '任务中心';
+
+  useEffect(() => installRuntimeDispatchBridge((task) => {
+    if (!useChatStore.getState().currentSessionId && task.kind === 'agent') {
+      useChatStore.getState().createSession(null);
+    }
+  }), []);
+
+  useEffect(() => {
+    if (!showTaskCenter) return;
+    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setShowTaskCenter(false); };
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  }, [showTaskCenter]);
 
   useEffect(() => {
     if (showSettings) {
@@ -88,6 +107,15 @@ const App: React.FC = () => {
   useEffect(() => {
     initializeDefaultModels();
   }, [initializeDefaultModels]);
+
+  useEffect(() => installModelConnectionMigration(), []);
+
+  useEffect(() => {
+    if (!showSettings) return;
+    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setShowSettings(false); };
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  }, [showSettings]);
 
   /**
    * 手势业务：握拳→张掌打开图库，张掌→握拳关闭图库。
@@ -163,7 +191,9 @@ const App: React.FC = () => {
     };
   }, []);
 
-  const handleNewChat = () => createSession();
+  const handleNewChat = () => {
+    createSession(null);
+  };
 
   const cycleTheme = () => {
     const next: AppTheme = theme === 'system' ? 'light' : theme === 'light' ? 'dark' : 'system';
@@ -200,7 +230,8 @@ const App: React.FC = () => {
 
       {/* 行1右：顶部横线，完全相同颜色贯穿；手势/视觉识别开启后在右侧嵌入识别状态 */}
       <div
-        className="relative flex items-center justify-end border-b border-stone-600/38 px-4 dark:border-white/10"
+        data-testid="app-titlebar-actions"
+        className="relative flex items-center justify-end gap-3 border-b border-stone-600/38 px-4 dark:border-white/10"
         style={{
           background: resolved === 'dark' ? '#1e1e24' : 'var(--shell-chrome)',
           backdropFilter: 'blur(20px)',
@@ -245,6 +276,17 @@ const App: React.FC = () => {
             <span className="truncate">{gestureStatusLabel}</span>
           </div>
         ) : null}
+        <button
+          type="button"
+          data-testid="task-center-entry"
+          aria-label={taskCenterLabel}
+          title={taskCenterLabel}
+          aria-haspopup="dialog"
+          aria-expanded={showTaskCenter}
+          onClick={() => { setShowSettings(false); setShowTaskCenter(true); }}
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-stone-600 transition-colors hover:bg-stone-400/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 dark:text-slate-300 dark:hover:bg-white/10"
+          style={{ WebkitAppRegion: 'no-drag' } as AppRegionStyle}
+        ><FiClock size={18} aria-hidden="true" /></button>
       </div>
 
       {/* 行2左：会话列表 */}
@@ -290,7 +332,9 @@ const App: React.FC = () => {
       >
         <button
           onClick={handleNewChat}
-          className="flex shrink-0 items-center gap-2 whitespace-nowrap rounded-xl bg-gradient-to-r from-primary-500 to-teal-500 px-3 py-2 text-sm font-medium text-white shadow-md shadow-primary-500/20 transition-all hover:from-primary-600 hover:to-teal-600"
+          title={t('app.newChat')}
+          aria-label={t('app.newChat')}
+          className="flex min-w-0 items-center gap-2 rounded-xl bg-gradient-to-r from-primary-500 to-teal-500 px-3 py-2 text-sm font-medium text-white shadow-md shadow-primary-500/20 transition-all hover:from-primary-600 hover:to-teal-600"
         >
           <FiPlus size={18} className="shrink-0" />
           <span className="whitespace-nowrap">{t('app.newChat')}</span>
@@ -337,7 +381,7 @@ const App: React.FC = () => {
       />
 
       <div
-        className={`fixed right-0 z-50 flex w-96 max-w-[100vw] min-h-0 flex-col border-l border-stone-600/38 bg-[var(--shell-settings)] shadow-[-8px_0_32px_-12px_rgba(0,0,0,0.18)] transition-transform duration-300 ease-in-out will-change-transform dark:border-white/10 dark:bg-[rgba(28,28,34,0.97)] ${
+        className={`fixed right-0 z-50 flex w-[520px] max-w-[100vw] min-h-0 flex-col border-l border-stone-600/38 bg-[var(--shell-settings)] shadow-[-8px_0_32px_-12px_rgba(0,0,0,0.18)] transition-transform duration-300 ease-in-out will-change-transform dark:border-white/10 dark:bg-[rgba(28,28,34,0.97)] ${
           showSettings ? 'translate-x-0' : 'pointer-events-none translate-x-full'
         }`}
         data-gesture-drawer="settings"
@@ -372,6 +416,12 @@ const App: React.FC = () => {
       </div>
 
       <OnboardingSteps />
+      {showTaskCenter && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-5 backdrop-blur-sm" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowTaskCenter(false); }}>
+        <div role="dialog" aria-modal="true" aria-label={taskCenterLabel} className="flex h-[min(760px,88vh)] w-[min(820px,94vw)] min-h-0 flex-col overflow-hidden rounded-2xl border border-stone-300 bg-stone-50 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
+          <div className="flex shrink-0 justify-end border-b border-stone-200 p-2 dark:border-slate-700"><button type="button" aria-label={locale === 'en' ? 'Close' : '关闭'} onClick={() => setShowTaskCenter(false)} className="rounded-lg p-2 text-stone-500 hover:bg-stone-200 dark:text-slate-400 dark:hover:bg-slate-800"><FiX /></button></div><div className="min-h-0 flex-1 overflow-y-auto p-5"><RuntimePanel /></div>
+        </div>
+      </div>}
+      <DocumentWorkbenchPanel />
       <GazeIndicator
         visible={gestureControlEnabled && gesture.cameraActive}
         windowFocused={windowFocused}

@@ -59,6 +59,7 @@ export async function runModelReply(
   const agentGate = shouldEnterAgentReply({
     userText: userMessage.content,
     exportDocument: Boolean(exportHint?.document),
+    hasDataAttachments: [...historyBeforeUser,userMessage].filter(message=>message.role==='user').some(message=>message.files?.some(file=>/\.(xlsx|csv|tsv)$/i.test(file.name))),
   });
   /** 本机/网页 Agent 任务均跳过向量注入，避免无关 RAG 干扰工具链 */
   const skipContextInject = agentGate.enter;
@@ -69,6 +70,7 @@ export async function runModelReply(
     ui.addMessage(sendSessionId, {
       id: `${Date.now()}-${idSuffix}`,
       role: 'assistant',
+      meta:{taskError:e instanceof Error?e.message:String(e)},
       content: ui.t('chat.buildFailed') + (e instanceof Error ? e.message : String(e)),
       timestamp: Date.now(),
       model: activeModel.name,
@@ -84,7 +86,7 @@ export async function runModelReply(
         provider: webState.provider,
         apiKey: webState.apiKey,
       },
-      { skipContextInject }
+      { skipContextInject, sessionId: sendSessionId }
     );
     chain = isLocalImageFind || isWebBrowseTask
       ? built.chain

@@ -6,6 +6,7 @@ import { PERSIST_KEYS } from '../utils/persistKeys';
 import { newId } from '../utils/newId';
 import { t } from '../i18n/ui';
 import { useSettingStore } from './settingStore';
+import { finishSessionTask } from '../features/runtime/taskBridge';
 
 /**
  * 内部 helper：定位单个 session 并对其应用 fn，未命中时保持原引用。
@@ -110,7 +111,11 @@ interface ChatStore {
   activeLeafId: string | null;
 
   // Actions
-  createSession: () => string;
+  createSession: (projectId?: string | null) => string;
+  assignSessionProject: (sessionId: string, projectId: string | null) => void;
+  detachProjectSessions: (projectId: string) => void;
+  toggleMessageBookmark: (sessionId: string, messageId: string) => void;
+  renameBranch: (sessionId: string, messageId: string, name: string) => void;
   switchSession: (sessionId: string) => void;
   deleteSession: (sessionId: string) => void;
   addMessage: (sessionId: string, message: Message) => void;
@@ -186,7 +191,7 @@ export const useChatStore = create<ChatStore>()(
       compressingSessionIds: new Set<string>(),
       activeLeafId: null,
 
-      createSession: () => {
+      createSession: (_legacyProjectId) => {
         const locale = useSettingStore.getState().locale;
         const newSession: ChatSession = {
           id: newId(),
@@ -204,6 +209,36 @@ export const useChatStore = create<ChatStore>()(
         }));
 
         return newSession.id;
+      },
+
+      assignSessionProject: (sessionId, projectId) => {
+        if (get().isLoadingSession(sessionId) || get().isCompressingSession(sessionId)) throw new Error('conversation-busy');
+        // Compatibility API can detach a legacy record, but cannot create a new project association.
+        if (projectId) return;
+        set((state) => ({ sessions: mapSession(state.sessions, sessionId, (session) => ({ ...session, projectId, updatedAt: Date.now() })) }));
+      },
+
+      detachProjectSessions: (projectId) => set((state) => ({
+        sessions: state.sessions.map((session) => session.projectId === projectId ? { ...session, projectId: null } : session),
+      })),
+
+      toggleMessageBookmark: (sessionId, messageId) => set((state) => ({
+        sessions: mapSession(state.sessions, sessionId, (session) => {
+          if (!session.messages.some((m) => m.id === messageId)) return session;
+          const previous = session.bookmarkedMessageIds ?? [];
+          return { ...session, bookmarkedMessageIds: previous.includes(messageId) ? previous.filter((id) => id !== messageId) : [...previous, messageId] };
+        }),
+      })),
+
+      renameBranch: (sessionId, messageId, name) => {
+        const label = name.trim().slice(0, 80);
+        set((state) => ({ sessions: mapSession(state.sessions, sessionId, (session) => {
+          if (!session.messages.some((m) => m.id === messageId)) return session;
+          const branchNames = { ...session.branchNames };
+          if (label) branchNames[messageId] = label;
+          else delete branchNames[messageId];
+          return { ...session, branchNames };
+        }) }));
       },
 
       switchSession: (sessionId: string) => {
@@ -509,7 +544,10 @@ export const useChatStore = create<ChatStore>()(
 
       setLoadingSession: loadingBusy.add,
 
-      clearLoadingForSession: loadingBusy.remove,
+      clearLoadingForSession: (sessionId) => {
+        loadingBusy.remove(sessionId);
+        void finishSessionTask(sessionId);
+      },
 
       isLoadingSession: loadingBusy.has,
 

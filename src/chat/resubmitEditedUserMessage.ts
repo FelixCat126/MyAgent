@@ -1,3 +1,5 @@
+import { isExplicitMemoryCommand,tryHandleMemoryCommand,reviewMemoryCandidatesFromMessage } from '../features/personal/context';
+import { createSessionTask, saveSessionCheckpoint } from '../features/runtime/taskBridge';
 import type { Message, ModelConfig } from '../types';
 import { useChatStore } from '../store/chatStore';
 import { ensureContextBeforeSend } from './ensureContextBeforeSend';
@@ -84,7 +86,7 @@ export async function resubmitEditedUserMessage(opts: {
   );
 
   try {
-    const ensured = await ensureContextBeforeSend({
+    const ensured = isExplicitMemoryCommand(textContent) ? { priorMessages, didCompress: false } : await ensureContextBeforeSend({
       sessionId: opts.sessionId,
       priorMessages,
       draftInput: textContent,
@@ -92,9 +94,10 @@ export async function resubmitEditedUserMessage(opts: {
       locale: opts.locale,
       summaryTitle: opts.summaryTitle,
       editSourceMessageId: opts.messageId,
-      injectExtras: resolveInjectExtras({ webEnabled: opts.webEnabled }),
+      injectExtras: resolveInjectExtras({ webEnabled: opts.webEnabled,sessionId:opts.sessionId,userText:textContent }),
     });
     priorMessages = ensured.priorMessages;
+    if(!useChatStore.getState().isLoadingSession(opts.sessionId))return {ok:false,reason:'busy'};
 
     const latestSess = useChatStore.getState().sessions.find((s) => s.id === opts.sessionId);
     const latest = latestSess?.messages ?? sess.messages;
@@ -110,7 +113,7 @@ export async function resubmitEditedUserMessage(opts: {
       ...sourceMessage,
       role: 'user',
       content: textContent,
-      timestamp: Date.now(),
+      timestamp: Math.max(Date.now(),sourceMessage.timestamp+1),
       model: opts.model.name,
     };
 
@@ -125,6 +128,13 @@ export async function resubmitEditedUserMessage(opts: {
       staleIds
     );
     opts.onCommitted?.();
+    await saveSessionCheckpoint(opts.sessionId, { userMessageId: userMessage.id, modelId: opts.model.id });
+    const memoryCommand=tryHandleMemoryCommand(textContent,opts.sessionId,userMessage.id);
+    if(memoryCommand.handled){
+      useChatStore.getState().addMessage(opts.sessionId,{id:crypto.randomUUID(),role:'assistant',content:memoryCommand.reply||'',timestamp:Date.now(),model:'本地记忆'});
+      useChatStore.getState().clearLoadingForSession(opts.sessionId);return {ok:true};
+    }
+    reviewMemoryCandidatesFromMessage(opts.sessionId,userMessage);
 
     if (
       !addFullTextBypassIfNeeded({
@@ -134,6 +144,8 @@ export async function resubmitEditedUserMessage(opts: {
         hasAttachments: Boolean(sourceMessage.files?.length),
       })
     ) {
+      await createSessionTask(opts.sessionId,userMessage);
+      if(!useChatStore.getState().isLoadingSession(opts.sessionId))return {ok:false,reason:'busy'};
       await opts.runModelReply(opts.sessionId, priorMessages, userMessage, opts.model);
     }
     return { ok: true };

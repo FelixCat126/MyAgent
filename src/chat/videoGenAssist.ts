@@ -10,12 +10,13 @@
 
 import type { ModelConfig, Message, FileInfo } from '../types';
 import type { RunModelReplyUi } from './runModelReplyTypes';
-import { stripGenerateImageArtifactsForDisplay } from '../utils/toolCalls';
+import { resolveModelConnection } from '../store/connectionStore';
+import { useChatStore } from '../store/chatStore';
+import { replyRunWasCancelled } from './imageTaskState';
 
-const VIDEO_NOUN_RE = /(视频|短视频|短片|动图|video|clip|mp4)/i;
-/** 必须是明确的"请求生成"动词 + 视频名词的组合；纯描述（"这个视频很好看"）不触发 */
-const VIDEO_ACTION_RE = /(做个?|生成|出个?|来段|录个?|拍个?|制作|合成|帮我)/i;
-const NEGATIVE_RE = /(不用|不要|算了|别|无需|不需要|不要了)/;
+const VIDEO_ACTION_RE = /(?:生成|制作|合成|做|出|来|录|拍).{0,24}(?:视频|短片|动图)|\b(?:generate|create|make|produce)\b.{0,40}\b(?:video|clip|mp4)\b/i;
+const NEGATIVE_RE = /(?:不用|不要|别|无需|不需要).{0,8}(?:生成|制作|合成|做)?.{0,8}(?:视频|短片|动图)|\b(?:do not|don't|no need to)\b.{0,30}\b(?:video|clip)\b/i;
+const DISCUSSION_RE = /(?:如何|怎么|怎样|能否|是否|能不能|可不可以).{0,24}(?:生成|制作|合成|做).{0,12}(?:视频|短片)|(?:生成|制作).{0,12}(?:视频|短片).{0,10}(?:教程|提示词|prompt|脚本|分镜|费用|收费|原理)|\b(?:how (?:to|can)|can (?:you|it)|tutorial|prompt for)\b.{0,50}\b(?:video|clip)\b/i;
 
 export type VideoIntent = {
   shouldGenerate: boolean;
@@ -28,16 +29,13 @@ export function planAssistantVideoIntent(
   hasExistingVideo: boolean
 ): VideoIntent {
   const u = String(userText || '').trim();
-  const r = String(replyText || '').trim();
+  void replyText;
   if (hasExistingVideo) return { shouldGenerate: false, prompt: '' };
   if (!u) return { shouldGenerate: false, prompt: '' };
-  /** 必须「动作动词 + 视频名词」同时命中：纯描述（"这个视频很好看"）不会同时命中 */
-  if (!VIDEO_NOUN_RE.test(u)) return { shouldGenerate: false, prompt: '' };
   if (!VIDEO_ACTION_RE.test(u)) return { shouldGenerate: false, prompt: '' };
-  /** 否定词在视频词附近（同句）时取消；宽松实现：整句含否定则不生成 */
-  if (NEGATIVE_RE.test(u)) return { shouldGenerate: false, prompt: '' };
-  const cleaned = stripGenerateImageArtifactsForDisplay(r);
-  return { shouldGenerate: true, prompt: cleaned.slice(0, 2000) };
+  if (NEGATIVE_RE.test(u) || DISCUSSION_RE.test(u)) return { shouldGenerate: false, prompt: '' };
+  // A prose response may contain refusal/explanation text; it is never a video brief.
+  return { shouldGenerate: true, prompt: u.slice(0, 2000) };
 }
 
 export interface VideoGenResult {
@@ -45,6 +43,7 @@ export interface VideoGenResult {
   files: FileInfo[] | undefined;
   plannedIntent: VideoIntent;
 }
+const dispatched = new Set<string>();
 
 export async function runVideoPostProcess(opts: {
   ui: RunModelReplyUi;
@@ -74,15 +73,19 @@ export async function runVideoPostProcess(opts: {
 
   const intent = planAssistantVideoIntent(userMessage.content, rawText, hasExistingVideo);
   if (!intent.shouldGenerate) return { content: rawText, files: undefined, plannedIntent: intent };
+  const requestKey = `${sendSessionId}:${assistantId}`;
+  if (dispatched.has(requestKey) || replyRunWasCancelled(sendSessionId, userMessage.id)) return { content: rawText, files: undefined, plannedIntent: { shouldGenerate: false, prompt: '' } };
+  dispatched.add(requestKey); if (dispatched.size > 1000) dispatched.delete(dispatched.values().next().value!);
 
-  const videoModel =
+  const configuredVideoModel =
     opts.videoModel ??
     (await import('../store/modelStore')).useModelStore
       .getState()
       .models.find((m) => m.isVideoGenerator && m.videoGeneratorConfig) as ModelConfig | undefined;
-  if (!videoModel) {
+  if (!configuredVideoModel) {
     return { content: rawText, files: undefined, plannedIntent: intent };
   }
+  const videoModel = resolveModelConnection(configuredVideoModel);
 
   const fileBaseName = `video-${assistantId.slice(0, 8)}`;
   try {
@@ -133,7 +136,7 @@ export async function runVideoPostProcess(opts: {
     /** 成功：恢复纯正文（去掉「生成中」），视频作为附件追加（files 由 chatStore merge） */
     ui.updateMessage(sendSessionId, assistantId, {
       content: rawText,
-      files: [file],
+      files: Array.from(new Map([...(useChatStore.getState().sessions.find(s => s.id === sendSessionId)?.messages.find(m => m.id === assistantId)?.files ?? currentMsg?.files ?? []), file].map(f => [f.path, f])).values()),
     });
     return {
       content: rawText,

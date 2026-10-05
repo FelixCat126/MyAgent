@@ -15,12 +15,31 @@ describe('image execution boundary', () => {
     await postProcessAssistantContent(tool(),model,0,vi.fn(),{userPromptContext:'不要生图，只解释'});
     expect(window.electron.generateImage).not.toHaveBeenCalled();
   });
+  it('never overwrites a data-chart answer even if a prior planner or the model guessed image generation', async () => {
+    useModelStore.setState({ models: [], imageGenModelId: null });
+    const answer = '已按 category 汇总 amount 合计，结果为 A=30、B=7；汇总表和柱状图已生成。';
+    const result = await postProcessAssistantContent(answer + '\n' + tool(), model, 0, vi.fn(), { userPromptContext: '按 category 计算 amount 合计，生成汇总表和柱状图。', plannedIntent: { shouldGenerate: true, prompt: 'bar chart' } });
+    expect(result.content.trim()).toBe(answer);
+    expect(result.taskError).toBeUndefined();
+    expect(window.electron.generateImage).not.toHaveBeenCalled();
+  });
   it('preserves partial images and reports partial failure', async () => {
     window.electron.generateImage = vi.fn(async (_params, handlers) => { handlers?.onImage?.({requestId:'x',image:img,index:1,total:3}); throw new Error('network failure'); });
     const result = await postProcessAssistantContent(tool(3),model,0,vi.fn(),{userPromptContext:'生成三张图片'});
     expect(result.files).toHaveLength(1);
     expect(result.content).toContain('1/3');
     expect(result.content).toContain('network failure');
+    expect(result.taskError).toContain('network failure');
+  });
+  it('returns a typed failure when the image service rejects or returns no images', async () => {
+    window.electron.generateImage = vi.fn().mockRejectedValue(new Error('connection refused'));
+    const rejected = await postProcessAssistantContent(tool(), model, 0, vi.fn(), {});
+    expect(rejected.files).toBeUndefined();
+    expect(rejected.taskError).toBe('connection refused');
+    window.electron.generateImage = vi.fn().mockResolvedValue([]);
+    const empty = await postProcessAssistantContent(tool(), model, 0, vi.fn(), {});
+    expect(empty.taskError).toContain('0/1');
+    expect(empty.content).toContain('未收到有效图片');
   });
   it('does not execute after cancellation', async () => {
     await postProcessAssistantContent(tool(),model,0,vi.fn(),{shouldCancel:()=>true});

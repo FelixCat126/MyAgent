@@ -30,6 +30,7 @@ import { consumeSseLines } from '../utils/sseStreamCompletion';
 import {
   MODEL_STREAM_FIRST_EVENT_TIMEOUT_MS,
   MODEL_STREAM_IDLE_TIMEOUT_MS,
+  MODEL_STREAM_TIMEOUT_MS,
 } from '../constants/timeouts';
 
 const abortByStream = new Map<number, AbortController>();
@@ -143,6 +144,7 @@ async function streamAnthropicMessages(opts: {
 
   await consumeSseLines(stream, handleSseLine, {
     firstEventTimeoutMs: MODEL_STREAM_FIRST_EVENT_TIMEOUT_MS,
+    maxDurationMs: MODEL_STREAM_TIMEOUT_MS,
   });
 }
 
@@ -220,7 +222,7 @@ async function streamOpenAiCompatible(opts: {
     if (trimmed.startsWith('data:')) {
       reportDocumentLimit(wc, messages, trimmed.slice(5).trim());
     }
-  }, { firstEventTimeoutMs: MODEL_STREAM_FIRST_EVENT_TIMEOUT_MS });
+  }, { firstEventTimeoutMs: MODEL_STREAM_FIRST_EVENT_TIMEOUT_MS, maxDurationMs: MODEL_STREAM_TIMEOUT_MS });
   splitter.flush();
 }
 
@@ -299,7 +301,7 @@ function registerModelStreamIpc() {
             sendEnd(wc);
           }
         } finally {
-          abortByStream.delete(sid);
+          if (abortByStream.get(sid) === ac) abortByStream.delete(sid);
         }
       })();
     }

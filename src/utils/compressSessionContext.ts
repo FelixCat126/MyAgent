@@ -1,3 +1,4 @@
+import { extractContextAnchors } from './contextAnchors';
 import type { Message, ModelConfig } from '../types';
 import {
   CONTEXT_SUMMARY_PREFIX,
@@ -88,7 +89,7 @@ export async function compressSessionContext(opts: {
   }
 
   const summaryMessage = createContextSummaryMessage(
-    parseCompressionSummary(summaryBody, summaryTitle),
+    parseCompressionSummary([summaryBody,extractContextAnchors(older)?'原文保留要点（来自历史消息；后续要求优先）：\n'+extractContextAnchors(older):''].filter(Boolean).join('\n\n'), summaryTitle),
     model.name || 'context-compress'
   );
   replaceMessagesPrefix(sessionId, keepFromIndex, summaryMessage);

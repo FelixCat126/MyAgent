@@ -63,7 +63,7 @@ export const KnowledgeSection: React.FC<KnowledgeSectionProps> = ({ cardShell, t
 
   const refreshIndexStatus = useCallback(async () => {
     try {
-      const s = await window.electron.knowledgeGetIndexStatus();
+      const s = await window.electron.knowledgeGetIndexStatus({root:useWorkspaceStore.getState().rootPath});
       if (s?.ok) {
         setIndexMeta({
           chunkCount: s.chunkCount,

@@ -5,11 +5,11 @@ import { ATTACH_DOCUMENT_MAX_TEXT_CHARS } from '../chat/payloadBoundary';
 
 export { ATTACH_DOCUMENT_MAX_TEXT_CHARS };
 
-const DOC_EXTS = /\.(xlsx|xlsm|xls|docx|doc|md|markdown|txt|csv)$/i;
+const DOC_EXTS = /\.(pdf|xlsx|xlsm|xls|docx|doc|md|markdown|txt|csv)$/i;
 
 function isDocumentAttachment(f: { type: string; name: string }): boolean {
   if (f.type.startsWith('image/')) return false;
-  if (f.type === 'application/pdf') return false;
+  if (f.type === 'application/pdf') return true;
   return (
     f.type.includes('sheet') ||
     f.type.includes('excel') ||

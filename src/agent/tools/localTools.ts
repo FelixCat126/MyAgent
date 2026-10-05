@@ -1,3 +1,5 @@
+import { executeExtendedTool } from './extendedTools';
+import { validateAgentToolCall } from '../toolRegistry';
 import type { FileInfo, KnowledgeEmbedConfig } from '../../types';
 import { useSettingStore } from '../../store/settingStore';
 import { expandTopicSynonyms, textMentionsTopicKeywords } from '../localFileIntent';
@@ -13,7 +15,9 @@ import {
 export type AgentLocalToolContext = {
   deniedPaths: string[];
   workspaceRoot: string;
+  scopeRoot?: string;
   shouldCancel?: () => boolean;
+  attachmentPaths?: string[];
 };
 
 function assertLocalToolsEnabled(): string | null {
@@ -66,6 +70,8 @@ export async function findLocalImagesByKeyword(
   for (const kw of patterns) {
     if (out.length >= limit) break;
     const r = await window.electron.agentLocalFindByName({
+      root: ctx.scopeRoot,
+      scoped: ctx.scopeRoot !== undefined,
       deniedPaths: ctx.deniedPaths,
       pattern: kw,
       limit: limit - out.length,
@@ -92,6 +98,7 @@ export async function executeAgentLocalTool(
   if (call.tool.startsWith('local_')) {
     const denied = assertLocalToolsEnabled();
     if (denied) return denied;
+    if (call.tool !== 'local_export' && ctx.scopeRoot !== undefined && !ctx.scopeRoot.trim()) return '错误：尚未授权资料目录，请先选择资料目录。';
   }
   if (call.tool.startsWith('web_')) {
     const denied = assertBrowserEnabled();
@@ -111,6 +118,8 @@ export async function executeAgentLocalTool(
       }
       if (call.mode === 'filename') {
         const r = await window.electron.agentLocalFindByName({
+          root: ctx.scopeRoot,
+          scoped: ctx.scopeRoot !== undefined,
           deniedPaths,
           pattern: call.query,
           limit: 20,
@@ -141,6 +150,8 @@ export async function executeAgentLocalTool(
         }
       }
       const r = await window.electron.agentLocalFindByName({
+        root: ctx.scopeRoot,
+        scoped: ctx.scopeRoot !== undefined,
         deniedPaths,
         pattern: call.query,
         limit: 15,
@@ -152,7 +163,7 @@ export async function executeAgentLocalTool(
           : '未找到相关文件（可按文件名再试，或配置工作区并建索引以启用语义检索）。';
       }
       return (
-        (workspaceRoot ? '（语义未命中，以下为全机文件名匹配）\n' : '（全机文件名匹配）\n') +
+        (ctx.scopeRoot !== undefined ? '（授权资料目录内文件名匹配）\n' : workspaceRoot ? '（语义未命中，以下为全机文件名匹配）\n' : '（全机文件名匹配）\n') +
         r.matches
           .map((m) => `- ${(m as { displayPath?: string }).displayPath ?? m.rel}`)
           .join('\n')
@@ -161,6 +172,8 @@ export async function executeAgentLocalTool(
 
     case 'local_list': {
       const r = await window.electron.agentLocalList({
+        root: ctx.scopeRoot,
+        scoped: ctx.scopeRoot !== undefined,
         deniedPaths,
         subpath: call.subpath,
         maxDepth: call.maxDepth,
@@ -185,6 +198,8 @@ export async function executeAgentLocalTool(
 
     case 'local_read': {
       const r = await window.electron.agentLocalRead({
+        root: ctx.scopeRoot,
+        scoped: ctx.scopeRoot !== undefined,
         deniedPaths,
         path: call.path,
       });
@@ -258,6 +273,7 @@ export async function runAgentLocalToolBatch(
       parts.push('【已取消】用户停止了本次操作。');
       break;
     }
+    validateAgentToolCall(call);
     const sig = toolCallSignature(call);
     const cached = executed?.get(sig);
     if (cached !== undefined) {
@@ -269,6 +285,12 @@ export async function runAgentLocalToolBatch(
       continue;
     }
 
+    if(call.tool==='data_calculate'||call.tool==='mcp_call'){
+      if(call.tool==='data_calculate' && !useSettingStore.getState().agentLocalToolsEnabled) {parts.push('错误：数据文件工具未开启');continue;}
+      const result=await executeExtendedTool(call,opts?.shouldCancel,ctx);
+      if(!result.text.startsWith('错误：'))executed?.set(sig,result.text);
+      exportFiles.push(...result.files);parts.push(result.text);continue;
+    }
     if (call.tool.startsWith('local_')) {
       const denied = assertLocalToolsEnabled();
       if (denied) {

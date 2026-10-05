@@ -34,6 +34,9 @@ function resolveDesktopIconForRemoteTouch(): string | null {
 function copyPreloadCjs() {
   mkdirSync(dirname(PRELOAD_OUT), { recursive: true });
   copyFileSync(PRELOAD_SRC, PRELOAD_OUT);
+  for (const file of ['preload-runtime.cjs', 'preload-documents.cjs', 'preload-quick-window.cjs', 'preload-voice-quick.cjs', 'preload-media.cjs']) {
+    copyFileSync(join(_dirname, 'electron', file), join(_dirname, 'dist-electron', file));
+  }
 }
 
 /** 把 MediaPipe Tasks Vision 的 wasm/JS 资源复制到 `dist/mediapipe-wasm/`，
@@ -130,7 +133,7 @@ export default defineConfig({
             outDir: 'dist-electron',
             rollupOptions: {
               /** ws 会通过 try/catch 加载可选原生模块；若不 external，打包会变成无法解析的静态 import */
-              external: ['ws', 'bufferutil', 'utf-8-validate'],
+              external: ['ws', 'bufferutil', 'utf-8-validate', 'pdfjs-dist', 'pdfjs-dist/legacy/build/pdf.mjs', '@napi-rs/canvas', 'tesseract.js', '@modelcontextprotocol/sdk', /^@modelcontextprotocol\/sdk\//],
               output: {
                 manualChunks(id: string) {
                   if (id.includes('node_modules/exceljs')) return 'vendor-excel';

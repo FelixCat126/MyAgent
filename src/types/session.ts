@@ -7,6 +7,12 @@ export interface ChatSession {
   messages: Message[];
   createdAt: number;
   updatedAt: number;
+  /** Missing/null preserves the original general conversation behavior. */
+  projectId?: string | null;
+  /** Message ids only: content remains authoritative in messages. */
+  bookmarkedMessageIds?: string[];
+  /** Labels for saved branch nodes, keyed by message id. */
+  branchNames?: Record<string, string>;
   /**
    * 本会话分支激活叶节点；渲染/发送均按 getDerivedActivePath(messages, activeLeafId)。
    * 缺省/迁移前可为 undefined，运行时回退到 messages 末条。

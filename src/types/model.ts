@@ -4,6 +4,17 @@ export type ChatApiMode = 'auto' | 'openai' | 'anthropic';
 // 模型配置类型
 export interface ModelConfig {
   id: string;
+  /** 可选共享连接；旧配置仍保留地址和密钥，删除连接时可无损解除关联。 */
+  connectionId?: string;
+  capabilities?: {
+    checkedAt: number;
+    signature: string;
+    chat?: 'verified' | 'failed';
+    stream?: 'verified' | 'failed';
+    history?: 'verified' | 'failed';
+    tools?: 'verified' | 'failed';
+    vision?: 'verified' | 'failed';
+  };
   name: string;
   provider: 'openai' | 'claude' | 'gemini' | 'ollama' | 'custom';
   apiUrl: string;
@@ -26,6 +37,8 @@ export interface ModelConfig {
     promptLanguage?: 'auto' | 'en';
     apiKeySource?: 'independent' | 'connection';
     quality?: 'auto' | 'low' | 'medium' | 'high';
+    /** Optional supported sizes; defaults come from the integrated provider. */
+    dimensions?: { width: number; height: number }[];
     /**
      * 生图厂商标识，用于显式路由适配器（优先于 endpoint/模式推断）。
      * - bailian-wanx：阿里云百炼 DashScope 通义万相（wan2.6 同步）
@@ -61,6 +74,8 @@ export interface ModelConfig {
   /** 是否允许作为视频生成工具调用的"视频模型" */
   isVideoGenerator?: boolean;
   videoGeneratorConfig?: {
+    /** Video credentials can reference a service independently of the chat service. */
+    connectionId?: string;
     /**
      * 视频厂商标识：minimax（异步任务 + 轮询）；后续可扩展 runway/kling 等
      */
@@ -74,6 +89,6 @@ export interface ModelConfig {
     /** 默认分辨率：720 / 768 / 1080；MiniMax 支持 5s/10s 默认 768x768 */
     resolution?: '480' | '720' | '768' | '1080';
     /** 时长（秒）：MiniMax 5 / 10 / 其它厂商各异 */
-    duration?: 5 | 10;
+    duration?: 5 | 6 | 10;
   };
 }

@@ -1,3 +1,5 @@
+import { VoiceInteractionBar } from '../features/voiceQuick/VoiceInteractionBar';
+import { installQuickChatBridge } from '../features/voiceQuick/quickBridge';
 import { cancelImageTask, cancelReplyRun } from '../chat/imageTaskState';
 import React, {
   useState,
@@ -65,6 +67,10 @@ import {
   type ConversationImageGalleryItem,
 } from '../utils/conversationImageGallery';
 import { FOOTER_H_PX } from '../constants/layout';
+import { registerRuntimeTaskExecutor } from '../features/personal/runtimeDispatcher';
+import { executeDispatchedRuntimeTask } from '../features/personal/runtimeExecution';
+import { createSessionTask, cancelSessionTask, sessionTask } from '../features/runtime/taskBridge';
+import { useSessionComposerDrafts } from '../features/personal/useSessionComposerDrafts';
 
 const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) => {
   const {
@@ -113,6 +119,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
   const inlineImageIndexRef = useRef(0);
   inlineImageIndexRef.current = inlineImageIndex;
   const [voiceReplySpeaking, setVoiceReplySpeaking] = useState(false);
+  const [voiceInterruptRequested,setVoiceInterruptRequested] = useState(false);
+  const [voiceManualPause,setVoiceManualPause] = useState(false);
   /** 唤醒态：唤醒词命中到发送/超时之间；驱动粒子呼吸 */
   const [voiceAwake, setVoiceAwake] = useState(false);
   const [conversationGalleryIdx, setConversationGalleryIdx] = useState<number | null>(null);
@@ -138,6 +146,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
   const handleSendRef = useRef<() => void>(() => {});
   const sendFromVoiceWakeRef = useRef(false);
   const speechReaderRef = useRef<StreamingSpeechReader | null>(null);
+  const voiceWakeStartAbortRef = useRef<AbortController|null>(null);
   /** 本轮回复是否来自语音唤醒闭环（唤醒听写自动发送） */
   const voiceWakeLoopRef = useRef(false);
 
@@ -171,7 +180,9 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
 
   // ===== 业务逻辑 =====
   const cancelVoiceReply = useCallback(() => {
+    voiceWakeStartAbortRef.current?.abort();voiceWakeStartAbortRef.current=null;
     speechReaderRef.current?.cancel();
+    try{window.speechSynthesis?.cancel();}catch{}
     speechReaderRef.current = null;
     setVoiceReplySpeaking(false);
   }, []);
@@ -244,7 +255,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
   const windowFocused = useMainWindowFocused();
 
   const voiceWake = useVoiceWake({
-    enabled: speechInputEnabled && voiceWakeEnabled,
+    enabled: speechInputEnabled && voiceWakeEnabled && !voiceManualPause,
     phrase: voiceWakePhrase,
     uiLocale,
     paused:
@@ -255,6 +266,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
       !windowFocused,
     getVolcAsrConfig,
     onWake: () => {
+      voiceWakeStartAbortRef.current?.abort();const controller=new AbortController();voiceWakeStartAbortRef.current=controller;
       setVoiceAwake(true);
       /** TTS 期间仅预拉麦克风；火山 WebSocket 在 TTS 结束后立即建连并推流 */
       const micPrep = speechDictation.prepareWakeMic();
@@ -262,10 +274,10 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
         await Promise.all([
           micPrep,
           ttsPlaybackReady
-            ? speakText(t('chat.voiceWakeAck'), uiLocale, { tailSilenceMs: 0 })
+            ? speakText(t('chat.voiceWakeAck'), uiLocale, { tailSilenceMs: 0, signal:controller.signal })
             : Promise.resolve(),
         ]);
-        speechDictation.start({ fromWake: true });
+        if(!controller.signal.aborted)speechDictation.start({ fromWake: true });
       })();
     },
   });
@@ -273,6 +285,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
   // ===== Hooks（5 个抽出的 hook） =====
   const selection = useMessageSelection();
   const attachments = useChatAttachments();
+  const composerDrafts = useSessionComposerDrafts({ sessionId: currentSessionId, input, files: attachments.attachments, setInput, setFiles: attachments.setAttachments, setPreviews: attachments.setAttachmentPreviews });
   const {
     scrollContainerRef,
     stickToBottomRef,
@@ -375,6 +388,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
   }, [systemTtsAvailable]);
 
   useEffect(() => {
+    setVoiceInterruptRequested(false);
     setConversationGalleryIdx(null);
     setConversationGalleryNonce(0);
     setVectorRagStatus(null);
@@ -407,27 +421,46 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
   }, []);
 
   // ===== 编辑 / 选择 / 导出 / 拖拽 / 输入 / 发送 / 停止 =====
-  const handleStop = () => {
-    if (currentSessionId) cancelReplyRun(currentSessionId);
-    streamCancelledByUserRef.current = true;
-    imageGenCancelledRef.current = true;
-    setImageGenProgress(null);
+  const stopSessionWork = useCallback((sessionId: string) => {
+    cancelReplyRun(sessionId);
+    void cancelSessionTask(sessionId).catch((error) => console.error('[Cancel task]', error));
+    const ownsStream = streamingSessionIdRef.current === sessionId;
+    if (ownsStream) streamCancelledByUserRef.current = true;
     const p = imageGenSyncRef.current;
-    if (p) {
+    if (p?.sessionId === sessionId) {
+      imageGenCancelledRef.current = true;
+      setImageGenProgress(null);
       cancelImageTask(p.messageId);
       window.electron.cancelImageGeneration?.(p.messageId);
       updateMessage(p.sessionId, p.messageId, { imageGenProgress: undefined });
       imageGenSyncRef.current = null;
     }
-    window.electron.closeModelStream();
-    streamUnsubRef.current?.();
-    streamUnsubRef.current = null;
-    setIsStreaming(false);
-    streamingSessionIdRef.current = null;
-    const sid = currentSessionId;
-    if (sid) clearLoadingForSession(sid);
+    if (ownsStream) {
+      window.electron.closeModelStream();
+      streamUnsubRef.current?.();
+      streamUnsubRef.current = null;
+      setIsStreaming(false);
+      streamingSessionIdRef.current = null;
+    }
+    clearLoadingForSession(sessionId);
     /** streamingAssistantIdRef 由 onEnd 清理，便于识别待删空气泡 */
-  };
+  }, [clearLoadingForSession, updateMessage, imageGenSyncRef, imageGenCancelledRef, streamingSessionIdRef, streamCancelledByUserRef, streamUnsubRef]);
+  const handleStop = () => { if (currentSessionId) stopSessionWork(currentSessionId); };
+
+  useEffect(() => installQuickChatBridge({runModelReply:(...args)=>runModelReplyRef.current(...args),stopSession:stopSessionWork}), [stopSessionWork]);
+  useEffect(() => {
+    if(!voiceInterruptRequested||isSessionBusy)return;
+    setVoiceInterruptRequested(false);
+    if(speechInputEnabled) {voiceWakeLoopRef.current=true;speechDictation.start({fromWake:true});}
+  }, [voiceInterruptRequested,isSessionBusy,speechInputEnabled,speechDictation.start]);
+
+  useEffect(() => registerRuntimeTaskExecutor(
+    (task) => executeDispatchedRuntimeTask(task, (...args) => runModelReplyRef.current(...args)),
+    (taskId) => {
+      const target = useChatStore.getState().sessions.find((session) => sessionTask(session.id)?.id === taskId);
+      if (target) stopSessionWork(target.id);
+    }
+  ), [runModelReplyRef, stopSessionWork]);
 
   const handleEditMessage = (message: Message) => {
     if (isSessionBusy) return;
@@ -506,7 +539,10 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
       showWarning('chat.configureModel');
       return;
     }
-    if (!tryClaimSessionSend(currentSessionId)) return;
+    if (!tryClaimSessionSend(currentSessionId)) {
+      showWarning('chat.anotherConversationBusy');
+      return;
+    }
 
     const requestId = newRequestId();
     rendererLogger.info('chat.regenerate.begin', {
@@ -519,6 +555,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
     try {
       forkFromMessage(currentSessionId, parentId);
       stickToBottomRef.current = true;
+      await createSessionTask(currentSessionId,parent,{occurrenceId:requestId});
+      if(!useChatStore.getState().isLoadingSession(currentSessionId))return;
       await runModelReply(currentSessionId, history, parent, model);
     } catch (e) {
       clearLoadingForSession(currentSessionId);
@@ -548,14 +586,19 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
 
     /** 全程固定会话 id，避免压缩异步期间切会话写串 */
     const sendSessionId = currentSessionId;
-    if (!tryClaimSessionSend(sendSessionId)) return;
+    const draftText = input.trim();
+    const draftFiles = [...attachments.attachments];
+    if (!tryClaimSessionSend(sendSessionId)) {
+      showWarning('chat.anotherConversationBusy');
+      return;
+    }
 
     const uploadedFiles: FileInfo[] = [];
 
     try {
-      if (attachments.attachments.length > 0) {
+      if (draftFiles.length > 0) {
         let uploadFailed = 0;
-        for (const file of attachments.attachments) {
+        for (const file of draftFiles) {
           try {
             const buffer = await file.arrayBuffer();
             const info = await window.electron.uploadFile({
@@ -581,7 +624,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
       }
 
       const att = t('chat.attachment');
-      const textContent = input.trim() || (uploadedFiles.length > 0 ? att : '');
+      const textContent = draftText || (uploadedFiles.length > 0 ? att : '');
       const hasImages = uploadedFiles.some((f) => f.type?.startsWith('image/'));
       const activeModel = pickModelForTurn(messages, textContent, hasImages);
       if (!activeModel) {
@@ -604,9 +647,12 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
         ? effectiveWebEnabled(currentSession, webSearchEnabled)
         : webSearchEnabled;
 
-      setInput('');
-      attachments.clearAttachments();
-      requestAnimationFrame(() => inputAreaRef.current?.focus());
+      composerDrafts.clearDraft(sendSessionId);
+      if (useChatStore.getState().currentSessionId === sendSessionId) {
+        setInput('');
+        attachments.clearAttachments();
+        requestAnimationFrame(() => inputAreaRef.current?.focus());
+      }
 
       await commitUserMessageAndReply({
         sessionId: sendSessionId,
@@ -670,7 +716,10 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
         runModelReply,
         onCommitted: () => setEditingMessageId(null),
       });
-      if (!result.ok) return;
+      if (!result.ok) {
+        if (result.reason === 'busy') showWarning('chat.anotherConversationBusy');
+        return;
+      }
     } catch (e) {
       clearLoadingForSession(sendSessionId);
       console.error('[handleSubmitEditedMessage]', e);
@@ -816,6 +865,11 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
         </div>
       )}
 
+      <VoiceInteractionBar enabled={speechInputEnabled} listening={speechDictation.listening} starting={speechDictation.starting||voiceWake.starting} thinking={isSessionBusy} speaking={voiceReplySpeaking} wakeListening={voiceWake.listening} wakePhrase={voiceWakePhrase} supported={speechDictation.supported}
+        paused={voiceManualPause} onResume={()=>setVoiceManualPause(false)}
+        onInterrupt={()=>{setVoiceManualPause(false);cancelVoiceReply();speechDictation.abort();if(currentSessionId&&isSessionBusy)stopSessionWork(currentSessionId);setVoiceInterruptRequested(true);}}
+        onStop={()=>{setVoiceManualPause(true);setVoiceInterruptRequested(false);voiceWakeLoopRef.current=false;cancelVoiceReply();speechDictation.abort();if(currentSessionId&&isSessionBusy)stopSessionWork(currentSessionId);}}/>
+
       <ChatComposer
         attachments={attachments.attachments}
         attachmentPreviews={attachments.attachmentPreviews}
@@ -840,7 +894,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
         speechListening={speechDictation.listening}
         speechStarting={speechDictation.starting}
         speechBanner={speechDictation.banner ?? null}
-        onSpeechToggle={() => speechDictation.toggle()}
+        onSpeechToggle={() => {setVoiceManualPause(false);cancelVoiceReply();speechDictation.toggle();}}
         onSpeechClearBanner={() => speechDictation.clearBanner()}
         voiceWakeListening={voiceWake.listening}
         voiceWakeStarting={voiceWake.starting}

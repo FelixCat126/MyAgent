@@ -22,6 +22,7 @@ interface SettingStore {
   voiceWakePhrase: string;
   /** 助手回复分段语音播报（不播报思考过程） */
   voiceReplyEnabled: boolean;
+  voiceReplyMode: 'auto' | 'full' | 'summary';
   volcAsrAppKey: string;
   volcAsrAccessKey: string;
   volcAsrResourceId: string;
@@ -45,6 +46,7 @@ interface SettingStore {
   setVoiceWakeEnabled: (v: boolean) => void;
   setVoiceWakePhrase: (v: string) => void;
   setVoiceReplyEnabled: (v: boolean) => void;
+  setVoiceReplyMode: (v: 'auto' | 'full' | 'summary') => void;
   setVolcAsrAppKey: (v: string) => void;
   setVolcAsrAccessKey: (v: string) => void;
   setVolcAsrResourceId: (v: string) => void;
@@ -67,6 +69,7 @@ export const useSettingStore = create<SettingStore>()(
       voiceWakeEnabled: false,
       voiceWakePhrase: '小媛小媛',
       voiceReplyEnabled: false,
+      voiceReplyMode: 'auto',
       volcAsrAppKey: '',
       volcAsrAccessKey: '',
       volcAsrResourceId: '',
@@ -93,6 +96,7 @@ export const useSettingStore = create<SettingStore>()(
       setVoiceWakeEnabled: (v: boolean) => set({ voiceWakeEnabled: v }),
       setVoiceWakePhrase: (v: string) => set({ voiceWakePhrase: v }),
       setVoiceReplyEnabled: (v: boolean) => set({ voiceReplyEnabled: v }),
+      setVoiceReplyMode: (v: 'auto' | 'full' | 'summary') => set({ voiceReplyMode: v }),
       setVolcAsrAppKey: (v: string) => set({ volcAsrAppKey: v }),
       setVolcAsrAccessKey: (v: string) => set({ volcAsrAccessKey: v }),
       setVolcAsrResourceId: (v: string) => set({ volcAsrResourceId: v }),
@@ -108,7 +112,7 @@ export const useSettingStore = create<SettingStore>()(
     }),
     {
       name: PERSIST_KEYS.setting,
-      version: 16,
+      version: 17,
       storage: zustandPersistJson,
       migrate: (persisted, version) => {
         const raw = persisted as Record<string, unknown>;
@@ -139,6 +143,7 @@ export const useSettingStore = create<SettingStore>()(
             voiceWakeEnabled: boolean;
             voiceWakePhrase: string;
             voiceReplyEnabled: boolean;
+  voiceReplyMode: 'auto' | 'full' | 'summary';
           }>;
 
         const volcMerged = {
@@ -155,6 +160,7 @@ export const useSettingStore = create<SettingStore>()(
             if (version < 9 && cur === '小助手') return '小媛小媛';
             return cur;
           })(),
+          voiceReplyMode: ['auto','full','summary'].includes(String(s.voiceReplyMode)) ? s.voiceReplyMode : 'auto',
           voiceReplyEnabled:
             typeof sg.voiceReplyEnabled === 'boolean' ? sg.voiceReplyEnabled : false,
           volcAsrAppKey: typeof s.volcAsrAppKey === 'string' ? s.volcAsrAppKey : '',

@@ -1,5 +1,7 @@
 appId: com.myagent.app
 productName: MyAgent
+# 所用原生画布采用 N-API 预编译包，跨 Electron ABI 不需重编译。
+npmRebuild: false
 directories:
   output: release
   buildResources: resources
@@ -8,8 +10,29 @@ files:
   - dist/**/*
   - dist-electron/**/*
   - resources/**/*
+  # PDF 通过 @napi-rs/canvas 渲染；不分发 PDF.js 可选且未使用的 node-canvas。
+  - '!node_modules/canvas/**/*'
+
+asarUnpack:
+  - node_modules/@napi-rs/**/*
+  - node_modules/tesseract.js/**/*
+  - node_modules/tesseract.js-core/**/*
+  - node_modules/pdfjs-dist/**/*
+  # OCR 的 Node worker 从真实目录启动，其运行时依赖也须在 asar 外可解析。
+  - node_modules/regenerator-runtime/**/*
+  - node_modules/is-url/**/*
+  - node_modules/bmp-js/**/*
+  - node_modules/wasm-feature-detect/**/*
+  - node_modules/node-fetch/**/*
+  - node_modules/whatwg-url/**/*
+  - node_modules/tr46/**/*
+  - node_modules/webidl-conversions/**/*
 
 extraResources:
+  - from: resources/ocr
+    to: ocr
+    filter:
+      - '**/*'
   # 手势识别模型不能塞进 asar（FilesetResolver 需要可访问的 file:// 路径），
   # 解到 Contents/Resources/models/，主进程通过 process.resourcesPath 找到它
   - from: resources/models

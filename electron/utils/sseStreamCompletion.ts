@@ -1,3 +1,5 @@
+import { StringDecoder } from 'node:string_decoder';
+
 export type SseReadableStream = {
   on: (event: string, listener: (arg?: unknown) => void) => unknown;
   destroy?: () => void;
@@ -33,15 +35,24 @@ export function isTerminalSseLine(line: string): boolean {
 export function consumeSseLines(
   stream: SseReadableStream,
   onLine: (line: string) => void,
-  options: { firstEventTimeoutMs?: number } = {}
+  options: { firstEventTimeoutMs?: number; maxDurationMs?: number } = {}
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     let buffer = '';
+    const decoder = new StringDecoder('utf8');
     let settled = false;
+    const durationTimer = options.maxDurationMs ? setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      if (firstEventTimer) clearTimeout(firstEventTimer);
+      reject(new Error('MODEL_STREAM_DURATION_TIMEOUT'));
+      stream.destroy?.();
+    }, options.maxDurationMs) : null;
     const firstEventTimer = options.firstEventTimeoutMs
       ? setTimeout(() => {
           if (settled) return;
           settled = true;
+          if (durationTimer) clearTimeout(durationTimer);
           const error = new Error('MODEL_STREAM_FIRST_EVENT_TIMEOUT') as Error & { code?: string };
           error.code = 'ETIMEDOUT';
           reject(error);
@@ -52,13 +63,23 @@ export function consumeSseLines(
     const settle = (destroy = false) => {
       if (settled) return;
       settled = true;
+      if (durationTimer) clearTimeout(durationTimer);
       if (firstEventTimer) clearTimeout(firstEventTimer);
       resolve();
       if (destroy) stream.destroy?.();
     };
 
     const consumeLine = (line: string): boolean => {
-      onLine(line);
+      try {
+        onLine(line);
+      } catch (error) {
+        settled = true;
+        if (durationTimer) clearTimeout(durationTimer);
+        if (firstEventTimer) clearTimeout(firstEventTimer);
+        reject(error);
+        stream.destroy?.();
+        return true;
+      }
       if (!isTerminalSseLine(line)) return false;
       settle(true);
       return true;
@@ -67,7 +88,7 @@ export function consumeSseLines(
     stream.on('data', (value?: unknown) => {
       if (settled) return;
       if (firstEventTimer) clearTimeout(firstEventTimer);
-      buffer += Buffer.isBuffer(value) ? value.toString() : String(value ?? '');
+      buffer += Buffer.isBuffer(value) ? decoder.write(value) : String(value ?? '');
       const parts = buffer.split('\n');
       buffer = parts.pop() || '';
       for (const line of parts) {
@@ -76,6 +97,7 @@ export function consumeSseLines(
     });
     stream.on('end', () => {
       if (settled) return;
+      buffer += decoder.end();
       if (buffer) {
         for (const line of buffer.split('\n')) {
           if (consumeLine(line.replace(/\r$/, ''))) return;
@@ -86,6 +108,7 @@ export function consumeSseLines(
     stream.on('error', (value?: unknown) => {
       if (settled) return;
       settled = true;
+      if (durationTimer) clearTimeout(durationTimer);
       if (firstEventTimer) clearTimeout(firstEventTimer);
       reject(value instanceof Error ? value : new Error(String(value ?? 'SSE stream error')));
     });

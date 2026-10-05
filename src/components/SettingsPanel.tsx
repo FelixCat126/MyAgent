@@ -1,9 +1,9 @@
+import { ModelSettingsHub } from '../features/modelHub/ModelSettingsHub';
 import React, { useEffect } from 'react';
 import { useSettingStore } from '../store/settingStore';
 import { WebSearchSection } from './settings/WebSearchSection';
 import { KnowledgeSection } from './settings/KnowledgeSection';
 import { AppSection } from './settings/AppSection';
-import { ModelsSection } from './settings/ModelsSection';
 import { useI18n } from '../hooks/useI18n';
 import { useSystemTtsAvailable } from '@/hooks/useSystemTtsAvailable';
 import { useMediaInputAvailability } from '@/hooks/useMediaInputAvailability';
@@ -35,7 +35,7 @@ const SettingsPanel: React.FC = () => {
   /**
    * 硬件可用性检测：物理缺失则强制关闭对应开关，避免在无硬件环境下被意外激活。
    * - 摄像头缺失 → 手势/视觉识别关闭并禁用
-   * - 麦克风缺失 → 语音输入 / 唤醒 / 播报三者全部关闭并禁用
+   * - 麦克风缺失 → 关闭语音输入与唤醒；系统播报不依赖麦克风
    */
   const mediaAvail = useMediaInputAvailability();
   const cameraMissing = mediaAvail.camera === 'missing';
@@ -55,7 +55,7 @@ const SettingsPanel: React.FC = () => {
     if (!microphoneMissing) return;
     if (speechInputEnabled) setSpeechInputEnabled(false);
     if (voiceWakeEnabled) setVoiceWakeEnabled(false);
-    if (voiceReplyEnabled) setVoiceReplyEnabled(false);
+
   }, [
     microphoneMissing,
     speechInputEnabled,
@@ -71,19 +71,15 @@ const SettingsPanel: React.FC = () => {
 
   return (
     <div className="flex h-full flex-col bg-stone-100/95 backdrop-blur-xl dark:bg-darkChrome/80">
-      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-2.5 scrollbar-hide" data-gesture-scroll-target="settings">
-        {/* 模型配置：独立卡片 */}
-        <ModelsSection cardShell={cardShell} t={t} />
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden space-y-3 py-3 scrollbar-hide" data-gesture-scroll-target="settings">
+        <ModelSettingsHub cardShell={cardShell} systemTtsAvailable={systemTtsAvailable} microphoneMissing={microphoneMissing} />
 
         <WebSearchSection cardShell={cardShell} t={t} />
 
         <KnowledgeSection cardShell={cardShell} t={t} />
 
         <AppSection
-          systemTtsAvailable={systemTtsAvailable}
-          microphoneMissing={microphoneMissing}
           cameraMissing={cameraMissing}
-          locale={locale}
           cardShell={cardShell}
           t={t}
         />

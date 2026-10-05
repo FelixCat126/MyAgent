@@ -2,6 +2,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAnimStream } from './runModelReplyShared';
 
 describe('createAnimStream', () => {
+  it('取消播放丢弃未显示增量并结束等待，不在停止后继续打字', async () => {
+    vi.useFakeTimers();
+    const append=vi.fn();const stream=createAnimStream('s','a',append);
+    stream.push('这是一段待显示文字');const finish=stream.finish();
+    await vi.advanceTimersByTimeAsync(20);stream.cancel();await finish;
+    stream.push('迟到增量');await vi.advanceTimersByTimeAsync(1000);
+    expect(append.mock.calls.map(call=>call[2]).join('')).toBe('这');
+    expect(vi.getTimerCount()).toBe(0);
+  });
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -48,7 +57,7 @@ describe('createAnimStream', () => {
     vi.useFakeTimers();
     const append = vi.fn();
     const stream = createAnimStream('s', 'a', append);
-    stream.push('x'.repeat(1000));
+    stream.push('汉'.repeat(1000));
 
     await vi.advanceTimersByTimeAsync(120);
 
@@ -57,7 +66,7 @@ describe('createAnimStream', () => {
     expect(Math.max(...chunks.map((chunk) => chunk.length))).toBe(1);
   });
 
-  it('中文标点后有轻微停顿，形成自然阅读节奏', async () => {
+  it('中文标点不再强制停顿，正文持续以约 50 字每秒推进', async () => {
     vi.useFakeTimers();
     const append = vi.fn();
     const stream = createAnimStream('s', 'a', append);
@@ -65,10 +74,43 @@ describe('createAnimStream', () => {
 
     await vi.advanceTimersByTimeAsync(60);
     expect(append.mock.calls.map((call) => call[2]).join('')).toBe('你好，');
-    await vi.advanceTimersByTimeAsync(43);
-    expect(append.mock.calls.map((call) => call[2]).join('')).toBe('你好，');
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(20);
     expect(append.mock.calls.map((call) => call[2]).join('')).toBe('你好，世');
+    await vi.advanceTimersByTimeAsync(20);
+    expect(append.mock.calls.map((call) => call[2]).join('')).toBe('你好，世界');
+  });
+
+  it('渲染回调耗时不会逐字叠加到显示间隔', async () => {
+    vi.useFakeTimers();
+    const shownAt: number[] = [];
+    const stream = createAnimStream('s', 'a', () => {
+      shownAt.push(performance.now());
+      vi.advanceTimersByTime(12);
+    });
+    stream.push('连续输出文字');
+
+    await vi.advanceTimersByTimeAsync(120);
+
+    expect(shownAt.slice(0, 5)).toEqual([20, 40, 60, 80, 100]);
+  });
+
+  it('偶发长帧会温和追赶，单次最多补两个中文字符', async () => {
+    vi.useFakeTimers();
+    const chunks: string[] = [];
+    const stream = createAnimStream('s', 'a', (_sessionId, _assistantId, chunk) => {
+      chunks.push(chunk);
+      if (chunks.length === 1) vi.advanceTimersByTime(100);
+    });
+    stream.push('汉'.repeat(20));
+    const finished = stream.finish();
+
+    await vi.runAllTimersAsync();
+    await finished;
+
+    expect(chunks.join('')).toBe('汉'.repeat(20));
+    expect(chunks[0]).toBe('汉');
+    expect(chunks.some((chunk) => chunk.length === 2)).toBe(true);
+    expect(Math.max(...chunks.map((chunk) => chunk.length))).toBe(2);
   });
 
   it('不会把 emoji 的代理对拆成两个残缺字符', async () => {
@@ -96,6 +138,23 @@ describe('createAnimStream', () => {
     await vi.advanceTimersByTimeAsync(30);
     expect(append.mock.calls.map((call) => call[2])).toEqual(['快', '速', '思', '考']);
     await expect(stream.finish()).resolves.toBeUndefined();
+  });
+
+  it('已完成的 Agent 答案加快回放，同时保留逐字打字感', async () => {
+    vi.useFakeTimers();
+    const chunks: string[] = [];
+    const stream = createAnimStream('s', 'a', (_sessionId, _assistantId, chunk) => {
+      chunks.push(chunk);
+    }, { pace: 'completed' });
+    stream.push('汉'.repeat(100));
+    const finished = stream.finish();
+
+    await vi.advanceTimersByTimeAsync(500);
+    expect(chunks.join('')).toHaveLength(50);
+    expect(chunks.every((chunk) => chunk.length === 1)).toBe(true);
+    await vi.advanceTimersByTimeAsync(500);
+    await finished;
+    expect(chunks.join('')).toHaveLength(100);
   });
 
   it('暂停的正文会等待思考逐字排空，恢复后才开始输出', async () => {

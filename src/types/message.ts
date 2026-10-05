@@ -7,6 +7,10 @@ export interface Message {
   content: string;
   /** 模型的链式推理/思考文本（若有），与正文分离展示并可折叠 */
   reasoning?: string;
+  /** 仅工具执行上下文使用，原生调用必须按 id 回传结果。 */
+  nativeToolCalls?: import('../features/connections/api').NativeToolCall[];
+  nativeAssistantBlocks?: Array<Record<string, unknown>>;
+  nativeToolResults?: Array<{ id: string; content: string; isError?: boolean }>;
   /** 本轮用户明确要求生成可下载文档时，控制助手消息下方的下载入口 */
   exportHint?: {
     document?: boolean;
@@ -23,6 +27,8 @@ export interface Message {
    */
   meta?: {
     kind?: 'context-summary';
+    taskError?: string;
+    runtimeTaskId?: string;
   };
   files?: FileInfo[];
   timestamp: number;
@@ -56,6 +62,10 @@ export interface ImageGenerationParams {
   count?: number;
   /** 参考图：可为本地上传文件路径、远端 URL、data URL */
   referenceImages?: string[];
+  /** PNG mask matching the first reference image; transparent pixels are edited. */
+  maskImage?: string;
+  /** Relative strength for SD image edits. */
+  editStrength?: number;
   modelId?: string;
   /** 必须由渲染进程传入：主进程无法读取 zustand 持久化（localStorage）里的模型列表 */
   imageGeneratorConfig?: ModelConfig['imageGeneratorConfig'];

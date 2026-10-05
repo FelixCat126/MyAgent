@@ -45,6 +45,7 @@ export function useVolcAsrPath(shared: DictationShared, labels: SpeechDictationL
 
   /** 唤醒确认 TTS 播放期间并行预拉麦克风（WebSocket 须在 TTS 后再建，否则长时间无音频会失效） */
   const wakePreparedStreamRef = useRef<MediaStream | null>(null);
+  const wakePrepGenerationRef = useRef(0);
   const wakeMicPrepareRef = useRef<Promise<void> | null>(null);
   /** 识别结果上一次 payload（trimmed），用于检测「有新的识别下发」并重置静默计时 */
   const lastVolcPayloadRef = useRef<string>('__VOLC_IDLE_SENTINEL__');
@@ -59,6 +60,7 @@ export function useVolcAsrPath(shared: DictationShared, labels: SpeechDictationL
   }, []);
 
   const discardWakePreparedMic = useCallback(() => {
+    wakePrepGenerationRef.current++;
     wakePreparedStreamRef.current?.getTracks().forEach((t) => {
       try {
         t.stop();
@@ -92,7 +94,10 @@ export function useVolcAsrPath(shared: DictationShared, labels: SpeechDictationL
       if (existing?.active) return;
       discardWakePreparedMic();
       try {
-        wakePreparedStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const generation=wakePrepGenerationRef.current;
+        const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+        if(generation!==wakePrepGenerationRef.current){stream.getTracks().forEach(track=>track.stop());return;}
+        wakePreparedStreamRef.current=stream;
       } catch {
         wakePreparedStreamRef.current = null;
       }

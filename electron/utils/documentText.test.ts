@@ -96,11 +96,11 @@ describe('extractTextFromPath（多格式提取）', () => {
       const r = await extractTextFromPath(p, 'data.xlsx');
       expect(r.kind).toBe('xlsx');
       expect(r.text).toMatch(/【Excel: data\.xlsx】/);
-      expect(r.text).toContain('### 工作表: Sheet1');
-      expect(r.text).toContain('| 名称 | 数量 |');
-      expect(r.text).toContain('| --- | --- |');
-      expect(r.text).toContain('| 苹果 | 3 |');
-      expect(r.text).toContain('| 梨 | 5 |');
+      expect(r.text).toContain('Sheet1 (A1:B3)');
+      expect(r.text).toContain('| 1 | 名称 | 数量 |');
+      expect(r.text).toContain('| --- | --- | --- |');
+      expect(r.text).toContain('| 2 | 苹果 | 3 |');
+      expect(r.text).toContain('| 3 | 梨 | 5 |');
     });
   });
 

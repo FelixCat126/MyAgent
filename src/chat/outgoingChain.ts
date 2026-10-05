@@ -6,6 +6,9 @@ import { isAttachmentPlaceholder } from '../utils/attachmentPlaceholder';
 import { modelHasUsableImageGenerator } from '../store/modelStore';
 import { t as tUi } from '../i18n/ui';
 import type { Locale } from '../i18n/types';
+import { personalContextMessage, resolveSessionProjectContext } from '../features/personal/context';
+import { useChatStore } from '../store/chatStore';
+import { withoutGeneratedRuntimeContext } from '../utils/runtimeContext';
 
 function userQueryTextForRag(m: Message): string {
   const t = (m.content || '').trim();
@@ -26,12 +29,13 @@ export type VectorRagSendHint =
 async function maybeInjectVectorRag(
   sessionMessages: Message[],
   userMessage: Message,
-  skip?: boolean
+  skip?: boolean,
+  rootOverride?: string
 ): Promise<{ messages: Message[]; ragHint: VectorRagSendHint }> {
   if (skip) {
     return { messages: [...sessionMessages, userMessage], ragHint: { kind: 'skipped' } };
   }
-  const root = useWorkspaceStore.getState().rootPath.trim();
+  const root = rootOverride ?? useWorkspaceStore.getState().rootPath.trim();
   const {
     vectorRagEnabled,
     vectorTopK,
@@ -39,9 +43,13 @@ async function maybeInjectVectorRag(
     getEmbedConfigForIpc,
   } = useKnowledgeStore.getState();
   const embed = getEmbedConfigForIpc();
-  if (!root || !vectorRagEnabled || !embed) {
+  if (!vectorRagEnabled) {
     return { messages: [...sessionMessages, userMessage], ragHint: { kind: 'skipped' } };
   }
+  if (!root || !embed) return {
+    messages: [...sessionMessages, userMessage],
+    ragHint: { kind: 'error', message: !root ? '尚未选择资料目录 / No reference directory selected' : '尚未配置嵌入服务 / No embedding service configured' },
+  };
   const q = userQueryTextForRag(userMessage);
   if (!q) {
     return { messages: [...sessionMessages, userMessage], ragHint: { kind: 'skipped' } };
@@ -95,10 +103,11 @@ async function maybeInjectVectorRag(
 async function maybeInjectWorkspaceMessages(
   sessionMessages: Message[],
   userMessage: Message,
-  skip?: boolean
+  skip?: boolean,
+  rootOverride?: string
 ): Promise<Message[]> {
   if (skip) return [...sessionMessages, userMessage];
-  const root = useWorkspaceStore.getState().rootPath.trim();
+  const root = rootOverride ?? useWorkspaceStore.getState().rootPath.trim();
   if (!root) return [...sessionMessages, userMessage];
   const maxChars = useWorkspaceStore.getState().maxChars;
   try {
@@ -212,14 +221,21 @@ export async function buildOutgoingChain(
   historyWithoutUser: Message[],
   userMessage: Message,
   web: { enabled: boolean; provider: WebSearchProvider; apiKey: string },
-  opts?: { skipContextInject?: boolean }
+  opts?: { skipContextInject?: boolean; sessionId?: string }
 ): Promise<{ chain: Message[]; ragHint: VectorRagSendHint }> {
   const skip = opts?.skipContextInject === true;
-  const vec = await maybeInjectVectorRag(historyWithoutUser, userMessage, skip);
+  const sessionId = opts?.sessionId ?? useChatStore.getState().sessions.find((session) =>
+    session.messages.some((message) => message.id === userMessage.id)
+  )?.id ?? useChatStore.getState().currentSessionId;
+  const context = resolveSessionProjectContext(sessionId);
+  const personal = personalContextMessage(userQueryTextForRag(userMessage), sessionId);
+  const ordinaryHistory = withoutGeneratedRuntimeContext(historyWithoutUser);
+  const history = personal ? [personal, ...ordinaryHistory] : ordinaryHistory;
+  const vec = await maybeInjectVectorRag(history, userMessage, skip, context.rootPath);
   const withVec = vec.messages;
   const hist0 = withVec.slice(0, -1);
   const last0 = withVec[withVec.length - 1];
-  const withWs = await maybeInjectWorkspaceMessages(hist0, last0, skip);
+  const withWs = await maybeInjectWorkspaceMessages(hist0, last0, skip, context.rootPath);
   const hist = withWs.slice(0, -1);
   const last = withWs[withWs.length - 1];
   const chain = await buildMessagesWithOptionalWebSearch(hist, last, web);

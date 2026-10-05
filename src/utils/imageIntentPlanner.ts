@@ -40,6 +40,25 @@ const PER_ITEM_RE =
 const GROUP_SCOPE_RE =
   /(?:所有|全部|每个|每位|各个|各位).{0,16}(?:角色|人物|成员|对象|主体|款式|方案|版本|物料|素材|item|subject|character|person)|(?:角色|人物|成员|对象|主体|款式|方案|版本|物料|素材|item|subject|character|person).{0,16}(?:每人|每个|每位|各自|分别|逐个)/i;
 
+const DATA_VISUALIZATION_RE = /(?:柱状图|柱形图|条形图|折线图|曲线图|饼图|环形图|散点图|直方图|箱线图|热力图|统计图(?:表)?|图表|数据可视化|可视化数据|\b(?:charts?|plots?|histograms?|scatterplots?|data\s+visuali[sz]ation)\b)/i;
+const CREATIVE_IMAGE_OUTPUT_RE = /(?:生图|AI\s*(?:生成)?(?:图片|图像)|(?:画|绘制|生成|制作|设计|\b(?:generate|create|draw|design|make)\b)[^。！？;\n]{0,60}(?:照片|摄影|海报|插画|头像|壁纸|模特图|商品图|风景|人像|肖像|\b(?:photos?|posters?|illustrations?|portraits?|avatars?|wallpapers?)\b))/i;
+const ADDITIONAL_IMAGE_OUTPUT_RE = /(?:再|另|同时|额外|另外|并且|\b(?:then|also|separately)\b).{0,16}(?:生成|绘制|画|制作|\b(?:generate|create|draw|make)\b).{0,45}(?:图片|图像|\b(?:images?|pictures?)\b)/i;
+
+/** Extract a separate creative brief rather than sending the data-calculation request to an image model. */
+export function independentCreativeImagePrompt(text: string): string | undefined {
+  if (imageRequestIsDiscussion(text)) return undefined;
+  const match = ADDITIONAL_IMAGE_OUTPUT_RE.exec(text) ?? CREATIVE_IMAGE_OUTPUT_RE.exec(text);
+  if (!match) return undefined;
+  const beforeRequest = text.slice(Math.max(0, match.index - 24), match.index);
+  if (/(?:不要|不用|无需|别|不需要|禁止|停止)[^，。；;！？\n]{0,12}$/.test(beforeRequest)) return undefined;
+  return text.slice(match.index).trim();
+}
+
+/** Statistical charts use deterministic data tools, even if the model emits an image call. */
+export function imageRequestIsDataVisualization(text: string): boolean {
+  return DATA_VISUALIZATION_RE.test(text) && !independentCreativeImagePrompt(text);
+}
+
 export function parseImageNumber(raw: string): number | undefined {
   if (/^\d+$/.test(raw)) return Number(raw);
   if (raw === '十') return 10;
@@ -72,6 +91,7 @@ function textPrefersNonImageOutput(text: string): boolean {
   const t = String(text || '').trim();
   if (!t) return false;
   if (imageRequestIsDiscussion(t)) return true;
+  if (imageRequestIsDataVisualization(t)) return true;
   return NON_IMAGE_OUTPUT_RE.test(t) && !IMAGE_NOUN_RE.test(t);
 }
 
@@ -114,7 +134,7 @@ export function planImageIntent(input: {
 }): ImageIntent {
   const userText = String(input.userText || '').trim();
   const assistantText = String(input.assistantText || '').trim();
-  if (looksLikeLocalImageFindRequest(userText) || imageRequestIsDiscussion(userText)) {
+  if (looksLikeLocalImageFindRequest(userText) || imageRequestIsDiscussion(userText) || imageRequestIsDataVisualization(userText)) {
     return { shouldGenerate: false, prompt: userText, count: undefined, inheritStyle: false };
   }
   const count = inferImageCountFromText(userText);

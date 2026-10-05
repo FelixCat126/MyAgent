@@ -1,4 +1,5 @@
 import path from 'path';
+import fs from 'node:fs/promises';
 import { expandUserPath } from './expandUserPath';
 import {
   chunksForIndexedFile,
@@ -73,6 +74,7 @@ async function embedWorkspaceChunks(chunks: WorkspaceChunk[], embed: KnowledgeEm
   }
   const dim = vectors[0]?.length || 0;
   if (!dim) throw new Error('得到空向量');
+  if (vectors.some((vector) => vector.length !== dim || vector.some((n) => typeof n !== 'number' || !Number.isFinite(n)))) throw new Error('嵌入向量格式或维数无效');
   return chunks.map((c, i) => ({
     id: c.id,
     path: c.path,
@@ -97,6 +99,8 @@ async function persistFullIndex(params: {
     root,
     provider: embed.provider,
     model: embed.model,
+    baseUrl: embed.baseUrl.replace(/\/+$/, ''),
+    volcMultimodal: Boolean(embed.volcMultimodal),
     updatedAt: Date.now(),
     dim,
     chunks: vectors,
@@ -105,7 +109,7 @@ async function persistFullIndex(params: {
   await writeVectorIndex(data);
 }
 
-export async function performFullKnowledgeIndex(
+async function performFullKnowledgeIndexUnlocked(
   rawRoot: string,
   embed: KnowledgeEmbedPayload
 ): Promise<KnowledgeIndexOk | KnowledgeIndexErr> {
@@ -113,8 +117,10 @@ export async function performFullKnowledgeIndex(
   const diskMetas = await listWorkspaceFilesForIncremental(resolved);
   const diskByRel = new Map(diskMetas.map((m) => [m.relPosix.replace(/\\/g, '/'), m]));
 
-    const { chunks, fileCount, truncated } = await collectWorkspaceChunks(resolved);
+  const { chunks, fileCount, truncated } = await collectWorkspaceChunks(resolved);
   if (!chunks.length) {
+    // A rebuild over an emptied directory must invalidate its former text even when no content is indexable.
+    await persistFullIndex({ root: resolved, chunksPlain: [], vectors: [], diskByRel, embed });
     return {
       ok: false as const,
       error:
@@ -153,22 +159,24 @@ export async function performFullKnowledgeIndex(
 
 /** 不满足增量条件时需由调用方改用全文索引 */
 export function cantIncrementalReuse(existing: VectorIndexFileV1 | null, rootAbs: string, embed: KnowledgeEmbedPayload): boolean {
-  if (!existing || !existing.chunks?.length) return true;
+  if (!existing || !Array.isArray(existing.chunks)) return true;
   if (!rootsMatchIndex(existing.root, rootAbs)) return true;
   if (existing.provider !== embed.provider || existing.model !== embed.model) return true;
-  if (!existing.dim) return true;
-  if (!existing.fingerprints || Object.keys(existing.fingerprints).length === 0) return true;
+  if (existing.baseUrl !== embed.baseUrl.replace(/\/+$/, '') || Boolean(existing.volcMultimodal) !== Boolean(embed.volcMultimodal)) return true;
+  if (!existing.fingerprints) return true;
+  if (!existing.chunks.length) return false;
+  if (!existing.dim || Object.keys(existing.fingerprints).length === 0) return true;
   return false;
 }
 
-export async function performIncrementalKnowledgeIndex(
+async function performIncrementalKnowledgeIndexUnlocked(
   rawRoot: string,
   embed: KnowledgeEmbedPayload
 ): Promise<KnowledgeIndexOk | KnowledgeIndexErr> {
   const resolved = path.resolve(expandUserPath(String(rawRoot || '').trim()));
-  const existing = await readVectorIndex();
+  const existing = await readVectorIndex(resolved);
   if (cantIncrementalReuse(existing, resolved, embed) || !existing) {
-    return performFullKnowledgeIndex(rawRoot, embed);
+    return performFullKnowledgeIndexUnlocked(rawRoot, embed);
   }
 
   const MAX_TOTAL = 2500;
@@ -191,6 +199,10 @@ export async function performIncrementalKnowledgeIndex(
     if (!diskByRel.has(k)) continue;
     if (rebuildPaths.has(k)) continue;
     kept.push(ch);
+  }
+  if (!rebuildPaths.size && kept.length === existing.chunks.length) {
+    // Every send checks source freshness, but unchanged multi-megabyte vector files need no rewrite.
+    return { ok: true, fileCount: diskMetas.length, chunkCount: kept.length, truncated: kept.length >= MAX_TOTAL, root: resolved, reusedChunks: kept.length, rebuiltFiles: 0 };
   }
 
   const globalCount = { n: kept.length };
@@ -222,7 +234,7 @@ export async function performIncrementalKnowledgeIndex(
         newVectors[0].emb.length &&
         newVectors[0].emb.length !== existing.dim
       ) {
-        return performFullKnowledgeIndex(rawRoot, embed);
+        return performFullKnowledgeIndexUnlocked(rawRoot, embed);
       }
     }
 
@@ -241,6 +253,8 @@ export async function performIncrementalKnowledgeIndex(
       root: resolved,
       provider: embed.provider,
       model: embed.model,
+      baseUrl: embed.baseUrl.replace(/\/+$/, ''),
+      volcMultimodal: Boolean(embed.volcMultimodal),
       updatedAt: Date.now(),
       dim: merged.length ? merged[0].emb.length : existing.dim,
       chunks: merged,
@@ -261,4 +275,25 @@ export async function performIncrementalKnowledgeIndex(
     const m = e instanceof Error ? e.message : String(e);
     return { ok: false as const, error: `增量索引失败：${m}` };
   }
+}
+
+const rootIndexJobs = new Map<string, Promise<unknown>>();
+async function withIndexRootLock(rawRoot: string, operation: (root: string) => Promise<KnowledgeIndexOk | KnowledgeIndexErr>): Promise<KnowledgeIndexOk | KnowledgeIndexErr> {
+  try {
+    if (!String(rawRoot || '').trim()) return { ok: false, error: '工作区根路径为空' };
+    const root = await fs.realpath(path.resolve(expandUserPath(rawRoot)));
+    if (!(await fs.stat(root)).isDirectory()) return { ok: false, error: '资料路径不是目录' };
+    const previous = rootIndexJobs.get(root) ?? Promise.resolve();
+    const job = previous.catch(() => {}).then(() => operation(root));
+    rootIndexJobs.set(root, job);
+    try { return await job; }
+    finally { if (rootIndexJobs.get(root) === job) rootIndexJobs.delete(root); }
+  } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
+}
+
+export function performFullKnowledgeIndex(rawRoot: string, embed: KnowledgeEmbedPayload): Promise<KnowledgeIndexOk | KnowledgeIndexErr> {
+  return withIndexRootLock(rawRoot, (root) => performFullKnowledgeIndexUnlocked(root, embed));
+}
+export function performIncrementalKnowledgeIndex(rawRoot: string, embed: KnowledgeEmbedPayload): Promise<KnowledgeIndexOk | KnowledgeIndexErr> {
+  return withIndexRootLock(rawRoot, (root) => performIncrementalKnowledgeIndexUnlocked(root, embed));
 }

@@ -1,7 +1,7 @@
 import { ipcMain, app } from 'electron';
 import fs from 'fs';
 import path from 'path';
-import { writeFile, mkdir, unlink, readdir } from 'fs/promises';
+import { unlink, readdir } from 'fs/promises';
 import {
   protectPersistJsonText,
   revealPersistJsonText,
@@ -17,6 +17,10 @@ const SECURE_PERSIST_NAMES = new Set([
   'web-search-storage',
   'knowledge-storage',
   'setting-storage',
+  'connection-storage',
+  'project-storage',
+  'memory-storage',
+  'workflow-storage',
 ]);
 
 function persistDir(): string {
@@ -48,8 +52,18 @@ function readPersistTextSync(name: string): string | null {
 function writePersistTextSync(name: string, value: string): void {
   const f = filePath(name);
   fs.mkdirSync(path.dirname(f), { recursive: true });
-  fs.writeFileSync(f, SECURE_PERSIST_NAMES.has(name) ? protectPersistJsonText(value) : value, 'utf-8');
+  const temporary = `${f}.pending`;
+  const text = SECURE_PERSIST_NAMES.has(name) ? protectPersistJsonText(value) : value;
+  try {
+    fs.writeFileSync(temporary, text, { encoding: 'utf-8', mode: 0o600 });
+    fs.renameSync(temporary, f);
+  } finally {
+    try { fs.unlinkSync(temporary); } catch { /* successful rename or no temporary file */ }
+  }
 }
+
+/** All IPC writes complete atomically in the main event loop; there are no outstanding writes. */
+export async function flushPersistWrites(): Promise<void> {}
 
 /** 主进程可读：供远端网关等在无渲染线程桥接时回填模型列表等 */
 export function readPersistParsedSync(name: string): unknown | null {
@@ -70,9 +84,7 @@ ipcMain.handle('persist-state-get', async (_e, name: string) => {
 
 ipcMain.handle('persist-state-set', async (_e, payload: { name: string; value: string }) => {
   const { name, value } = payload;
-  const f = filePath(name);
-  await mkdir(path.dirname(f), { recursive: true });
-  await writeFile(f, SECURE_PERSIST_NAMES.has(name) ? protectPersistJsonText(value) : value, 'utf-8');
+  writePersistTextSync(name, value);
 });
 
 ipcMain.handle('persist-state-remove', async (_e, name: string) => {

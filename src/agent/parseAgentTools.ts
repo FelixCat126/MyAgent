@@ -1,3 +1,4 @@
+import type { DataCalculationRequest } from '../features/documents/types';
 import { isDocumentFormat, type DocumentFormat } from '../types/document';
 import { endOfBalancedBraceObject } from '../utils/toolCalls';
 
@@ -9,7 +10,9 @@ export type AgentLocalToolName =
   | 'web_open'
   | 'web_read'
   | 'web_eval'
-  | 'web_close';
+  | 'web_close'
+  | 'data_calculate'
+  | 'mcp_call';
 
 export type AgentToolCall =
   | { tool: 'local_search'; query: string; mode?: 'semantic' | 'filename' | 'image'; limit?: number; raw: string }
@@ -25,7 +28,9 @@ export type AgentToolCall =
   | { tool: 'web_open'; url: string; raw: string }
   | { tool: 'web_read'; maxChars?: number; selector?: string; raw: string }
   | { tool: 'web_eval'; js: string; raw: string }
-  | { tool: 'web_close'; raw: string };
+  | { tool: 'web_close'; raw: string }
+  | { tool: 'data_calculate'; calculation: DataCalculationRequest; raw: string }
+  | { tool: 'mcp_call'; connectionId: string; name: string; args: Record<string,unknown>; raw: string };
 
 const LOCAL_TOOL_NAMES = new Set<string>([
   'local_search',
@@ -36,12 +41,14 @@ const LOCAL_TOOL_NAMES = new Set<string>([
   'web_read',
   'web_eval',
   'web_close',
+  'data_calculate',
+  'mcp_call',
 ]);
 
 function collectLocalToolJsonSpans(text: string): { start: number; end: number; raw: string }[] {
   const spans: { start: number; end: number; raw: string }[] = [];
   const seen = new Set<string>();
-  const re = /"myagent_tool"\s*:\s*"(local_search|local_list|local_read|local_export|web_open|web_read|web_eval|web_close)"/gi;
+  const re = /"myagent_tool"\s*:\s*"(local_search|local_list|local_read|local_export|web_open|web_read|web_eval|web_close|data_calculate|mcp_call)"/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     const keyPos = m.index;
@@ -85,7 +92,7 @@ export function toolCallSignature(call: AgentToolCall): string {
       return `local_read:${call.path.trim()}`;
     case 'local_export': {
       const c = call.content;
-      return `local_export:${call.format}:${call.name}:${c.length}:${c.slice(0, 80)}:${c.slice(-80)}`;
+      return `local_export:${call.format}:${call.name}:${c}`;
     }
     case 'web_open':
       return `web_open:${normalizeToolUrl(call.url)}`;
@@ -101,6 +108,10 @@ export function toolCallSignature(call: AgentToolCall): string {
     }
     case 'web_close':
       return 'web_close';
+    case 'data_calculate':
+      return `data_calculate:${JSON.stringify(call.calculation)}`;
+    case 'mcp_call':
+      return `mcp_call:${call.connectionId}:${call.name}:${JSON.stringify(call.args)}`;
     default:
       return 'unknown';
   }
@@ -116,6 +127,15 @@ function parseLocalToolCall(raw: string): AgentToolCall | null {
   const tool = String(obj.myagent_tool ?? obj.tool ?? '');
   if (!LOCAL_TOOL_NAMES.has(tool)) return null;
 
+  if (tool === 'data_calculate') {
+    if(typeof obj.path!=='string'||!Array.isArray(obj.steps)||obj.steps.length>30)return null;
+    const {myagent_tool: _ignored,tool: _tool,...calculation}=obj;
+    return {tool,calculation:calculation as DataCalculationRequest,raw};
+  }
+  if (tool === 'mcp_call') {
+    if(typeof obj.connectionId!=='string'||typeof obj.name!=='string'||!obj.args||typeof obj.args!=='object'||Array.isArray(obj.args))return null;
+    return {tool,connectionId:obj.connectionId,name:obj.name,args:obj.args as Record<string,unknown>,raw};
+  }
   if (tool === 'local_search') {
     const query = typeof obj.query === 'string' ? obj.query.trim() : '';
     if (!query) return null;

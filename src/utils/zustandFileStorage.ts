@@ -27,9 +27,14 @@ let singleton: StateStorage | undefined;
 const pendingTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const pendingValues = new Map<string, string>();
 let pinnedPersistApi: PersistApi | null = null;
+let persistSuspended = false;
+const activeWrites = new Set<Promise<void>>();
 
 async function persistNow(name: string, value: string): Promise<void> {
-  pinnedPersistApi?.persistSet(name, value);
+  if (persistSuspended || !pinnedPersistApi) return;
+  const write = pinnedPersistApi.persistSet(name, value); activeWrites.add(write);
+  try { await write; if (pendingValues.get(name) === value) pendingValues.delete(name); }
+  finally { activeWrites.delete(write); }
 }
 
 /**
@@ -37,7 +42,8 @@ async function persistNow(name: string, value: string): Promise<void> {
  */
 export async function flushZustandFilePersist(): Promise<void> {
   const api = pinnedPersistApi;
-  if (!api) return;
+  if (persistSuspended || !api) return;
+  await Promise.all([...activeWrites]);
   const pairs = [...pendingValues.entries()];
   for (const [name] of pairs) {
     const tmr = pendingTimers.get(name);
@@ -49,15 +55,32 @@ export async function flushZustandFilePersist(): Promise<void> {
     pairs.map(([name, value]) => {
       if (typeof syncSave === 'function') {
         syncSave.call(api, name, value);
-        pendingValues.delete(name);
+        if (pendingValues.get(name) === value) pendingValues.delete(name);
         return Promise.resolve();
       }
       return api.persistSet(name, value).then(() => {
-        pendingValues.delete(name);
+        if (pendingValues.get(name) === value) pendingValues.delete(name);
       });
     })
   );
 }
+
+/** Freeze writes before a restore, including beforeunload flushes from stale renderer stores. */
+export async function suspendFilePersistForRestore(): Promise<void> {
+  if (persistSuspended) throw new Error('数据恢复正在进行');
+  persistSuspended = true;
+  for (const timer of pendingTimers.values()) clearTimeout(timer);
+  pendingTimers.clear();
+  const pairs = [...pendingValues]; pendingValues.clear();
+  try {
+    await Promise.all([...activeWrites]);
+    if (pinnedPersistApi) for (const [name,value] of pairs) {
+      if (typeof pinnedPersistApi.persistSetSync === 'function') pinnedPersistApi.persistSetSync(name,value);
+      else await pinnedPersistApi.persistSet(name,value);
+    }
+  } catch (error) { persistSuspended = false; for (const [name,value] of pairs) pendingValues.set(name,value); throw error; }
+}
+export function resumeFilePersistAfterRestoreFailure(): void { persistSuspended = false; }
 
 function wrapElectronStorage(e: PersistApi): StateStorage {
   pinnedPersistApi = e;
@@ -80,7 +103,7 @@ function wrapElectronStorage(e: PersistApi): StateStorage {
       try {
         const fromLs = localStorage.getItem(name);
         if (fromLs) {
-          await e.persistSet(name, fromLs);
+          if (!persistSuspended) await e.persistSet(name, fromLs);
           localStorage.removeItem(name);
           return fromLs;
         }
@@ -90,6 +113,7 @@ function wrapElectronStorage(e: PersistApi): StateStorage {
       return null;
     },
     setItem: async (name, value) => {
+      if (persistSuspended) return;
       pendingValues.set(name, value);
       const prev = pendingTimers.get(name);
       if (prev) clearTimeout(prev);
@@ -99,11 +123,12 @@ function wrapElectronStorage(e: PersistApi): StateStorage {
           pendingTimers.delete(name);
           const v = pendingValues.get(name);
           if (v === undefined) return;
-          void persistNow(name, v);
+          void persistNow(name, v).catch(error => console.error('[Persist write]', error));
         }, DEBOUNCE_MS)
       );
     },
     removeItem: async (name) => {
+      if (persistSuspended) return;
       const tmr = pendingTimers.get(name);
       if (tmr) clearTimeout(tmr);
       pendingTimers.delete(name);

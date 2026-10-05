@@ -1,0 +1,9 @@
+.model-settings-hub { container-type: inline-size; }
+.model-hub-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .375rem; }
+@container (min-width: 430px) { .model-hub-tabs { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.model-settings-hub [hidden] { display: none !important; }
+
+.model-settings-hub:lang(en) .model-hub-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@container (min-width: 650px) {
+  .model-settings-hub:lang(en) .model-hub-tabs { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}

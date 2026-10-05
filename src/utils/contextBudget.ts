@@ -1,3 +1,5 @@
+import { extractContextAnchors } from './contextAnchors';
+import { withoutGeneratedRuntimeContext } from './runtimeContext';
 import type { Message } from '../types';
 import type { ModelConfig } from '../types';
 import {
@@ -140,7 +142,7 @@ export function buildCompressionPrompt(
     return role;
   };
 
-  const transcript = olderMessages
+  const transcript = withoutGeneratedRuntimeContext(olderMessages)
     .map((m) => {
       const body = String(m.content ?? '').trim();
       if (!body) return '';
@@ -214,7 +216,7 @@ export function compressMessagesLocally(
   if (older.length === 0) return null;
   const summaryMessage = createContextSummaryMessage(
     parseCompressionSummary(
-      `已省略较早的 ${older.length} 条消息（本地快速压缩）。近期对话仍完整保留。`,
+      `已省略较早的 ${older.length} 条消息（本地快速压缩）。近期对话仍完整保留。${extractContextAnchors(older) ? '\n原文保留要点：\n'+extractContextAnchors(older):''}`,
       summaryTitle
     ),
     'context-compress'

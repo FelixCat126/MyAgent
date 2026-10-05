@@ -114,6 +114,23 @@ describe('imageIntentPlanner', () => {
 });
 
 describe('image intent boundaries', () => {
+  it.each([
+    '按 category 计算 amount 合计，生成汇总表和柱状图。',
+    '绘制销售额折线图和饼图',
+    '把数据做成图表图片供下载',
+    '根据表格生成数据可视化',
+    'Create a bar chart of the amount totals by category',
+    'Plot a histogram and scatter plot from the CSV',
+  ])('keeps statistical visualization out of generative images: %s', userText => {
+    expect(planImageIntent({ userText, historyBeforeUser: [], toolCallCount: 1 }).shouldGenerate).toBe(false);
+  });
+  it.each([
+    '设计一张海报，海报里展示销售额柱状图',
+    '生成汇总表和柱状图，再生成一张猫咪图片',
+    'Create a bar chart and also generate a photo of a cat',
+  ])('keeps explicit creative images alongside data charts: %s', userText => {
+    expect(planImageIntent({ userText, historyBeforeUser: [], toolCallCount: 1 }).shouldGenerate).toBe(true);
+  });
   it.each(['解释一下图片生成原理', '写一个生成图片的 Python 示例', '不要生图，只解释', "don't generate images"])('never executes discussion or prohibition: %s', userText => {
     expect(planImageIntent({ userText, historyBeforeUser: [], toolCallCount: 1 }).shouldGenerate).toBe(false);
   });

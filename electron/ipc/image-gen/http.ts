@@ -83,7 +83,7 @@ async function buildImageHttpRequestViaAdapter(ctx: {
   const adapter = httpImageProviderAdapters.find((a) =>
     a.match({ mode: ctx.mode, endpoint: ctx.endpoint, config: ctx.config })
   )!;
-  if (request.referenceImages.length && !['volc-seedream', 'openai-images'].includes(adapter.id)) {
+  if (request.referenceImages.length && !['volc-seedream', 'openai-images', 'sdwebui'].includes(adapter.id)) {
     throw new Error('当前图片服务尚未接入参考图编辑，请选择支持参考图的服务。');
   }
   const built = await adapter.build({
@@ -189,6 +189,9 @@ async function generateImageHttp(
     params,
   });
   const postBody = builtReq.body;
+  if (params.maskImage && !['sdwebui', 'openai-images'].includes(builtReq.provider)) throw new Error('当前服务不支持蒙版编辑 / This provider does not support masked edits');
+  const requestHeaders = { ...mergedFetchHeaders, ...builtReq.headers };
+  if (builtReq.formData) for (const key of Object.keys(requestHeaders)) if (key.toLowerCase() === 'content-type') delete requestHeaders[key];
   const providerKind = builtReq.provider;
   let requestUrl = (builtReq.endpoint || configuredEndpoint).trim();
   const ollamaModel = builtReq.ollamaModel || config.env?.OLLAMA_MODEL || config.env?.ollama_model || 'flux';
@@ -217,8 +220,8 @@ async function generateImageHttp(
   try {
     response = await fetch(requestUrl, {
       method: 'POST',
-      headers: mergedFetchHeaders,
-      body: JSON.stringify(postBody),
+      headers: requestHeaders,
+      body: builtReq.formData ?? JSON.stringify(postBody),
       signal: abortCtrl.signal,
     });
     if (readBodyAsStreamingText) {

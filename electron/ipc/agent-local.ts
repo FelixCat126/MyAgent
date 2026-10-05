@@ -12,6 +12,7 @@ import {
   toAgentDisplayPath,
 } from '../utils/agentPathScope';
 import { toRelPosix } from '../utils/workspaceIndex';
+import { resolveProjectAgentPath, resolveProjectAgentScope, type ProjectScopeArg } from '../utils/projectAgentScope';
 
 const SKIP_NAMES = new Set([
   'node_modules',
@@ -84,7 +85,7 @@ ipcMain.handle(
   'agent-local-list',
   async (
     _e,
-    arg: {
+    arg: ProjectScopeArg & {
       deniedPaths?: string[];
       subpath?: string;
       maxDepth?: number;
@@ -92,7 +93,11 @@ ipcMain.handle(
     }
   ) => {
     const policy = policyFromArg(arg);
-    const scoped = arg?.subpath
+    const project = await resolveProjectAgentScope(arg);
+    if (!project.ok) return project;
+    const projectPath = project.value ? await resolveProjectAgentPath(String(arg?.subpath || ''), project.value, true) : null;
+    if (projectPath && !projectPath.ok) return projectPath;
+    const scoped = projectPath?.ok ? { ok: true as const, path: projectPath.value } : arg?.subpath
       ? resolveAgentPath(String(arg.subpath), policy.deniedPaths)
       : { ok: true as const, path: policy.relRoot };
     if (!scoped.ok) return scoped;
@@ -156,7 +161,7 @@ ipcMain.handle(
         };
       }
       await walk(listRoot, listRoot, 1);
-      const listBase = arg?.subpath ? toAgentDisplayPath(listRoot) : toAgentDisplayPath(policy.relRoot);
+      const listBase = project.value || arg?.subpath ? toAgentDisplayPath(listRoot) : toAgentDisplayPath(policy.relRoot);
       return {
         ok: true as const,
         listBase,
@@ -176,7 +181,7 @@ ipcMain.handle(
   'agent-local-find-by-name',
   async (
     _e,
-    arg: {
+    arg: ProjectScopeArg & {
       deniedPaths?: string[];
       pattern?: string;
       limit?: number;
@@ -185,6 +190,8 @@ ipcMain.handle(
     }
   ) => {
     const policy = policyFromArg(arg);
+    const project = await resolveProjectAgentScope(arg);
+    if (!project.ok) return project;
     const pattern = String(arg?.pattern || '').trim().toLowerCase();
     if (!pattern) return { ok: false as const, error: 'pattern 为空' };
     const limit = Math.max(1, Math.min(MAX_FIND_RESULTS, Number(arg?.limit) || 20));
@@ -229,7 +236,7 @@ ipcMain.handle(
       }
     }
 
-    for (const root of policy.searchRoots) {
+    for (const root of project.value ? [project.value.rootPath] : policy.searchRoots) {
       try {
         const st = await fs.stat(root);
         if (!st.isDirectory()) continue;
@@ -247,14 +254,18 @@ ipcMain.handle(
   'agent-local-read',
   async (
     _e,
-    arg: {
+    arg: ProjectScopeArg & {
       deniedPaths?: string[];
       path?: string;
       maxChars?: number;
     }
   ) => {
     const policy = policyFromArg(arg);
-    const scoped = resolveAgentReadPath(String(arg?.path || ''), policy.deniedPaths);
+    const project = await resolveProjectAgentScope(arg);
+    if (!project.ok) return project;
+    const projectPath = project.value ? await resolveProjectAgentPath(String(arg?.path || ''), project.value) : null;
+    if (projectPath && !projectPath.ok) return projectPath;
+    const scoped = projectPath?.ok ? { ok: true as const, path: projectPath.value } : resolveAgentReadPath(String(arg?.path || ''), policy.deniedPaths);
     if (!scoped.ok) return scoped;
 
     const maxChars = Math.max(1000, Math.min(MAX_READ_CHARS, Number(arg?.maxChars) || MAX_READ_CHARS));
@@ -283,9 +294,15 @@ ipcMain.handle(
   }
 );
 
-ipcMain.handle('agent-local-is-in-scope', async (_e, arg: { deniedPaths?: string[]; path?: string }) => {
+ipcMain.handle('agent-local-is-in-scope', async (_e, arg: ProjectScopeArg & { path?: string }) => {
   const p = String(arg?.path || '').trim();
   if (!p) return { ok: true as const, allowed: false };
+  const project = await resolveProjectAgentScope(arg);
+  if (!project.ok) return { ok: true as const, allowed: false };
+  if (project.value) {
+    const scoped = await resolveProjectAgentPath(p, project.value);
+    return { ok: true as const, allowed: scoped.ok };
+  }
   const resolved = resolveAgentPath(p, arg?.deniedPaths ?? []);
   if (!resolved.ok) return { ok: true as const, allowed: false };
   return { ok: true as const, allowed: true };

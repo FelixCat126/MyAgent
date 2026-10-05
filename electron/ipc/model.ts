@@ -176,14 +176,11 @@ function parseOpenAIChatResponse(responseData: {
   };
 }
 
-ipcMain.handle(
-  'call-model',
-  async (
-    _event,
+export async function callModelRequest(
     messages: Message[],
     config: ModelConfig,
     options?: { locale?: 'zh' | 'en'; temperature?: number; connectionTest?: boolean }
-  ) => {
+  ): Promise<{content:string;reasoning?:string;truncated?:boolean;usage?:unknown}> {
   const locale = options?.locale === 'en' ? 'en' : 'zh';
   const connectionTest = options?.connectionTest === true;
   const temperature =
@@ -353,6 +350,7 @@ ipcMain.handle(
     const msg = mapModelCallError(error, locale);
     throw new Error(msg);
   }
-});
+}
+ipcMain.handle('call-model',(_event,messages:Message[],config:ModelConfig,options?:{locale?:'zh'|'en';temperature?:number;connectionTest?:boolean})=>callModelRequest(messages,config,options));
 
 console.log('✅ 模型调用 IPC 处理器已注册');

@@ -42,9 +42,9 @@ window.electron = {
       if (handlers.onThinkingDelta) handlers.onThinkingDelta(t);
     };
     const err = (_e, m) => {
-      handlers.onError(m);
-      /** 错误本身就是终态；立即清理，避免兼容服务漏发/延迟 end 时界面一直“运行中”。 */
-      end();
+      if (ended) return;
+      try { handlers.onError(m); } finally { end(); }
+
     };
     let ended = false;
     const cleanup = () => {
@@ -56,6 +56,7 @@ window.electron = {
       ipcRenderer.removeListener('model-stream-end', end);
     };
     const end = () => {
+      if (ended) return;
       cleanup();
       handlers.onEnd();
     };
@@ -185,3 +186,10 @@ const INVOKE_CHANNELS = {
 for (const [method, channel] of Object.entries(INVOKE_CHANNELS)) {
   window.electron[method] = (...args) => ipcRenderer.invoke(channel, ...args);
 }
+
+Object.assign(window.electron, require('./preload-runtime.cjs').createRuntimeApi(ipcRenderer), require('./preload-voice-quick.cjs').createVoiceQuickApi(ipcRenderer), require('./preload-media.cjs').createMediaWorkbenchApi(ipcRenderer), require('./preload-documents.cjs').createDocumentWorkbenchApi(ipcRenderer), {
+  discoverServiceModels: (config) => ipcRenderer.invoke('model-service:discover', config),
+  diagnoseModel: (config, checks) => ipcRenderer.invoke('model-service:diagnose', config, checks),
+  callAgentModel: (arg) => ipcRenderer.invoke('model-service:agent', arg),
+  abortAgentModel: (requestId) => ipcRenderer.send('model-service:abort', requestId),
+});

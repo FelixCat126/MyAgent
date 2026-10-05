@@ -1,0 +1,11 @@
+import {describe,it,expect,vi,beforeEach} from 'vitest';
+import {render,screen,fireEvent,waitFor,act} from '@testing-library/react';
+import RuntimePanel from './RuntimePanel';
+import {useSettingStore} from '../../store/settingStore';
+import type {RuntimeAPI} from './api';
+beforeEach(()=>{useSettingStore.getState().setLocale('zh');});
+describe('runtime panel workflows',()=>{
+ it('shows pending external writes and executes only after the explicit approve button',async()=>{const approve=vi.fn().mockResolvedValue({result:{content:[{text:'done'}]}});const api={...window.electron,runtimeApproveMcpCall:approve,runtimeGetState:async()=>({tasks:[],schedules:[],connections:[{id:'server',name:'Service',transport:'http',enabled:true}],pendingMcpCalls:[{id:'ticket',connectionId:'server',tool:'write_document',args:{title:'Report'},expiresAt:Date.now()+60000}]})} as RuntimeAPI;render(<RuntimePanel api={api}/>);fireEvent.click(screen.getByRole('button',{name:'外部服务'}));await screen.findByText(/write_document/);expect(approve).not.toHaveBeenCalled();fireEvent.click(screen.getByRole('button',{name:'批准本次调用'}));await waitFor(()=>expect(approve).toHaveBeenCalledWith('ticket'));});
+ it('offers a clickable result for completed video tasks',async()=>{const open=vi.spyOn(window.electron,'openLocalFile').mockResolvedValue({ok:true});const api={...window.electron,runtimeGetState:async()=>({tasks:[{id:'video',title:'Video',kind:'video-generation',status:'completed',steps:[],result:{localPath:'/managed/generated/video.mp4'},createdAt:1,updatedAt:2}],schedules:[],connections:[]})} as RuntimeAPI;render(<RuntimePanel api={api}/>);await screen.findByText('Video');fireEvent.click(screen.getByRole('button',{name:/打开文件/}));expect(open).toHaveBeenCalledWith({path:'/managed/generated/video.mp4'});});
+ it('renders the main controls in English without dark-only text colors',async()=>{useSettingStore.getState().setLocale('en');const{container,unmount}=render(<RuntimePanel api={window.electron}/>);await act(async()=>{await Promise.resolve();});expect(screen.getByRole('button',{name:'Backup and migration'})).toBeInTheDocument();expect(screen.getByRole('button',{name:'Add schedule'})).toBeInTheDocument();expect(container.firstChild).toHaveClass('text-stone-800');unmount();useSettingStore.getState().setLocale('zh');});
+});

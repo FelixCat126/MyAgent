@@ -1,4 +1,4 @@
-import { normalizeReferenceImagesForApi } from '../arkBody';
+import { imageInputBytes, validatedMask } from '../editInputs';
 import { effectiveImageProvider } from '../auth';
 import { VENDOR_IMAGE_COUNT_LIMITS } from '../../../constants';
 import type { HttpImageProviderAdapter } from './types';
@@ -41,14 +41,21 @@ const openAiImagesAdapter: HttpImageProviderAdapter = {
         body.size = (request.width || 1024) > (request.height || 1024) ? '1536x1024' : (request.height || 1024) > (request.width || 1024) ? '1024x1536' : '1024x1024';
       }
     }
+    let formData: FormData | undefined;
+    if (request.params.maskImage && !request.referenceImages.length) throw new Error('蒙版编辑需要参考图 / Mask editing requires an input image');
     if (request.referenceImages.length) {
       if (isZhipu || !/^gpt-image-|^chatgpt-image-/i.test(model)) throw new Error('当前生图模型未接入图片编辑，请选择支持参考图的模型。');
-      body.images = (await normalizeReferenceImagesForApi(request.params, 16)).map(image_url => ({ image_url }));
+      if (request.referenceImages.length > 16) throw new Error('最多 16 张参考图 / At most 16 reference images');
+      formData = new FormData();
+      const images = await Promise.all(request.referenceImages.map(imageInputBytes));
+      for (let i = 0; i < images.length; i++) formData.append(images.length > 1 ? 'image[]' : 'image', new Blob([new Uint8Array(images[i].buffer)], { type: images[i].mime }), `input-${i + 1}.${images[i].mime === 'image/jpeg' ? 'jpg' : images[i].mime === 'image/webp' ? 'webp' : 'png'}`);
+      if (request.params.maskImage) formData.append('mask', new Blob([new Uint8Array(await validatedMask(request.params.maskImage, images[0].buffer))], { type: 'image/png' }), 'mask.png');
       if (!/\/images\/(generations|edits)\/?$/i.test(endpoint)) throw new Error('编辑图片需要 /images/edits 接口地址。');
       endpoint = endpoint.replace(/\/images\/generations\/?$/i, '/images/edits');
     }
     if (request.count > 1) body.n = Math.max(1, Math.min(model === 'dall-e-3' ? 1 : VENDOR_IMAGE_COUNT_LIMITS.openAiImages, request.count));
-    return { provider: isZhipu ? 'zhipu-cogview' : 'openai-images', mode: 'openai_images', endpoint, body };
+    if (formData) for (const [key, value] of Object.entries(body)) formData.append(key, String(value));
+    return { provider: isZhipu ? 'zhipu-cogview' : 'openai-images', mode: 'openai_images', endpoint, body, formData };
   },
 };
 

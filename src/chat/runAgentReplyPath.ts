@@ -10,6 +10,7 @@ import {
   speakVoiceWakeReplyOnce,
 } from './runModelReplyShared';
 import type { RunModelReplyUi } from './runModelReplyTypes';
+import { runVideoPostProcess } from './videoGenAssist';
 
 export type RunAgentReplyPathArgs = {
   ui: RunModelReplyUi;
@@ -40,6 +41,7 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
     !shouldEnterAgentReply({
       userText: userMessage.content,
       exportDocument: Boolean(args.exportHint?.document),
+      hasDataAttachments: [...historyBeforeUser,userMessage].filter(message=>message.role==='user').some(message=>message.files?.some(file=>/\.(xlsx|csv|tsv)$/i.test(file.name))),
     }).enter
   ) {
     return false;
@@ -57,6 +59,8 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
     { pace: 'reasoning' },
   );
 
+  let answerStream:ReturnType<typeof createAnimStream>|undefined;
+  const cancelAnimationPoll=window.setInterval(()=>{if(ui.streamCancelledByUserRef.current){reasoningStream.cancel();answerStream?.cancel();}},100);
   try {
     const agentOut = await runAgentLoop({
       chatSessionId: sendSessionId,
@@ -66,11 +70,9 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
       locale: ui.locale,
       onThinkingDelta: reasoningStream.push,
       shouldCancel: () => ui.streamCancelledByUserRef.current,
-      onReplyContent: (text) => {
-        ui.updateMessage(sendSessionId, assistantId, { content: text });
-      },
+
     });
-    reasoningStream.flush();
+    await reasoningStream.finish();
     if (agentOut.handled && agentOut.displayText !== undefined) {
       if (agentOut.reasoning) {
         const sess = useChatStore.getState().sessions.find((s) => s.id === sendSessionId);
@@ -80,6 +82,14 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
           ui.appendReasoningToMessage(sendSessionId, assistantId, agentOut.reasoning);
         }
       }
+      if(ui.streamCancelledByUserRef.current)return true;
+      // Tool rounds and answer validation finish before this text is safe to show.
+      // Replay the already-complete answer briskly instead of adding a second
+      // full-length wait at the normal live-model pace.
+      answerStream=createAnimStream(sendSessionId,assistantId,ui.appendToMessage,{pace:'completed'});
+      answerStream.push(agentOut.displayText);
+      await answerStream.finish();
+      if(ui.streamCancelledByUserRef.current)return true;
       speakVoiceWakeReplyOnce(ui, agentOut.displayText);
       if (isLocalImageFind || isWebBrowseTask) {
         ui.updateMessage(sendSessionId, assistantId, {
@@ -96,6 +106,7 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
           userMessage,
           activeModel,
           historyBeforeUser,
+          generatedFiles: agentOut.exportFiles,
         });
         ui.updateMessage(sendSessionId, assistantId, {
           content: c,
@@ -106,6 +117,8 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
           imageGenProgress: undefined,
         });
       }
+      const currentMsg = useChatStore.getState().sessions.find(s => s.id === sendSessionId)?.messages.find(m => m.id === assistantId);
+      void runVideoPostProcess({ ui, sendSessionId, assistantId, rawText: currentMsg?.content ?? agentOut.displayText, userMessage, activeModel, historyBeforeUser, currentMsg }).catch(error => console.warn('[videoGenAssist]', error));
       ui.setIsStreaming(false);
       ui.streamingAssistantIdRef.current = null;
       ui.streamingSessionIdRef.current = null;
@@ -122,6 +135,7 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
         (agentErr.message === 'AGENT_CANCELLED' ||
           (agentErr as Error & { code?: string }).code === 'AGENT_CANCELLED'));
     ui.updateMessage(sendSessionId, assistantId, {
+      meta: cancelled ? undefined : {taskError:agentErr instanceof Error?agentErr.message:String(agentErr)},
       content: cancelled
         ? ui.t('chat.stoppedBanner')
         : ui.t('chat.requestFailed') + (agentErr instanceof Error ? agentErr.message : String(agentErr)),
@@ -129,6 +143,7 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
     ui.clearLoadingForSession(sendSessionId);
     return true;
   } finally {
+    window.clearInterval(cancelAnimationPoll);
     ui.setIsStreaming(false);
     ui.streamingAssistantIdRef.current = null;
     ui.streamingSessionIdRef.current = null;

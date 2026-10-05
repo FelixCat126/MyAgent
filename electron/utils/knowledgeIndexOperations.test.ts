@@ -36,8 +36,9 @@ function makeIndex(overrides: Partial<VectorIndexFileV1>): VectorIndexFileV1 {
     root: '/root',
     provider: 'openai',
     model: 'text-embedding-3-small',
+    baseUrl: 'https://api.openai.com/v1',
     updatedAt: 0,
-    dim: 768,
+    dim: 2,
     chunks: [{ id: 'a.md#0', path: 'a.md', text: 't', emb: [1, 2] }],
     fingerprints: { 'a.md': fp(10, 100) },
     ...overrides,
@@ -86,9 +87,10 @@ describe('cantIncrementalReuse', () => {
   };
   const rootAbs = '/root';
 
-  it('无旧索引或空 chunks → 不能复用', () => {
+  it('无旧索引不能复用，已验证身份的空索引继续扫描新文件', () => {
     expect(cantIncrementalReuse(null, rootAbs, baseEmbed)).toBe(true);
-    expect(cantIncrementalReuse(makeIndex({ chunks: [] }), rootAbs, baseEmbed)).toBe(true);
+    expect(cantIncrementalReuse(makeIndex({ chunks: [], dim: 0, fingerprints: {} }), rootAbs, baseEmbed)).toBe(false);
+    expect(cantIncrementalReuse(makeIndex({ chunks: [], fingerprints: undefined }), rootAbs, baseEmbed)).toBe(true);
   });
 
   it('根目录不一致 → 不能复用', () => {
@@ -98,6 +100,8 @@ describe('cantIncrementalReuse', () => {
   it('provider 或 model 不同 → 不能复用', () => {
     expect(cantIncrementalReuse(makeIndex({ provider: 'ollama' }), rootAbs, baseEmbed)).toBe(true);
     expect(cantIncrementalReuse(makeIndex({ model: 'other' }), rootAbs, baseEmbed)).toBe(true);
+    expect(cantIncrementalReuse(makeIndex({ baseUrl: 'https://another-provider/v1' }), rootAbs, baseEmbed)).toBe(true);
+    expect(cantIncrementalReuse(makeIndex({ baseUrl: undefined }), rootAbs, baseEmbed)).toBe(true);
   });
 
   it('dim 缺失或指纹为空 → 不能复用', () => {

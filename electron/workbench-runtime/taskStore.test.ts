@@ -1,0 +1,33 @@
+// @vitest-environment node
+import { describe, it, expect } from 'vitest';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { TaskLedger } from './taskStore';
+async function withLedger(test:(ledger:TaskLedger)=>Promise<void>){const dir=await mkdtemp(path.join(tmpdir(),'myagent-ledger-'));try{const ledger=new TaskLedger(path.join(dir,'state.json'));await ledger.load();await test(ledger);}finally{await rm(dir,{recursive:true,force:true});}}
+describe('persistent task ledger',()=>{
+  it('stores new work without project bindings but preserves old task and schedule metadata across restart',()=>withLedger(async ledger=>{
+    const fresh=await ledger.create({title:'普通任务',kind:'agent',projectId:'retired-project'});expect(fresh).not.toHaveProperty('projectId');
+    const schedule=await ledger.schedule({title:'普通计划',kind:'agent',projectId:'retired-project',enabled:true,nextRunAt:Date.now()+60000});expect(schedule).not.toHaveProperty('projectId');
+    fresh.projectId='legacy-project';schedule.projectId='legacy-project';await ledger.save();
+    const restored=new TaskLedger(ledger.file);await restored.load();expect(restored.task(fresh.id).projectId).toBe('legacy-project');expect(restored.state.schedules[0].projectId).toBe('legacy-project');
+    await restored.schedule({...restored.state.schedules[0],projectId:'new-project',title:'修改旧计划'});expect(restored.state.schedules[0].projectId).toBe('legacy-project');
+  }));
+  it('deduplicates task creation and preserves completed steps during retry',()=>withLedger(async ledger=>{const task=await ledger.create({title:'工作',kind:'agent',idempotencyKey:'once'});expect((await ledger.create({title:'重复',kind:'agent',idempotencyKey:'once'})).id).toBe(task.id);await ledger.start(task.id);await ledger.step({taskId:task.id,key:'read',title:'读取',status:'completed',result:{value:12}});await ledger.step({taskId:task.id,key:'export',title:'导出',status:'failed',error:'offline'});await ledger.finish(task.id,undefined,'offline');await ledger.start(task.id,true);await ledger.step({taskId:task.id,key:'read',title:'重新读',status:'running'});expect(task.steps[0].result).toEqual({value:12});expect(task.steps[0].status).toBe('completed');expect(task.steps[1].status).toBe('failed');}));
+  it('marks interrupted work and missed schedules on restart',()=>withLedger(async ledger=>{const task=await ledger.create({title:'工作',kind:'agent'});await ledger.start(task.id);await ledger.checkpoint(task.id,{round:2,messages:[]});await ledger.step({taskId:task.id,key:'one',title:'处理中',status:'running'});await ledger.schedule({title:'提醒',kind:'reminder',enabled:true,nextRunAt:Date.now()-10});const restored=new TaskLedger(ledger.file);await restored.load();expect(restored.task(task.id).status).toBe('interrupted');expect(restored.task(task.id).steps[0].status).toBe('interrupted');expect(restored.task(task.id).checkpoint?.round).toBe(2);expect(restored.state.schedules[0].enabled).toBe(false);expect(restored.state.schedules[0].missedAt).toBeTypeOf('number');}));
+  it('late completion and checkpoint cannot undo cancellation',()=>withLedger(async ledger=>{const task=await ledger.create({title:'工作',kind:'agent'});await ledger.start(task.id);await ledger.cancel(task.id);await ledger.finish(task.id,'late');await ledger.checkpoint(task.id,{round:99});expect(task.status).toBe('cancelled');expect(task.checkpoint).toBeUndefined();expect(JSON.parse(await readFile(ledger.file,'utf8')).tasks[0].status).toBe('cancelled');}));
+  it('persists unfinished work as interrupted before shutdown callbacks and preserves its checkpoint on restart',()=>withLedger(async ledger=>{
+    const active=await ledger.create({title:'退出中的任务',kind:'agent'});await ledger.start(active.id);await ledger.checkpoint(active.id,{round:3,messages:[],executedTools:{read:'done'}});
+    await ledger.step({taskId:active.id,key:'read',title:'已读',status:'completed',result:'done'});await ledger.step({taskId:active.id,key:'write',title:'远程提交',status:'running'});
+    const done=await ledger.create({title:'完成的任务',kind:'agent'});await ledger.start(done.id);await ledger.finish(done.id,'saved');
+    const interrupted=ledger.interruptActive();
+    expect(active.status).toBe('interrupted');await ledger.finish(active.id,'late success');await ledger.finish(active.id,undefined,'shutdown cancellation');await interrupted;
+    const restored=new TaskLedger(ledger.file);await restored.load();
+    expect(restored.task(active.id).status).toBe('interrupted');expect(restored.task(active.id).result).toBeUndefined();expect(restored.task(active.id).checkpoint?.round).toBe(3);
+    expect(restored.task(active.id).steps.map(step=>step.status)).toEqual(['completed','interrupted']);expect(restored.task(done.id).status).toBe('completed');
+  }));
+  it('retains unknown external tool outcomes as interrupted and never reopens a cancelled task',()=>withLedger(async ledger=>{const task=await ledger.create({title:'外部写入',kind:'agent'});await ledger.start(task.id);await ledger.step({taskId:task.id,key:'mcp:write',title:'写入远端',status:'running'});await ledger.step({taskId:task.id,key:'mcp:write',title:'写入远端',status:'interrupted',error:'连接断开，执行结果未知'});await ledger.cancel(task.id);await ledger.step({taskId:task.id,key:'mcp:write',title:'旧回调',status:'completed',result:'late'});expect(task.status).toBe('cancelled');expect(task.steps[0].status).toBe('interrupted');expect(task.steps[0].error).toContain('结果未知');expect(task.steps[0].result).toBeUndefined();}));
+  it('saves late media submit receipts after cancellation without reopening work',()=>withLedger(async ledger=>{const task=await ledger.create({title:'视频',kind:'video-generation'});await ledger.start(task.id);await ledger.cancel(task.id);await ledger.recoveryCheckpoint(task.id,{remoteJobId:'accepted-job',submissionStarted:true});expect(task.status).toBe('cancelled');expect(task.checkpoint?.remoteJobId).toBe('accepted-job');const restored=new TaskLedger(ledger.file);await restored.load();expect(restored.task(task.id).checkpoint?.remoteJobId).toBe('accepted-job');}));
+  it('does not silently reset a corrupt repository',()=>withLedger(async ledger=>{await import('node:fs/promises').then(fs=>fs.writeFile(ledger.file,'{broken'));await expect(new TaskLedger(ledger.file).load()).rejects.toThrow();}));
+  it('rejects directory monitoring without selection and invalid interval',()=>withLedger(async ledger=>{await expect(ledger.schedule({title:'目录',kind:'directory-monitor',directory:'/tmp',enabled:true,nextRunAt:Date.now()})).rejects.toThrow('授权');await expect(ledger.schedule({title:'提醒',kind:'reminder',intervalMinutes:0,enabled:true,nextRunAt:Date.now()})).rejects.toThrow('间隔');}));
+});

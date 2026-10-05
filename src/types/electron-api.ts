@@ -4,8 +4,14 @@ import type { ModelConfig } from './model';
 import type { WebSearchRequest, WebSearchResponse } from './web-search';
 import type { KnowledgeEmbedConfig } from './knowledge';
 
+import type { MediaWorkbenchAPI } from '../features/media/api';
+import type { VoiceQuickAPI } from '../features/voiceQuick/api';
+import type { ModelServiceAPI } from '../features/connections/api';
+import type { RuntimeAPI } from '../features/runtime/api';
+import type { DocumentWorkbenchAPI } from '../features/documents/types';
+
 // Electron API 类型定义
-export interface ElectronAPI {
+export interface ElectronAPI extends ModelServiceAPI, RuntimeAPI, DocumentWorkbenchAPI, VoiceQuickAPI, MediaWorkbenchAPI {
   sendMessage: (channel: string, data: unknown) => void;
   /** 返回取消订阅函数，避免热重载或重复注册 */
   onMessage: (channel: string, func: (...args: unknown[]) => void) => () => void;
@@ -109,6 +115,9 @@ export interface ElectronAPI {
     defaultBaseName: string;
   }) => Promise<{ ok: boolean; file?: FileInfo; error?: string }>;
   agentLocalList: (arg: {
+    /** Project directory; scoped with an empty root rejects access. */
+    root?: string;
+    scoped?: boolean;
     deniedPaths?: string[];
     subpath?: string;
     maxDepth?: number;
@@ -119,6 +128,8 @@ export interface ElectronAPI {
     entries?: { path: string; rel: string; kind: 'file' | 'dir'; size?: number }[];
   }>;
   agentLocalFindByName: (arg: {
+    root?: string;
+    scoped?: boolean;
     deniedPaths?: string[];
     pattern: string;
     limit?: number;
@@ -130,6 +141,8 @@ export interface ElectronAPI {
     matches?: { path: string; rel: string; name: string; displayPath?: string; size?: number }[];
   }>;
   agentLocalRead: (arg: {
+    root?: string;
+    scoped?: boolean;
     deniedPaths?: string[];
     path: string;
     maxChars?: number;
@@ -209,7 +222,7 @@ export interface ElectronAPI {
     error?: string;
     meta?: { chunkCount: number; usedChunks: number };
   }>;
-  knowledgeGetIndexStatus: () => Promise<{
+  knowledgeGetIndexStatus: (arg?: {root?:string}) => Promise<{
     ok: boolean;
     chunkCount: number;
     root: string | null;
