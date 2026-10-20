@@ -56,6 +56,8 @@ import {
   type BuiltImageHttpRequest,
 } from './adapters';
 import { imgGenDebug } from './debug';
+import { VENDOR_IMAGE_COUNT_LIMITS } from '../../constants';
+import { resolveAdapterImageModel } from './adapters/shared';
 
 function buildUnifiedImageRequest(params: ImageGenerationParams): UnifiedImageRequest {
   const count =
@@ -156,6 +158,37 @@ async function materializeImagesToOutput(
     return writePngBuffersToOutputFiles(buffers, outputDir, params);
   }
   return null;
+}
+
+function collectOpenAiImagesDataEntries(text: string): { urls: string[]; b64s: string[] } {
+  const urls: string[] = [];
+  const b64s: string[] = [];
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    return { urls, b64s };
+  }
+  const data = json && typeof json === 'object' ? (json as { data?: unknown }).data : undefined;
+  if (!Array.isArray(data)) return { urls, b64s };
+  for (const item of data) {
+    if (!item || typeof item !== 'object') continue;
+    const { b64_json: b64, url } = item as { b64_json?: unknown; url?: unknown };
+    if (typeof b64 === 'string' && b64.trim()) b64s.push(b64);
+    else if (typeof url === 'string' && /^https?:\/\//i.test(url)) urls.push(url);
+  }
+  return { urls, b64s };
+}
+
+/** 单次请求可返回的最大张数；用于判断「厂商少给」时不再重复付费补齐 */
+function vendorImageCountLimit(config: NonNullable<ModelConfig['imageGeneratorConfig']>): number {
+  const provider = effectiveImageProvider(config, config.endpoint);
+  const model = resolveAdapterImageModel({ config, env: config.env, envKeys: ['REMOTE_IMAGE_MODEL', 'IMAGE_MODEL'] }).toLowerCase();
+  if (provider === 'bailian-wanx') return VENDOR_IMAGE_COUNT_LIMITS.bailianWanx;
+  if (provider === 'minimax') return VENDOR_IMAGE_COUNT_LIMITS.minimax;
+  if (provider === 'openai-images') return model === 'dall-e-3' ? 1 : VENDOR_IMAGE_COUNT_LIMITS.openAiImages;
+  if (provider === 'sdwebui') return VENDOR_IMAGE_COUNT_LIMITS.sdWebUi;
+  return 1;
 }
 
 async function generateImageHttp(
@@ -466,6 +499,17 @@ async function generateImageHttp(
     if (out) return out;
   }
 
+  /** OpenAI Images 兼容：data[] 可含多张 b64_json/url；只取一张会让上层循环重复付费补齐 */
+  if (mode === 'openai_images' && !looksLikeBinaryImage(buf) && !ct.startsWith('image/')) {
+    const { urls, b64s } = collectOpenAiImagesDataEntries(utf8Full);
+    if (urls.length + b64s.length > 1) {
+      const out = b64s.length
+        ? await materializeImagesToOutput([], b64s, outputDir, params)
+        : await materializeImagesToOutput(urls, [], outputDir, params);
+      if (out) return out;
+    }
+  }
+
   /**
    * 百炼/万相同步协议：响应 JSON 为 { output: { results: [{ url | b64_image }] } }。
    * URL 需下载为二进制；b64_image 直接解码。支持多张。
@@ -617,4 +661,4 @@ async function generateImageHttp(
   return [await finalizeOnePngBuffer(imageBuf, outputDir, params)];
 }
 
-export { generateImageHttp };
+export { generateImageHttp, collectOpenAiImagesDataEntries, vendorImageCountLimit };

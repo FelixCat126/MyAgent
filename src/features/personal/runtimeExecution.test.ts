@@ -1,8 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useChatStore } from '../../store/chatStore';
 import { useModelStore } from '../../store/modelStore';
-import { useProjectStore } from '../../store/projectStore';
-import { useMemoryStore } from '../../store/memoryStore';
 import { useKnowledgeStore } from '../../store/knowledgeStore';
 import { useWorkspaceStore } from '../../store/workspaceStore';
 import { useSettingStore } from '../../store/settingStore';
@@ -18,8 +16,6 @@ const task = (id: string, extra: Partial<RuntimeTask> = {}): RuntimeTask => ({ i
 beforeEach(() => {
   vi.restoreAllMocks();
   useChatStore.setState({ sessions: [], currentSessionId: null, activeLeafId: null, loadingSessionIds: new Set(), compressingSessionIds: new Set() });
-  useProjectStore.setState({ projects: [], activeProjectId: null });
-  useMemoryStore.setState({ memories: [] });
   useKnowledgeStore.setState({ vectorRagEnabled: false, embeddingProvider: 'off' });
   useWorkspaceStore.setState({ rootPath: '' });
   useSettingStore.setState({ locale: 'en' });
@@ -30,8 +26,6 @@ beforeEach(() => {
 
 describe('runtime tasks execute through real chat boundaries', () => {
   it.each(['记住：我喜欢简洁的回答', '忘掉全部记忆', '/remember I prefer short replies'])('runs %s as an ordinary model task with its user checkpoint', async prompt => {
-    useMemoryStore.getState().addMemory({ content: 'SENTINEL_RETIRED_MEMORY', scope: 'personal', alwaysApply: true });
-    const memories = structuredClone(useMemoryStore.getState().memories);
     const run = vi.fn(async (sessionId: string, prior: Message[], user: Message) => {
       const outgoing = await buildOutgoingChain(prior, user, { enabled: false, provider: 'duckduckgo', apiKey: '' }, { sessionId });
       expect(outgoing.chain).toEqual([user]);
@@ -43,16 +37,12 @@ describe('runtime tasks execute through real chat boundaries', () => {
     const session = useChatStore.getState().sessions[0];
     const user = session.messages.find(message => message.role === 'user')!;
     expect(user.content).toBe(prompt);
-    expect(useMemoryStore.getState().memories).toEqual(memories);
     expect(session.messages.some(message => message.model === '本地记忆')).toBe(false);
     expect(window.electron.runtimeSaveCheckpoint).toHaveBeenCalledWith(expect.objectContaining({ id: 'remember-task', checkpoint: expect.objectContaining({ userMessageId: user.id }) }));
     expect(window.electron.runtimeCompleteTask).toHaveBeenCalledWith(expect.objectContaining({ id: 'remember-task', error: undefined, result: expect.objectContaining({ content: 'Ordinary model reply' }) }));
   });
   it('reuses the original user turn on retry without injecting retired memories and preserves old results in their branch', async () => {
     const sid = useChatStore.getState().createSession(null);
-    useMemoryStore.getState().addMemory({ content: 'SENTINEL_RETIRED_MEMORY', scope: 'personal', alwaysApply: true });
-    useMemoryStore.getState().addMemory({ content: 'SENTINEL_RETIRED_PROJECT_MEMORY', scope: 'project', projectId: 'legacy', alwaysApply: true });
-    const memories = structuredClone(useMemoryStore.getState().memories);
     useChatStore.getState().addMessage(sid, { id: 'original-user', role: 'user', content: 'Original request', timestamp: 1, model: model.name });
     useChatStore.getState().addMessage(sid, { id: 'old-answer', role: 'assistant', content: 'Partial output', timestamp: 2, model: model.name });
     const run = vi.fn(async (sessionId: string, prior: Message[], user: Message) => {
@@ -68,7 +58,6 @@ describe('runtime tasks execute through real chat boundaries', () => {
     expect(session.messages.filter((message) => message.role === 'user')).toHaveLength(1);
     expect(session.messages.find((message) => message.id === 'old-answer')?.content).toBe('Partial output');
     expect(session.messages.find((message) => message.id === session.activeLeafId)?.content).toBe('Finished output');
-    expect(useMemoryStore.getState().memories).toEqual(memories);
     expect(window.electron.runtimeCompleteTask).toHaveBeenCalledWith(expect.objectContaining({ id: 'retry-task', error: undefined }));
   });
 
@@ -92,8 +81,7 @@ describe('runtime tasks execute through real chat boundaries', () => {
   it('executes legacy scheduled work as an ordinary background conversation without changing the conversation being read', async () => {
     const foreground = useChatStore.getState().createSession(null);
     useChatStore.getState().addMessage(foreground, { id: 'f', role: 'user', content: 'Unrelated chat', timestamp: 1, model: model.name });
-    const pid = useProjectStore.getState().createProject({ name: 'Scheduled project' });
-    await executeDispatchedRuntimeTask(task('project-task', { projectId: pid }), async (sid, _prior, user) => {
+    await executeDispatchedRuntimeTask(task('project-task', { projectId: 'scheduled-project' }), async (sid, _prior, user) => {
       expect(useChatStore.getState().sessions.find((s) => s.id === sid)?.projectId).toBeUndefined();
       useChatStore.getState().addMessage(sid, { id: 'result', role: 'assistant', content: 'Project output', parentId: user.id, timestamp: 2, model: model.name });
       useChatStore.getState().clearLoadingForSession(sid);
@@ -118,16 +106,17 @@ describe('runtime tasks execute through real chat boundaries', () => {
     expect(useChatStore.getState().sessions[0].projectId).toBe('other-deleted-project');
   });
 
-  it('queues dispatches while foreground work is busy and runs tasks serially with deduplication', async () => {
+  it('queues dispatches while their own conversation is busy and runs tasks serially with deduplication', async () => {
     const foreground = useChatStore.getState().createSession(null);
     useChatStore.getState().setLoadingSession(foreground);
     const calls: string[] = [];
     let release: (() => void) | undefined;
     const firstComplete = new Promise<void>((resolve) => { release = resolve; });
     const unregister = registerRuntimeTaskExecutor(async (queued) => { calls.push(queued.id); if (queued.id === 'queued-one') await firstComplete; }, () => {});
-    enqueueRuntimeTask(task('queued-one'));
-    enqueueRuntimeTask(task('queued-one'));
-    enqueueRuntimeTask(task('queued-two'));
+    const inForeground = { checkpoint: { sessionId: foreground } };
+    enqueueRuntimeTask(task('queued-one', inForeground));
+    enqueueRuntimeTask(task('queued-one', inForeground));
+    enqueueRuntimeTask(task('queued-two', inForeground));
     expect(calls).toEqual([]);
     useChatStore.getState().clearLoadingForSession(foreground);
     await Promise.resolve();
@@ -135,6 +124,18 @@ describe('runtime tasks execute through real chat boundaries', () => {
     release!();
     await new Promise((resolve) => setTimeout(resolve, 1));
     expect(calls).toEqual(['queued-one', 'queued-two']);
+    unregister();
+  });
+
+  it('runs a task for another conversation while an unrelated foreground turn is busy', async () => {
+    const foreground = useChatStore.getState().createSession(null);
+    useChatStore.getState().setLoadingSession(foreground);
+    const calls: string[] = [];
+    const unregister = registerRuntimeTaskExecutor(async (queued) => { calls.push(queued.id); }, () => {});
+    enqueueRuntimeTask(task('independent'));
+    await Promise.resolve();
+    expect(calls).toEqual(['independent']);
+    expect(useChatStore.getState().isLoadingSession(foreground)).toBe(true);
     unregister();
   });
 

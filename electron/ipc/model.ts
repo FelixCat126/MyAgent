@@ -33,6 +33,13 @@ import {
   MODEL_HTTP_TIMEOUT_MS,
 } from '../constants/timeouts';
 
+/** Gemini REST 路径为 `{base}/models/{model}:generateContent`；基址已以 /models 结尾或模型名自带前缀时不重复拼接 */
+export function geminiGenerateContentUrl(apiUrl: string, modelName: string): string {
+  const base = apiUrl.replace(/\/+$/, '');
+  const name = modelName.trim().replace(/^models\//, '');
+  return /\/models$/i.test(base) ? `${base}/${name}:generateContent` : `${base}/models/${name}:generateContent`;
+}
+
 /** Gemini 需单独处理 system；OpenAI 兼容接口一般可直接带 system 消息 */
 function splitSystemMessages(messages: Message[]): { systemText: string; convo: Message[] } {
   const systemText = messages
@@ -154,8 +161,9 @@ function extractInlineThinkTags(text: string): { content: string; reasoning: str
 function parseOpenAIChatResponse(responseData: {
   choices?: Array<{ message?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown; thinking?: unknown } }>;
 }) {
-  const msg = responseData.choices?.[0]?.message;
-  if (msg != null && msg.content != null) {
+  const msg = responseData && typeof responseData === 'object' ? responseData.choices?.[0]?.message : undefined;
+  /** content 为 null（仅推理 / tool_calls / 推理耗尽 token）时按空正文返回，交由调用方兜底，不伪造正文 */
+  if (msg != null && typeof msg === 'object') {
     const { content, reasoning } = parseOpenAIMessageBlock(msg);
     return {
       content,
@@ -169,11 +177,8 @@ function parseOpenAIChatResponse(responseData: {
       ? { topKeys: Object.keys(responseData).slice(0, 10) }
       : typeof responseData
   );
-  /** 不打印完整响应体，避免模型输出/敏感内容泄漏到 stdout。 */
-  return {
-    content: '收到未能正确解析的响应，请检查模型配置。',
-    usage: (responseData as { usage?: unknown }).usage,
-  };
+  /** 不打印完整响应体，避免模型输出/敏感内容泄漏到 stdout。按错误抛出，避免被当成正常回答或压缩摘要。 */
+  throw new Error('收到未能正确解析的响应，请检查模型配置。');
 }
 
 export async function callModelRequest(
@@ -302,7 +307,7 @@ export async function callModelRequest(
       }
 
       const response = await axios.post(
-        `${apiUrl}/${modelName}:generateContent`,
+        geminiGenerateContentUrl(apiUrl, modelName),
         {
           contents: formattedMessages,
           generationConfig: {

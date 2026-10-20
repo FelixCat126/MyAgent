@@ -74,11 +74,6 @@ export async function callModelAgentRound(
         onDelta: (t) => {
           if (handlers?.shouldCancel?.()) {
             finish(() => {
-              try {
-                window.electron.closeModelStream();
-              } catch {
-                /* ignore */
-              }
               unsub();
               reject(createAgentCancelledError());
             });
@@ -115,11 +110,6 @@ export async function callModelAgentRound(
       const poll = window.setInterval(() => {
         if (!handlers?.shouldCancel?.()) return;
         finish(() => {
-          try {
-            window.electron.closeModelStream();
-          } catch {
-            /* ignore */
-          }
           unsub();
           reject(createAgentCancelledError());
         });

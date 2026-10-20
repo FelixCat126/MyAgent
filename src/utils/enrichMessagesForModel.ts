@@ -5,6 +5,9 @@ import { ATTACH_DOCUMENT_MAX_TEXT_CHARS } from '../chat/payloadBoundary';
 
 export { ATTACH_DOCUMENT_MAX_TEXT_CHARS };
 
+/** 主进程单份附件提取上限（electron/utils/documentText.ts 的 DOCUMENT_TEXT_MAX_CHARS），截断提示须按此值 */
+const EXTRACT_MAX_CHARS = Math.min(120_000, ATTACH_DOCUMENT_MAX_TEXT_CHARS);
+
 const DOC_EXTS = /\.(pdf|xlsx|xlsm|xls|docx|doc|md|markdown|txt|csv)$/i;
 
 function isDocumentAttachment(f: { type: string; name: string }): boolean {
@@ -46,8 +49,8 @@ export async function enrichMessagesForModel(
         const r = await window.electron.extractDocumentText({ path: f.path, name: f.name });
         const approxBadge =
           _locale === 'en'
-            ? `${Math.round(ATTACH_DOCUMENT_MAX_TEXT_CHARS / 1000)}k`
-            : `${ATTACH_DOCUMENT_MAX_TEXT_CHARS / 10000}万`;
+            ? `${Math.round(EXTRACT_MAX_CHARS / 1000)}k`
+            : `${EXTRACT_MAX_CHARS / 10000}万`;
         if (r.ok && r.text) {
           chunks.push(`\n\n【附加文档: ${f.name}】\n${r.text}`);
           if (r.truncated) {

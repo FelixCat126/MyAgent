@@ -57,7 +57,6 @@ function needsCompression(
     workspaceLikely: extras?.workspaceLikely,
     ragMaxChars: extras?.ragMaxChars,
     workspaceMaxChars: extras?.workspaceMaxChars,
-    personalMaxChars:extras?.personalMaxChars,
   });
   const effectiveLimit = Math.max(soft - overhead, Math.floor(soft * 0.5));
   /**
@@ -113,9 +112,11 @@ export async function ensureContextBeforeSend(opts: {
   store.setCompressingContext(sessionId);
   try {
     const msgs = store.getSessionMessages(sessionId) ?? priorMessages;
-    const sourceIndex = editSourceMessageId
-      ? msgs.findIndex((m) => m.id === editSourceMessageId)
-      : -1;
+    /** 下标相对于激活路径：priorMessages 即源消息之前的路径段，源消息下标就是其长度 */
+    const sourceIndex =
+      editSourceMessageId && msgs.some((m) => m.id === editSourceMessageId)
+        ? priorMessages.length
+        : -1;
 
     const replace =
       sourceIndex >= 0
@@ -143,16 +144,9 @@ export async function ensureContextBeforeSend(opts: {
       return { priorMessages, didCompress: false };
     }
 
-    const after = store.getSessionMessages(sessionId);
-    if (editSourceMessageId && after) {
-      const srcIdx = after.findIndex((m) => m.id === editSourceMessageId);
-      if (srcIdx >= 0) {
-        return { priorMessages: after.slice(0, srcIdx), didCompress: true };
-      }
-    }
-
+    /** 只取激活路径（摘要 + 保留段）；会话扁平数组里还有其他分支，不能整份发给模型 */
     return {
-      priorMessages: after ?? compressed.messages,
+      priorMessages: compressed.messages,
       didCompress: true,
     };
   } finally {

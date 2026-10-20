@@ -1,10 +1,39 @@
 import { ipcMain, app, shell } from 'electron';
+import { randomUUID } from 'node:crypto';
 import fs from 'fs/promises';
 import path from 'path';
+import { isSensitiveReadPath } from '../utils/documentText';
 
 /** 使用 userData，避免放在 /var/.../T 下被系统清掉导致会话里图片 404 */
 export function getUploadDir(): string {
   return path.join(app.getPath('userData'), 'myagent-uploads');
+}
+
+const UPLOAD_MAX_BYTES = 512 * 1024 * 1024;
+
+/** 落盘名：时间戳 + 随机段保证唯一；保留可读的原名（含中文 / emoji），去掉路径与非法字符并限长 */
+export function uploadStorageName(originalName: string, timestamp = Date.now()): string {
+  const base = path.basename(String(originalName || 'file'));
+  const ext = path.extname(base).replace(/[^\w.]/g, '').slice(0, 16);
+  const stem = Array.from(
+    base
+      .slice(0, base.length - path.extname(base).length)
+      .replace(/[\\/:*?"<>|\u0000-\u001F%#]/g, '_')
+      .replace(/\s+/g, ' ')
+      .trim(),
+  )
+    .slice(0, 60)
+    .join('')
+    .replace(/[. ]+$/, '');
+  return `${timestamp}-${randomUUID().slice(0, 8)}-${stem || 'file'}${ext}`;
+}
+
+/** 系统默认程序打开时会直接执行的类型 */
+const EXECUTABLE_EXT =
+  /\.(app|command|tool|sh|bash|zsh|csh|fish|exe|com|bat|cmd|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|msi|msp|scr|pif|cpl|hta|reg|scpt|applescript|jar|lnk|url|webloc|workflow|action|terminal|pkg|mpkg|dmg|deb|rpm|appimage|desktop|run)$/i;
+
+export function isExecutableOpenTarget(p: string): boolean {
+  return EXECUTABLE_EXT.test(path.basename(p));
 }
 
 /** 远端网关等：与 upload-file IPC 相同落盘逻辑 */
@@ -20,9 +49,11 @@ export async function writeUploadBufferToUserData(payload: {
   size: number;
   preview?: string;
 }> {
+  if (payload.buffer.length > UPLOAD_MAX_BYTES) {
+    throw new Error(`附件过大（>${UPLOAD_MAX_BYTES / (1024 * 1024)}MB），请压缩或拆分后再上传。`);
+  }
   await fs.mkdir(getUploadDir(), { recursive: true }).catch(() => undefined);
-  const timestamp = Date.now();
-  const fileName = `${timestamp}-${payload.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
+  const fileName = uploadStorageName(payload.name);
   const filePath = path.join(getUploadDir(), fileName);
   await fs.writeFile(filePath, payload.buffer);
   let preview: string | undefined;
@@ -80,9 +111,18 @@ ipcMain.handle('open-local-file', async (_event, arg: { path: string }) => {
   const raw = String(arg?.path || '').trim();
   if (!raw) return { ok: false as const, error: '路径为空' };
   const resolved = path.resolve(raw);
+  if (isExecutableOpenTarget(resolved)) {
+    return { ok: false as const, error: '出于安全考虑，不直接打开可执行文件或脚本' };
+  }
+  if (isSensitiveReadPath(resolved)) {
+    return { ok: false as const, error: '该路径属于系统或凭据目录，已拒绝打开' };
+  }
   try {
     const stat = await fs.stat(resolved);
     if (!stat.isFile()) return { ok: false as const, error: '不是可打开的文件' };
+    if (isExecutableOpenTarget(await fs.realpath(resolved)) || ((stat.mode & 0o111) !== 0 && !path.extname(resolved))) {
+      return { ok: false as const, error: '出于安全考虑，不直接打开可执行文件或脚本' };
+    }
     const error = await shell.openPath(resolved);
     return error
       ? { ok: false as const, error }

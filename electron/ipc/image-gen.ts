@@ -4,7 +4,7 @@ import { getMediaVersionRepository } from './media-workbench';
 import { imageCapabilities } from '../../src/features/media/capabilities';
 import type { ModelConfig, ImageGenerationParams } from '../../src/types';
 import { enqueueSerializedImageGeneration } from './image-gen/queue';
-import { generateImageHttp } from './image-gen/http';
+import { generateImageHttp, vendorImageCountLimit } from './image-gen/http';
 import { generateImageCli } from './image-gen/cli';
 import type { GeneratedImage, ImageGeneratedCallback } from './image-gen/adapters';
 
@@ -88,6 +88,7 @@ async function invokeGenerateImageIpc(params: ImageGenerationParams, onImage?: I
       const desiredCount =
         typeof params.count === 'number' && params.count > 0 ? Math.max(1, params.count) : 1;
       const collected: GeneratedImage[] = [];
+      const vendorLimit = vendorImageCountLimit(config);
       /** 安全上限：防止异常死循环 */
       const maxRounds = Math.min(12, Math.ceil(desiredCount / 1));
       for (let round = 0; round < maxRounds && collected.length < desiredCount; round++) {
@@ -97,14 +98,22 @@ async function invokeGenerateImageIpc(params: ImageGenerationParams, onImage?: I
           ...params,
           count: remaining,
         };
-        const imgs = await generateImageHttp(roundParams, config);
+        let imgs: GeneratedImage[];
+        try {
+          imgs = await generateImageHttp(roundParams, config);
+        } catch (error) {
+          /** 已有成品时保留部分结果，由渲染端提示「已完成 x/y 张」 */
+          if (collected.length === 0 || imageTaskContext.getStore()?.aborted) throw error;
+          console.warn('[生图 HTTP] 补齐轮次失败，返回已完成部分:', error instanceof Error ? error.message : error);
+          break;
+        }
         if (imgs.length === 0) break; // 厂商没返回，继续也没意义
         for (const img of imgs.slice(0, remaining)) {
           collected.push(img);
           onImage?.(img, collected.length, desiredCount);
         }
-        /** 厂商单次就满足了，或本轮没进展（返回数<=0），停止避免空转 */
-        if (imgs.length >= remaining) break;
+        /** 厂商单次就满足了，或固定张数的厂商少给了（再请求只会重复付费），停止 */
+        if (imgs.length >= remaining || imgs.length < Math.min(remaining, vendorLimit)) break;
       }
       return collected;
     }

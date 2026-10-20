@@ -20,8 +20,39 @@ function encryptionAvailable(): boolean {
   }
 }
 
+/**
+ * keychain：系统钥匙串 / DPAPI / libsecret 等真实加密；
+ * weak：Linux 无密钥环时 Chromium 退回 basic_text（硬编码口令，仅混淆）；
+ * unavailable：未就绪或不可用，敏感字段将以明文落盘。
+ */
+export type PersistEncryptionStatus = 'keychain' | 'weak' | 'unavailable';
+
+export function getPersistEncryptionStatus(): PersistEncryptionStatus {
+  if (!encryptionAvailable()) return 'unavailable';
+  try {
+    if (process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text') return 'weak';
+  } catch {
+    /* 旧版 Electron 无此 API：按可用处理 */
+  }
+  return 'keychain';
+}
+
+let warnedStatus: PersistEncryptionStatus | null = null;
+
+function warnWeakEncryptionOnce(status: PersistEncryptionStatus): void {
+  if (status === 'keychain' || warnedStatus === status || !app.isReady()) return;
+  warnedStatus = status;
+  console.warn(
+    status === 'weak'
+      ? '[securePersist] 未检测到系统密钥环（basic_text），密钥仅做混淆存储；建议安装 gnome-keyring / KWallet'
+      : '[securePersist] 系统加密不可用，密钥将以明文保存在本机配置文件中（文件权限 0600）'
+  );
+}
+
 export function getPersistEncryptor(): EncryptString | null {
-  if (!encryptionAvailable()) return null;
+  const status = getPersistEncryptionStatus();
+  warnWeakEncryptionOnce(status);
+  if (status === 'unavailable') return null;
   return (plain) => safeStorage.encryptString(plain).toString('base64');
 }
 

@@ -7,6 +7,8 @@ import { newId } from '../utils/newId';
 import { t } from '../i18n/ui';
 import { useSettingStore } from './settingStore';
 import { finishSessionTask } from '../features/runtime/taskBridge';
+import { forgetReplyRun } from '../chat/imageTaskState';
+import { getActiveMessages } from '../utils/branchTree';
 
 /**
  * 内部 helper：定位单个 session 并对其应用 fn，未命中时保持原引用。
@@ -21,6 +23,20 @@ function mapSession(
   fn: (session: ChatSession) => ChatSession
 ): ChatSession[] {
   return sessions.map((s) => (s.id === sessionId ? fn(s) : s));
+}
+
+const persistedSessions = new WeakMap<ChatSession, ChatSession>();
+
+/** 去掉运行时生图进度；同一会话对象复用结果，持久化层据引用判断哪些会话需要重写 */
+function persistedSession(session: ChatSession): ChatSession {
+  const cached = persistedSessions.get(session);
+  if (cached) return cached;
+  const next = {
+    ...session,
+    messages: session.messages.map(({ imageGenProgress: _skip, ...rest }) => rest),
+  };
+  persistedSessions.set(session, next);
+  return next;
 }
 
 type BusySetKey = 'loadingSessionIds' | 'compressingSessionIds';
@@ -97,6 +113,93 @@ function replaceMessagesPrefixCore(
   return [summaryMessage, ...recentPrior, ...tail];
 }
 
+/**
+ * 分支树上的压缩：下标相对于当前激活路径；被替换前缀及从中分叉的旧分支一并删除，
+ * 摘要接为首条保留消息的父节点，保证摘要留在激活路径上。无 parentId 的线性数据沿用下标替换。
+ */
+function compressSessionPrefix(
+  session: ChatSession,
+  keepFromIndex: number,
+  summaryMessage: Message,
+  beforeIndex?: number
+): ChatSession {
+  if (!session.messages.some((m) => m.parentId)) {
+    return { ...session, messages: replaceMessagesPrefixCore(session.messages, keepFromIndex, summaryMessage, beforeIndex) };
+  }
+  const path = getActiveMessages(session.messages, session.activeLeafId);
+  const end = beforeIndex === undefined ? path.length : Math.max(0, Math.min(beforeIndex, path.length));
+  const idx = Math.max(0, Math.min(keepFromIndex, end));
+  const removed = new Set(path.slice(0, idx).map((m) => m.id));
+  const firstKept = path[idx];
+  const byId = new Map(session.messages.map((m) => [m.id, m]));
+  const dropped = (m: Message): boolean => {
+    const seen = new Set<string>();
+    let cur: Message | undefined = m;
+    while (cur && !seen.has(cur.id)) {
+      if (firstKept && cur.id === firstKept.id) return false;
+      if (removed.has(cur.id)) return true;
+      seen.add(cur.id);
+      cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+    }
+    return false;
+  };
+  const kept = session.messages.filter((m) => !dropped(m));
+  const keptIds = new Set(kept.map((m) => m.id));
+  const messages = kept.map((m) => {
+    if (firstKept && m.id === firstKept.id) return { ...m, parentId: summaryMessage.id };
+    if (m.children?.some((c) => !keptIds.has(c))) return { ...m, children: m.children.filter((c) => keptIds.has(c)) };
+    return m;
+  });
+  const { parentId: _summaryParent, ...summaryRest } = summaryMessage;
+  const summaryNode: Message = { ...summaryRest, children: firstKept ? [firstKept.id] : [] };
+  const leaf = session.activeLeafId;
+  return {
+    ...session,
+    messages: [summaryNode, ...messages],
+    activeLeafId: leaf && keptIds.has(leaf) ? leaf : firstKept ? path[path.length - 1]!.id : summaryNode.id,
+  };
+}
+
+/** 删除消息并修补分支树：子消息改挂最近的存活祖先，悬空的激活叶回退到最近存活祖先 */
+function removeMessagesFromTree(session: ChatSession, ids: Set<string>): ChatSession {
+  const byId = new Map(session.messages.map((m) => [m.id, m]));
+  const liveAncestor = (id: string | undefined): string | undefined => {
+    const seen = new Set<string>();
+    let cur = id;
+    while (cur && ids.has(cur) && !seen.has(cur)) {
+      seen.add(cur);
+      cur = byId.get(cur)?.parentId;
+    }
+    return cur && !ids.has(cur) ? cur : undefined;
+  };
+  const liveChildren = (childIds: string[] | undefined, seen: Set<string>): string[] =>
+    (childIds ?? []).flatMap((c) => {
+      if (!ids.has(c)) return [c];
+      if (seen.has(c)) return [];
+      seen.add(c);
+      return liveChildren(byId.get(c)?.children, seen);
+    });
+  const messages = session.messages
+    .filter((m) => !ids.has(m.id))
+    .map((m) => {
+      const reparent = Boolean(m.parentId && ids.has(m.parentId));
+      const rechild = Boolean(m.children?.some((c) => ids.has(c)));
+      if (!reparent && !rechild) return m;
+      const next: Message = { ...m };
+      if (rechild) next.children = liveChildren(m.children, new Set());
+      if (reparent) {
+        const parentId = liveAncestor(m.parentId);
+        if (parentId) next.parentId = parentId;
+        else delete next.parentId;
+      }
+      return next;
+    });
+  const leaf = session.activeLeafId;
+  const activeLeafId =
+    leaf && ids.has(leaf) ? liveAncestor(leaf) ?? messages[messages.length - 1]?.id ?? null : leaf;
+  return { ...session, updatedAt: Date.now(), messages, activeLeafId };
+}
+
 interface ChatStore {
   sessions: ChatSession[];
   currentSessionId: string | null;
@@ -113,7 +216,6 @@ interface ChatStore {
   // Actions
   createSession: (projectId?: string | null) => string;
   assignSessionProject: (sessionId: string, projectId: string | null) => void;
-  detachProjectSessions: (projectId: string) => void;
   toggleMessageBookmark: (sessionId: string, messageId: string) => void;
   renameBranch: (sessionId: string, messageId: string, name: string) => void;
   switchSession: (sessionId: string) => void;
@@ -218,10 +320,6 @@ export const useChatStore = create<ChatStore>()(
         set((state) => ({ sessions: mapSession(state.sessions, sessionId, (session) => ({ ...session, projectId, updatedAt: Date.now() })) }));
       },
 
-      detachProjectSessions: (projectId) => set((state) => ({
-        sessions: state.sessions.map((session) => session.projectId === projectId ? { ...session, projectId: null } : session),
-      })),
-
       toggleMessageBookmark: (sessionId, messageId) => set((state) => ({
         sessions: mapSession(state.sessions, sessionId, (session) => {
           if (!session.messages.some((m) => m.id === messageId)) return session;
@@ -260,6 +358,7 @@ export const useChatStore = create<ChatStore>()(
       },
 
       deleteSession: (sessionId: string) => {
+        forgetReplyRun(sessionId);
         set((state: ChatStore) => {
           const newSessions = state.sessions.filter((s: ChatSession) => s.id !== sessionId);
           const nextLoading = new Set(state.loadingSessionIds);
@@ -297,7 +396,9 @@ export const useChatStore = create<ChatStore>()(
           const sessions = state.sessions.map((session: ChatSession) => {
             if (session.id !== sessionId) return session;
             const sessionLeaf =
-              session.activeLeafId ??
+              (session.activeLeafId && session.messages.some((m) => m.id === session.activeLeafId)
+                ? session.activeLeafId
+                : null) ??
               (session.messages.length
                 ? session.messages[session.messages.length - 1]!.id
                 : null);
@@ -374,25 +475,21 @@ export const useChatStore = create<ChatStore>()(
       },
 
       removeMessage: (sessionId: string, messageId: string) => {
-        set((state: ChatStore) => ({
-          sessions: mapSession(state.sessions, sessionId, (session) => ({
-            ...session,
-            updatedAt: Date.now(),
-            messages: session.messages.filter((m) => m.id !== messageId),
-          })),
-        }));
+        get().removeMessages(sessionId, [messageId]);
       },
 
       removeMessages: (sessionId: string, messageIds: string[]) => {
         const idSet = new Set(messageIds);
         if (idSet.size === 0) return;
-        set((state: ChatStore) => ({
-          sessions: mapSession(state.sessions, sessionId, (session) => ({
-            ...session,
-            updatedAt: Date.now(),
-            messages: session.messages.filter((m) => !idSet.has(m.id)),
-          })),
-        }));
+        set((state: ChatStore) => {
+          let nextStoreLeaf = state.activeLeafId;
+          const sessions = mapSession(state.sessions, sessionId, (session) => {
+            const next = removeMessagesFromTree(session, idSet);
+            if (sessionId === state.currentSessionId) nextStoreLeaf = next.activeLeafId ?? null;
+            return next;
+          });
+          return { sessions, activeLeafId: nextStoreLeaf };
+        });
       },
 
       updateMessage: (sessionId: string, messageId: string, patch: Partial<Message>) => {
@@ -558,28 +655,24 @@ export const useChatStore = create<ChatStore>()(
       isCompressingSession: compressingBusy.has,
 
       replaceMessagesPrefix: (sessionId, keepFromIndex, summaryMessage) => {
-        set((state: ChatStore) => ({
-          sessions: mapSession(state.sessions, sessionId, (session) => ({
-            ...session,
-            updatedAt: Date.now(),
-            messages: replaceMessagesPrefixCore(session.messages, keepFromIndex, summaryMessage),
-          })),
-        }));
+        get().replaceMessagesPrefixBeforeIndex(sessionId, Number.POSITIVE_INFINITY, keepFromIndex, summaryMessage);
       },
 
       replaceMessagesPrefixBeforeIndex: (sessionId, beforeIndex, keepFromIndex, summaryMessage) => {
-        set((state: ChatStore) => ({
-          sessions: mapSession(state.sessions, sessionId, (session) => ({
-            ...session,
-            updatedAt: Date.now(),
-            messages: replaceMessagesPrefixCore(
-              session.messages,
+        set((state: ChatStore) => {
+          let nextStoreLeaf = state.activeLeafId;
+          const sessions = mapSession(state.sessions, sessionId, (session) => {
+            const next = compressSessionPrefix(
+              session,
               keepFromIndex,
               summaryMessage,
-              beforeIndex
-            ),
-          })),
-        }));
+              Number.isFinite(beforeIndex) ? beforeIndex : undefined
+            );
+            if (sessionId === state.currentSessionId) nextStoreLeaf = next.activeLeafId ?? null;
+            return { ...next, updatedAt: Date.now() };
+          });
+          return { sessions, activeLeafId: nextStoreLeaf };
+        });
       },
       };
     },
@@ -588,10 +681,7 @@ export const useChatStore = create<ChatStore>()(
       storage: zustandPersistJson,
       version: 4,
       partialize: (state) => ({
-        sessions: state.sessions.map((s) => ({
-          ...s,
-          messages: s.messages.map(({ imageGenProgress: _skip, ...rest }) => rest),
-        })),
+        sessions: state.sessions.map(persistedSession),
         currentSessionId: state.currentSessionId,
         activeLeafId: state.activeLeafId,
         /** loading / compressing 为运行时忙态，故意不落盘，避免异常退出后重启一直转圈 */

@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { generateMiniMaxVideo } from './minimaxVideoAdapter';
+import { generateMiniMaxVideo, minimaxVideoOptions } from './minimaxVideoAdapter';
 let directory: string; let server: http.Server; let endpoint: string; let submissions: number; let queries: number; let mode: 'success' | 'fail' | 'waiting' | 'bad-download'; let saved = false;
 const video = Buffer.from([0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109, 0, 0, 0, 0, 105, 115, 111, 109, 109, 112, 52, 50]);
 beforeEach(async () => {
@@ -21,6 +21,17 @@ beforeEach(async () => {
 });
 afterEach(async () => { await new Promise<void>((resolve) => server.close(() => resolve())); await fs.rm(directory, { recursive: true, force: true }); });
 const configuration = () => ({ apiKey: 'fixture-only', endpoint, model: 'MiniMax-Hailuo-02', prompt: 'fixture video', pollIntervalMs: 2, timeoutMs: 2000, outputDir: directory, onSubmitted: async (id: string) => { expect(id).toBe('test-job'); saved = true; } });
+describe('MiniMax resolution and duration mapping', () => {
+  it('sends documented 768P/1080P strings and rejects unsupported combinations before submission', () => {
+    expect(minimaxVideoOptions('MiniMax-Hailuo-02', '768', 6)).toEqual({ resolution: '768P', duration: 6 });
+    expect(minimaxVideoOptions('MiniMax-Hailuo-02', '768', 10)).toEqual({ resolution: '768P', duration: 10 });
+    expect(minimaxVideoOptions('MiniMax-Hailuo-02', '1080', 6)).toEqual({ resolution: '1080P', duration: 6 });
+    expect(minimaxVideoOptions('MiniMax-Hailuo-02', '480', 5)).toEqual({ duration: 6 });
+    expect(minimaxVideoOptions('T2V-01', '720', 6)).toEqual({ resolution: '720P', duration: 6 });
+    expect(() => minimaxVideoOptions('MiniMax-Hailuo-02', '1080', 10)).toThrow('仅支持 6 秒');
+    expect(() => minimaxVideoOptions('MiniMax-Hailuo-02', '720', 6)).toThrow('不支持 720P');
+  });
+});
 describe('video submission, recovery and actual cancellation', () => {
   it('persists the job before querying correct endpoint and downloads validated bytes', async () => {
     const result = await generateMiniMaxVideo(configuration()); expect(result.taskId).toBe('test-job'); expect(submissions).toBe(1); expect(queries).toBe(2); expect(await fs.readFile(result.localPath)).toEqual(video);

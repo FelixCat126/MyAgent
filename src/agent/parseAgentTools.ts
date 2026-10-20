@@ -81,6 +81,12 @@ function normalizeToolUrl(url: string): string {
   }
 }
 
+let pageKeyProvider: () => string = () => '';
+/** 网页读取类签名需随当前页面变化，否则换页后会命中旧页缓存 */
+export function setToolPageKeyProvider(provider: () => string): void {
+  pageKeyProvider = provider;
+}
+
 /** 用于跨轮次去重：相同签名视为同一操作，不重复执行 */
 export function toolCallSignature(call: AgentToolCall): string {
   switch (call.tool) {
@@ -97,14 +103,14 @@ export function toolCallSignature(call: AgentToolCall): string {
     case 'web_open':
       return `web_open:${normalizeToolUrl(call.url)}`;
     case 'web_read':
-      return `web_read:${call.selector ?? ''}:${call.maxChars ?? 4000}`;
+      return `web_read:${call.selector ?? ''}:${call.maxChars ?? 4000}@${pageKeyProvider()}`;
     case 'web_eval': {
       const jsNorm = call.js.replace(/\s+/g, ' ').trim();
       // 提图类脚本归一为同一签名，避免微调 JS 绕过去重
       if (/data-imgurl|imgitem|first.?image|naturalWidth|data-objurl/i.test(jsNorm)) {
         return 'web_eval:baidu-first-image-extract';
       }
-      return `web_eval:${jsNorm}`;
+      return `web_eval:${jsNorm}@${pageKeyProvider()}`;
     }
     case 'web_close':
       return 'web_close';
@@ -117,7 +123,9 @@ export function toolCallSignature(call: AgentToolCall): string {
   }
 }
 
-function parseLocalToolCall(raw: string): AgentToolCall | null {
+export const MAX_DATA_STEPS = 20;
+
+export function parseLocalToolCall(raw: string): AgentToolCall | null {
   let obj: Record<string, unknown>;
   try {
     obj = JSON.parse(raw) as Record<string, unknown>;
@@ -128,7 +136,7 @@ function parseLocalToolCall(raw: string): AgentToolCall | null {
   if (!LOCAL_TOOL_NAMES.has(tool)) return null;
 
   if (tool === 'data_calculate') {
-    if(typeof obj.path!=='string'||!Array.isArray(obj.steps)||obj.steps.length>30)return null;
+    if(typeof obj.path!=='string'||!Array.isArray(obj.steps)||obj.steps.length>MAX_DATA_STEPS)return null;
     const {myagent_tool: _ignored,tool: _tool,...calculation}=obj;
     return {tool,calculation:calculation as DataCalculationRequest,raw};
   }
@@ -218,7 +226,7 @@ export function extractAgentLocalToolCalls(text: string): AgentToolCall[] {
 /** 去掉助手可见正文中的本机/浏览器工具 JSON */
 export function stripAgentLocalToolArtifacts(text: string): string {
   let out = text.replace(/```(?:json)?\s*\n?([\s\S]*?)```/gi, (full, inner) => {
-    if (/\"myagent_tool\"\s*:\s*\"(local_|web_)/.test(inner)) return '';
+    if (/\"myagent_tool\"\s*:\s*\"(local_|web_|data_calculate|mcp_call)/.test(inner)) return '';
     return full;
   });
 

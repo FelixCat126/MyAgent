@@ -1,4 +1,3 @@
-import { isExplicitMemoryCommand,tryHandleMemoryCommand,reviewMemoryCandidatesFromMessage } from '../features/personal/context';
 import { createSessionTask, saveSessionCheckpoint } from '../features/runtime/taskBridge';
 import type { Message, ModelConfig } from '../types';
 import { useChatStore } from '../store/chatStore';
@@ -86,7 +85,7 @@ export async function resubmitEditedUserMessage(opts: {
   );
 
   try {
-    const ensured = isExplicitMemoryCommand(textContent) ? { priorMessages, didCompress: false } : await ensureContextBeforeSend({
+    const ensured = await ensureContextBeforeSend({
       sessionId: opts.sessionId,
       priorMessages,
       draftInput: textContent,
@@ -94,7 +93,7 @@ export async function resubmitEditedUserMessage(opts: {
       locale: opts.locale,
       summaryTitle: opts.summaryTitle,
       editSourceMessageId: opts.messageId,
-      injectExtras: resolveInjectExtras({ webEnabled: opts.webEnabled,sessionId:opts.sessionId,userText:textContent }),
+      injectExtras: resolveInjectExtras({ webEnabled: opts.webEnabled, sessionId: opts.sessionId }),
     });
     priorMessages = ensured.priorMessages;
     if(!useChatStore.getState().isLoadingSession(opts.sessionId))return {ok:false,reason:'busy'};
@@ -129,12 +128,6 @@ export async function resubmitEditedUserMessage(opts: {
     );
     opts.onCommitted?.();
     await saveSessionCheckpoint(opts.sessionId, { userMessageId: userMessage.id, modelId: opts.model.id });
-    const memoryCommand=tryHandleMemoryCommand(textContent,opts.sessionId,userMessage.id);
-    if(memoryCommand.handled){
-      useChatStore.getState().addMessage(opts.sessionId,{id:crypto.randomUUID(),role:'assistant',content:memoryCommand.reply||'',timestamp:Date.now(),model:'本地记忆'});
-      useChatStore.getState().clearLoadingForSession(opts.sessionId);return {ok:true};
-    }
-    reviewMemoryCandidatesFromMessage(opts.sessionId,userMessage);
 
     if (
       !addFullTextBypassIfNeeded({

@@ -17,11 +17,13 @@ import type { WebSearchProvider } from '../../types';
 export interface WebSearchSectionProps {
   /** 卡片外壳 CSS（父组件常量） */
   cardShell: string;
+  /** 嵌入模型设置中心时不显示折叠头，始终展开 */
+  embedded?: boolean;
   /** i18n 翻译函数 */
   t: (key: string, params?: Record<string, string | number>) => string;
 }
 
-export const WebSearchSection: React.FC<WebSearchSectionProps> = ({ cardShell, t }) => {
+export const WebSearchSection: React.FC<WebSearchSectionProps> = ({ cardShell, t, embedded = false }) => {
   // store 派生量本组件自己消费
   const {
     enabled: webSearchEnabled,
@@ -37,10 +39,10 @@ export const WebSearchSection: React.FC<WebSearchSectionProps> = ({ cardShell, t
 
   return (
     <section
-      className={`${cardShell} mt-2 shrink-0`}
+      className={`${cardShell} ${embedded ? '' : 'mt-2'} shrink-0`}
       aria-labelledby="settings-websearch-heading"
     >
-      <div className="flex items-center justify-between gap-2 border-b border-stone-300/38 px-3 py-2.5 dark:border-white/10">
+      {!embedded && <div className="flex items-center justify-between gap-2 border-b border-stone-300/38 px-3 py-2.5 dark:border-white/10">
         <div className="flex min-w-0 items-center gap-2">
           <FiGlobe className="shrink-0 text-primary-600 dark:text-primary-400" size={16} aria-hidden />
           <h2 id="settings-websearch-heading" className="text-sm font-semibold text-stone-800 dark:text-white">
@@ -58,10 +60,11 @@ export const WebSearchSection: React.FC<WebSearchSectionProps> = ({ cardShell, t
         >
           {webSearchBlockExpanded ? <FiChevronUp size={18} /> : <FiChevronDown size={18} />}
         </button>
-      </div>
+      </div>}
 
-      {webSearchBlockExpanded && (
-        <div id="settings-websearch-panel" className="space-y-2 px-3 pb-3 pt-3">
+      {(embedded || webSearchBlockExpanded) && (
+        <div id="settings-websearch-panel" className={embedded ? 'space-y-2' : 'space-y-2 px-3 pb-3 pt-3'}>
+          {embedded && <h3 id="settings-websearch-heading" className="text-sm font-semibold text-stone-800 dark:text-white">{t('settings.web')}</h3>}
           <p className="text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">{t('settings.webDesc')}</p>
           <div className="flex items-center justify-between gap-3">
             <span className="text-xs text-stone-700 dark:text-slate-300">{t('settings.webEnable')}</span>

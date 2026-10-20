@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { FiPlus, FiEdit2, FiTrash2, FiDownload, FiLink, FiArrowLeft, FiLoader, FiCheck } from 'react-icons/fi';
 import { useConnectionStore, resolveModelConnection, type ServiceConnection } from '../../store/connectionStore';
 import { useModelStore } from '../../store/modelStore';
+import { useKnowledgeStore } from '../../store/knowledgeStore';
 import { useI18n } from '../../hooks/useI18n';
 import { confirmDestructive } from '../../store/confirmStore';
 import { HUB_INPUT, HUB_PRIMARY, HUB_SECONDARY, HUB_ICON, HUB_CARD, HUB_FORM, HUB_LABEL, HUB_HINT, HUB_BADGE, HUB_ERROR } from '../modelHub/styles';
@@ -39,6 +40,7 @@ export function ConnectionsSection({ cardShell, embedded = false }: { cardShell:
       const detachVideo = model.videoGeneratorConfig?.connectionId === connection.id;
       updateModel(model.id, { ...(model.connectionId === connection.id ? { ...effective, connectionId: undefined } : {}), ...(detachVideo && effective.videoGeneratorConfig ? { videoGeneratorConfig: { ...effective.videoGeneratorConfig, connectionId: undefined } } : {}) });
     }
+    useKnowledgeStore.getState().detachEmbeddingConnection(connection.id);
     removeConnection(connection.id);
   };
   const discover = async (connection: ServiceConnection) => {
@@ -76,7 +78,7 @@ export function ConnectionsSection({ cardShell, embedded = false }: { cardShell:
       <label className={HUB_LABEL}><span>{label('接口类型', 'Provider')}</span><select className={HUB_INPUT} value={draft.provider} onChange={e => setDraft({ ...draft, provider: e.target.value as ServiceConnection['provider'] })}>{[['openai', 'OpenAI'], ['claude', 'Anthropic'], ['ollama', 'Ollama'], ['custom', label('兼容接口', 'Compatible API')], ['gemini', 'Gemini']].map(([value, text]) => <option key={value} value={value}>{text}</option>)}</select></label>
       <label className={HUB_LABEL}><span>{label('服务地址', 'Service URL')}</span><input required type="url" className={HUB_INPUT} value={draft.apiUrl} onChange={e => setDraft({ ...draft, apiUrl: e.target.value })} /></label>
       <label className={HUB_LABEL}><span>API Key</span><input type="password" autoComplete="off" className={HUB_INPUT} value={draft.apiKey} onChange={e => setDraft({ ...draft, apiKey: e.target.value })} /></label>
-      <label className={HUB_LABEL}><span>{label('对话协议', 'Protocol')}</span><select className={HUB_INPUT} value={draft.chatApiMode ?? 'auto'} onChange={e => setDraft({ ...draft, chatApiMode: e.target.value as ServiceConnection['chatApiMode'] })}><option value="auto">{label('自动识别', 'Automatic')}</option><option value="openai">OpenAI (O)</option><option value="anthropic">Anthropic (A)</option></select></label>
+      <details className="rounded-lg border border-stone-300/40 p-3 dark:border-white/10"><summary className="cursor-pointer text-xs font-medium">{label('高级设置（可选）', 'Advanced settings (optional)')}</summary><label className={`${HUB_LABEL} mt-3`}><span>{label('对话协议', 'Protocol')}</span><select className={HUB_INPUT} value={draft.chatApiMode ?? 'auto'} onChange={e => setDraft({ ...draft, chatApiMode: e.target.value as ServiceConnection['chatApiMode'] })}><option value="auto">{label('自动识别', 'Automatic')}</option><option value="openai">OpenAI (O)</option><option value="anthropic">Anthropic (A)</option></select></label></details>
       <div className="flex flex-wrap gap-2 border-t border-stone-200 pt-3 dark:border-slate-700"><button className={HUB_PRIMARY} type="submit">{label('保存连接', 'Save')}</button><button type="button" className={HUB_SECONDARY} onClick={back}>{label('取消', 'Cancel')}</button></div>
     </form> : discovery ? <div className={HUB_FORM} aria-busy={busy}>
       <p className="break-all text-xs font-semibold text-stone-800 dark:text-slate-100">{discoveryConnection?.name ?? label('服务已移除', 'Service removed')}</p>

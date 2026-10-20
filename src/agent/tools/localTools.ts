@@ -1,4 +1,5 @@
 import { executeExtendedTool } from './extendedTools';
+import { isToolErrorText, truncateToolResult, type AgentToolCallOutcome } from './toolResult';
 import { validateAgentToolCall } from '../toolRegistry';
 import type { FileInfo, KnowledgeEmbedConfig } from '../../types';
 import { useSettingStore } from '../../store/settingStore';
@@ -18,7 +19,12 @@ export type AgentLocalToolContext = {
   scopeRoot?: string;
   shouldCancel?: () => boolean;
   attachmentPaths?: string[];
+  /** 驱动内嵌浏览器的会话；网页工具执行前须持有该会话的浏览器锁 */
+  sessionId?: string;
+  /** 按需获取浏览器锁：返回 null 表示已持有，否则为错误文案 */
+  acquireBrowserLock?: () => string | null;
 };
+
 
 function assertLocalToolsEnabled(): string | null {
   if (!useSettingStore.getState().agentLocalToolsEnabled) {
@@ -262,18 +268,38 @@ export async function runAgentLocalToolBatch(
   embed: KnowledgeEmbedConfig | null,
   executed?: Map<string, string>,
   opts?: { shouldCancel?: () => boolean }
-): Promise<{ resultText: string; exportFiles: FileInfo[]; attachFiles: FileInfo[]; skippedDuplicate: number }> {
+): Promise<{ resultText: string; exportFiles: FileInfo[]; attachFiles: FileInfo[]; skippedDuplicate: number; outcomes: AgentToolCallOutcome[]; notExecuted: number }> {
   const parts: string[] = [];
   const exportFiles: FileInfo[] = [];
   const attachFiles: FileInfo[] = [];
+  const outcomes: AgentToolCallOutcome[] = [];
   let skippedDuplicate = 0;
+  let notExecuted = 0;
+  const push = (text: string) => {
+    parts.push(text);
+    outcomes.push({ text: truncateToolResult(text), isError: isToolErrorText(text) });
+  };
 
   for (const call of calls) {
     if (opts?.shouldCancel?.()) {
       parts.push('【已取消】用户停止了本次操作。');
       break;
     }
-    validateAgentToolCall(call);
+    try {
+      validateAgentToolCall(call);
+    } catch (error) {
+      push(`【${call.tool}】错误：参数无效：${error instanceof Error ? error.message : String(error)}。请修正参数后重试。`);
+      notExecuted += 1;
+      continue;
+    }
+    if (call.tool.startsWith('web_') && call.tool !== 'web_close' && ctx.acquireBrowserLock) {
+      const lockError = ctx.acquireBrowserLock();
+      if (lockError) {
+        push(`【${call.tool}】错误：${lockError}`);
+        notExecuted += 1;
+        continue;
+      }
+    }
     const sig = toolCallSignature(call);
     const cached = executed?.get(sig);
     if (cached !== undefined) {
@@ -282,20 +308,22 @@ export async function runAgentLocalToolBatch(
         `【${call.tool} 重复调用，已跳过】\n${cached.slice(0, 1800)}\n\n` +
           '（该步骤已完成，请勿再次输出相同 JSON；请根据以上结果用自然语言回答用户。）'
       );
+      outcomes.push({ text: truncateToolResult(cached), isError: false });
       continue;
     }
 
     if(call.tool==='data_calculate'||call.tool==='mcp_call'){
-      if(call.tool==='data_calculate' && !useSettingStore.getState().agentLocalToolsEnabled) {parts.push('错误：数据文件工具未开启');continue;}
+      if(call.tool==='data_calculate' && !useSettingStore.getState().agentLocalToolsEnabled) {push('错误：数据文件工具未开启');notExecuted+=1;continue;}
       const result=await executeExtendedTool(call,opts?.shouldCancel,ctx);
       if(!result.text.startsWith('错误：'))executed?.set(sig,result.text);
-      exportFiles.push(...result.files);parts.push(result.text);continue;
+      if(result.notExecuted)notExecuted+=1;
+      exportFiles.push(...result.files);push(result.text);continue;
     }
     if (call.tool.startsWith('local_')) {
       const denied = assertLocalToolsEnabled();
       if (denied) {
         executed?.set(sig, denied);
-        parts.push(`【${call.tool}】${denied}`);
+        push(`【${call.tool}】${denied}`);
         continue;
       }
     }
@@ -303,7 +331,7 @@ export async function runAgentLocalToolBatch(
       const denied = assertBrowserEnabled();
       if (denied) {
         executed?.set(sig, denied);
-        parts.push(`【${call.tool}】${denied}`);
+        push(`【${call.tool}】${denied}`);
         continue;
       }
     }
@@ -318,11 +346,11 @@ export async function runAgentLocalToolBatch(
         exportFiles.push(r.file);
         const msg = `已生成附件：${r.file.name}`;
         executed?.set(sig, msg);
-        parts.push(`【${call.tool}】${msg}`);
+        push(`【${call.tool}】${msg}`);
       } else {
         const msg = `错误：${r.error ?? '导出失败'}`;
         executed?.set(sig, msg);
-        parts.push(`【${call.tool}】${msg}`);
+        push(`【${call.tool}】${msg}`);
       }
       continue;
     }
@@ -331,13 +359,13 @@ export async function runAgentLocalToolBatch(
       const files = await findLocalImagesByKeyword(call.query, ctx, limit);
       attachFiles.push(...files);
       const out = await executeAgentLocalTool(call, ctx, embed);
-      executed?.set(sig, out);
-      parts.push(`【${call.tool}】\n${out}`);
+      if (!out.startsWith('错误：')) executed?.set(sig, out);
+      push(`【${call.tool}】\n${out}`);
       continue;
     }
     const out = await executeAgentLocalTool(call, ctx, embed);
-    executed?.set(sig, out);
-    parts.push(`【${call.tool}】\n${out}`);
+    if (!out.startsWith('错误：')) executed?.set(sig, out);
+    push(`【${call.tool}】\n${out}`);
   }
 
   return {
@@ -348,5 +376,7 @@ export async function runAgentLocalToolBatch(
     exportFiles,
     attachFiles,
     skippedDuplicate,
+    outcomes,
+    notExecuted,
   };
 }

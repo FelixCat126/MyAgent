@@ -66,12 +66,6 @@ interface ParticleStore {
   agentActivity: AgentActivity;
   /** 手势是否正在覆盖业务表现（true 时优先用 mood/spinSpeed/morphTarget；false 时由 activity 派生） */
   gestureOverride: boolean;
-  /**
-   * 眼动注视目标，单位向量 [-1, 1]²；由 useFaceTracking 写入：
-   *   x: 负=看左，正=看右；y: 负=看上，正=看下。
-   * CartoonAvatar 用其位移瞳孔；GazeIndicator 用其计算屏幕落点。
-   */
-  gazeTarget: { x: number; y: number };
   /** 主动触发的眨眼：0=正常，1=完全闭眼；由 useFaceTracking 写入实时值 */
   blinkAmount: number;
   /** 嘴巴张合度 0..1；replying 时由 ChatWindow 驱动张合，cheer 时由手势提至 1 */
@@ -83,13 +77,7 @@ interface ParticleStore {
    * GazeIndicator 作为注视投射线的起点。
    */
   avatarCenter: { x: number; y: number } | null;
-  /**
-   * 视线原始特征：归一化后的眼动方向 (gx, gy) ∈ [-1,1]² 与头部姿态 yaw/pitch（弧度）。
-   * 由 useFaceTracking 每帧写入；供 GazeCalibration 采样、GazeIndicator 应用拟合后的仿射变换。
-   * 当 gestureControlEnabled=false 或检测不到人脸时为 null。
-   */
-  gazeRaw: { gx: number; gy: number; yaw: number; pitch: number } | null;
-  /** 目光光标在屏幕上的平滑位置（像素）；GazeIndicator 写入，眨眼点击时读取 */
+  /** 手势光标在屏幕上的平滑位置（像素）；GazeIndicator 写入，眨眼点击时读取 */
   gazeScreenPos: { x: number; y: number } | null;
   /** 食指指尖映射的原始屏幕坐标（像素）；useGestureControl 写入，GazeIndicator 平滑后写入 gazeScreenPos */
   pointerTarget: { x: number; y: number } | null;
@@ -108,12 +96,10 @@ interface ParticleStore {
   setMorphTarget: (m: ParticleMorph) => void;
   setAgentActivity: (a: AgentActivity) => void;
   setGestureOverride: (v: boolean) => void;
-  setGazeTarget: (g: { x: number; y: number }) => void;
   setBlinkAmount: (v: number) => void;
   setMouthOpen: (v: number) => void;
   setHeadTilt: (v: number) => void;
   setAvatarCenter: (p: { x: number; y: number } | null) => void;
-  setGazeRaw: (g: { gx: number; gy: number; yaw: number; pitch: number } | null) => void;
   setGazeScreenPos: (p: { x: number; y: number } | null) => void;
   setPointerTarget: (p: { x: number; y: number } | null) => void;
   setPointerOperationActive: (v: boolean) => void;
@@ -146,12 +132,10 @@ export const useParticleStore = create<ParticleStore>((set) => ({
   morphTarget: 'sphere',
   agentActivity: 'idle',
   gestureOverride: false,
-  gazeTarget: { x: 0, y: 0 },
   blinkAmount: 0,
   mouthOpen: 0,
   headTilt: 0,
   avatarCenter: null,
-  gazeRaw: null,
   gazeScreenPos: null,
   pointerTarget: null,
   pointerOperationActive: false,
@@ -175,14 +159,11 @@ export const useParticleStore = create<ParticleStore>((set) => ({
   setMorphTarget: (m) => set({ morphTarget: m }),
   setAgentActivity: (a) => set({ agentActivity: a }),
   setGestureOverride: (v) => set({ gestureOverride: v }),
-  setGazeTarget: (g) =>
-    set({ gazeTarget: { x: clamp(g.x, -1, 1), y: clamp(g.y, -1, 1) } }),
   setBlinkAmount: (v) => set({ blinkAmount: clamp(v, 0, 1) }),
   setMouthOpen: (v) => set({ mouthOpen: clamp(v, 0, 1) }),
   setHeadTilt: (v) =>
     set({ headTilt: clamp(v, -Math.PI / 4, Math.PI / 4) }),
   setAvatarCenter: (p) => set({ avatarCenter: p }),
-  setGazeRaw: (g) => set({ gazeRaw: g }),
   setGazeScreenPos: (p) => set({ gazeScreenPos: p }),
   setPointerTarget: (p) => set({ pointerTarget: p }),
   setPointerOperationActive: (v) => set({ pointerOperationActive: v }),

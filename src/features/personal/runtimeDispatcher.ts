@@ -1,5 +1,6 @@
 import { useChatStore } from '../../store/chatStore';
-import type { RuntimeTask } from '../runtime/api';
+import type { RuntimeSnapshot, RuntimeTask } from '../runtime/api';
+import { setConnectedExternalToolNames } from '../../agent/toolRegistry';
 
 export type RuntimeTaskExecutor = (task: RuntimeTask) => Promise<void>;
 let executor: RuntimeTaskExecutor | null = null;
@@ -12,19 +13,28 @@ const cancelledTasks = new Set<string>();
 function getExecutor(): RuntimeTaskExecutor | null { return executor; }
 export function runtimeTaskWasCancelled(taskId: string): boolean { return cancelledTasks.has(taskId); }
 
-function isBusy(): boolean {
+/** 任务只需等待它要写入的会话空闲；其他会话的前台回复可并行 */
+function taskSessionBusy(task: RuntimeTask): boolean {
+  const sessionId = typeof task.checkpoint?.sessionId === 'string' ? task.checkpoint.sessionId : null;
+  if (!sessionId) return false;
   const chat = useChatStore.getState();
-  return chat.loadingSessionIds.size > 0 || chat.compressingSessionIds.size > 0;
+  return chat.isLoadingSession(sessionId) || chat.isCompressingSession(sessionId);
+}
+
+function nextRunnableTask(): RuntimeTask | undefined {
+  for (const task of queue.values()) if (!taskSessionBusy(task)) return task;
+  return undefined;
 }
 
 async function drain(): Promise<void> {
-  if (draining || !executor || isBusy()) return;
+  if (draining || !executor || !nextRunnableTask()) return;
   draining = true;
   try {
-    while (queue.size && !isBusy()) {
+    while (queue.size) {
       const run = getExecutor();
       if (!run) break;
-      const task = queue.values().next().value as RuntimeTask;
+      const task = nextRunnableTask();
+      if (!task) break;
       queue.delete(task.id);
       activeTaskId = task.id;
       handledRevisions.set(task.id, task.updatedAt);
@@ -49,7 +59,7 @@ export function enqueueRuntimeTask(task: RuntimeTask): void {
 export function registerRuntimeTaskExecutor(run: RuntimeTaskExecutor, cancel: (taskId: string) => void): () => void {
   executor = run;
   cancelExecutor = cancel;
-  const unsubscribe = useChatStore.subscribe(() => { if (!isBusy()) void drain(); });
+  const unsubscribe = useChatStore.subscribe(() => { if (queue.size) void drain(); });
   void drain();
   return () => { unsubscribe(); if (executor === run) { executor = null; cancelExecutor = null; } };
 }
@@ -65,10 +75,14 @@ export function installRuntimeDispatchBridge(onTaskQueued: (task: RuntimeTask) =
   });
   // Recover a dispatched event that raced renderer mounting, without rerunning foreground turns.
   let mounted = true;
+  const syncExternalTools = (snapshot: RuntimeSnapshot) => setConnectedExternalToolNames(snapshot.connections.filter((c) => c.enabled && c.status === 'connected').map((c) => c.name));
   void window.electron.runtimeGetState().then((snapshot) => {
-    if (mounted) snapshot.tasks.filter((task) => task.status === 'running' && !task.checkpoint?.foreground).forEach(dispatch);
+    if (!mounted) return;
+    syncExternalTools(snapshot);
+    snapshot.tasks.filter((task) => task.status === 'running' && !task.checkpoint?.foreground).forEach(dispatch);
   }).catch((error) => console.error('[Runtime dispatch state]', error));
-  return () => { mounted = false; unsubscribe(); unsubscribeCancel(); };
+  const unsubscribeState = window.electron.onRuntimeChanged?.((snapshot) => { if (mounted) syncExternalTools(snapshot); }) ?? (() => {});
+  return () => { mounted = false; unsubscribe(); unsubscribeCancel(); unsubscribeState(); };
 }
 
 /** A streaming start promise can resolve early; wait for the real session terminal boundary. */

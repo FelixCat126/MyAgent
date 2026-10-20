@@ -88,10 +88,8 @@ describe('settingStore', () => {
     expect(useSettingStore.getState().agentDeniedPaths).toEqual(['/a', '/b']);
   });
 
-  it('setParticleFieldEnabled / setGazeFollowEnabled 状态切换', () => {
+  it('setParticleFieldEnabled 状态切换', () => {
     useSettingStore.getState().setParticleFieldEnabled(false);
     expect(useSettingStore.getState().particleFieldEnabled).toBe(false);
-    useSettingStore.getState().setGazeFollowEnabled(true);
-    expect(useSettingStore.getState().gazeFollowEnabled).toBe(true);
   });
 });

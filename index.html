@@ -2,6 +2,14 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      脚本仅允许本应用自身来源（打包后 file:，开发态 Vite 同源）；'unsafe-inline' 供 Vite 开发态 React Refresh 前导脚本，
+      'wasm-unsafe-eval' 供 MediaPipe 编译 wasm。图片/媒体/网络请求需展示远程图片与 local-file: 附件，保持宽松。
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self' file:; script-src 'self' file: 'unsafe-inline' 'wasm-unsafe-eval' blob:; worker-src 'self' file: blob:; style-src 'self' file: 'unsafe-inline'; img-src 'self' file: local-file: data: blob: https: http:; media-src 'self' file: local-file: data: blob: https: http:; font-src 'self' file: data:; connect-src 'self' file: local-file: data: blob: https: http: ws://localhost:* ws://127.0.0.1:*; frame-src 'self' file: blob: data: https: http:; object-src 'none'; base-uri 'self'"
+    />
     <link rel="icon" type="image/png" href="/icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>MyAgent - AI助手</title>

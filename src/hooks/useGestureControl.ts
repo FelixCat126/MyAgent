@@ -726,6 +726,15 @@ export function useGestureControl(enabled: boolean): UseGestureControlResult {
           return;
         }
 
+        /** 摄像头拔出/被系统收回：轨道 ended 后画面冻结，须停止识别并提示，避免最后一帧持续触发手势 */
+        stream.getVideoTracks().forEach((track) => {
+          track.addEventListener('ended', () => {
+            if (isStale()) return;
+            stopAll();
+            setStatus({ kind: 'error', message: '摄像头已断开，请重新连接后关闭再开启手势控制' });
+          }, { once: true });
+        });
+
         setStatus({ kind: 'ready' });
         setCameraActive(true);
         setVideoElement(videoEl);

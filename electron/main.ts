@@ -18,14 +18,24 @@ import {
 import path from 'path';
 import os from 'os';
 import fsSync from 'fs';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import fs from 'fs/promises';
+
+process.on('uncaughtException', (error) => {
+  rootLogger.fatal('main uncaughtException', { error: error?.stack || String(error) });
+});
+process.on('unhandledRejection', (reason) => {
+  rootLogger.error('main unhandledRejection', {
+    error: reason instanceof Error ? reason.stack || reason.message : String(reason),
+  });
+});
 
 import './ipc/model';
 import './ipc/model-service';
 import { registerQuickWindow, shutdownQuickWindow } from './quick-window';
 import { registerRuntimeIpc, bootstrapRuntime, shutdownRuntime } from './workbench-runtime';
 import { createShutdownBarrier } from './utils/shutdownBarrier';
+import { registerAgentProtectedPaths } from './utils/agentPathScope';
 registerRuntimeIpc();
 import './ipc/model-stream';
 import './ipc/export';
@@ -50,6 +60,11 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+/** 含加密密钥 / 令牌 / 日志的应用私有数据：本机文件 Agent 不可读（上传、文档版本等目录仍可访问） */
+registerAgentProtectedPaths(
+  ['persist', 'runtime', 'logs', 'remote-gateway.json'].map((name) => path.join(app.getPath('userData'), name))
+);
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -89,6 +104,33 @@ function focusMainWindowOrCreate(): void {
 /** 主窗口初始/最小尺寸 */
 const MAIN_WINDOW_SIZE = { width: 1400, height: 900, minWidth: 1000 } as const;
 
+const MAIN_INDEX_URL = pathToFileURL(path.join(__dirname, '../dist/index.html')).href;
+
+/** 应用自身页面（dev 服务器同源 / 打包后的 dist/index.html）；preload 暴露的 window.electron 只应落在这些页面上 */
+function isAppPageUrl(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    if (process.env.VITE_DEV_SERVER_URL) return u.origin === new URL(process.env.VITE_DEV_SERVER_URL).origin;
+    u.hash = '';
+    u.search = '';
+    return u.href === MAIN_INDEX_URL;
+  } catch {
+    return false;
+  }
+}
+
+/** 外链仅交给系统浏览器 / 邮件客户端打开 */
+function openExternalSafe(raw: string): void {
+  try {
+    const u = new URL(raw);
+    if (u.protocol === 'http:' || u.protocol === 'https:' || u.protocol === 'mailto:') {
+      void shell.openExternal(u.href).catch(() => undefined);
+    }
+  } catch {
+    /* ignore invalid url */
+  }
+}
+
 function createWindow() {
   const iconPath = path.join(__dirname, '../resources/icon.png');
   const icon = fsSync.existsSync(iconPath) ? iconPath : undefined;
@@ -102,18 +144,38 @@ function createWindow() {
     title: 'MyAgent - AI助手',
     webPreferences: {
       /**
-       * 注意：contextIsolation:false + nodeIntegration:true 是 window.electron 直接注入模型的前提，
-       * 迁移到 contextBridge 需重写 preload 全部 60+ 方法（onMessage 返回函数无法跨桥），
-       * 故保持现状；第三方内容隔离由 webview 显式 webpreferences 与 local-file 白名单承担。
+       * 页面与 preload 分处不同上下文，页面只能通过 contextBridge 暴露的 window.electron 访问主进程。
+       * sandbox 关闭是因为 preload 需要 require 同目录的子模块（preload-runtime.cjs 等）。
        */
-      contextIsolation: false,
-      nodeIntegration: true,
-      webSecurity: false,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
       webviewTag: true,
-      /** 先于页面脚本执行：修补 ipcRenderer + 注入 window.electron（见 preload.cjs） */
+      /** 先于页面脚本执行：修补 ipcRenderer + 通过 contextBridge 暴露 window.electron（见 preload.cjs） */
       preload: path.join(__dirname, 'preload.cjs'),
     },
     show: false,
+  });
+
+  /** 主窗口只承载应用页面：站外链接一律改由系统浏览器打开，避免外部页面拿到 window.electron */
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    openExternalSafe(url);
+    return { action: 'deny' };
+  });
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (isAppPageUrl(url)) return;
+    event.preventDefault();
+    openExternalSafe(url);
+  });
+  /** 内嵌浏览器 webview：剥离 preload / Node，强制隔离 + 沙箱，仅允许 http(s) 与 about:blank */
+  mainWindow.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+    delete (webPreferences as { preload?: string }).preload;
+    webPreferences.nodeIntegration = false;
+    webPreferences.nodeIntegrationInSubFrames = false;
+    webPreferences.contextIsolation = true;
+    webPreferences.sandbox = true;
+    webPreferences.webSecurity = true;
+    if (!/^(https?:|about:blank$)/i.test(String(params.src || 'about:blank'))) event.preventDefault();
   });
 
   /** 避免出现长时间白屏错觉；内容就绪后再显式展示 */
@@ -355,16 +417,16 @@ if (PRIMARY_INSTANCE) {
 
   app.whenReady().then(() => {
     /** 语音/摄像头：放行 media（否则 getUserMedia / Web Speech 不可用）*/
-    session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
-      if (permission === 'media') {
-        callback(true);
-      } else {
-        callback(false);
-      }
+    /** 仅应用自身页面可用麦克风/摄像头；内嵌浏览器 webview 等外部页面共用 defaultSession，须拒绝 */
+    const isTrustedMediaRequester = (wc: Electron.WebContents | null, requestingUrl?: string): boolean =>
+      Boolean(wc && !wc.isDestroyed() && wc.getType() === 'window' && isAppPageUrl(requestingUrl || wc.getURL()));
+    session.defaultSession.setPermissionRequestHandler((wc, permission, callback, details) => {
+      callback(permission === 'media' && isTrustedMediaRequester(wc, details?.requestingUrl));
     });
     /** Electron 较新版本还会走 check；只 request 不 check 时，偶发「已授权仍无帧」*/
-    session.defaultSession.setPermissionCheckHandler((_wc, permission) => {
-      return permission === 'media' || permission === 'mediaKeySystem';
+    session.defaultSession.setPermissionCheckHandler((wc, permission, requestingOrigin) => {
+      if (permission !== 'media' && permission !== 'mediaKeySystem') return false;
+      return isTrustedMediaRequester(wc, wc?.getURL() || requestingOrigin);
     });
 
     if (process.env.MYAGENT_LOG_WEB_REQUESTS === '1') {

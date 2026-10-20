@@ -11,6 +11,12 @@ import type { RuntimeAPI } from '../features/runtime/api';
 import type { DocumentWorkbenchAPI } from '../features/documents/types';
 
 // Electron API 类型定义
+export interface ChatPersistWrite {
+  index: string;
+  ids: string[];
+  sessions: Record<string, string>;
+}
+
 export interface ElectronAPI extends ModelServiceAPI, RuntimeAPI, DocumentWorkbenchAPI, VoiceQuickAPI, MediaWorkbenchAPI {
   sendMessage: (channel: string, data: unknown) => void;
   /** 返回取消订阅函数，避免热重载或重复注册 */
@@ -237,6 +243,9 @@ export interface ElectronAPI extends ModelServiceAPI, RuntimeAPI, DocumentWorkbe
   /** 小字段首屏用：引导是否已关 */
   persistGetSync: (name: string) => string | null;
   persistSetSync: (name: string, value: string) => void;
+  /** 会话仓库按对话拆文件写入：只携带变化的会话，主进程负责写索引并清理已删对话 */
+  persistChatWrite?: (payload: ChatPersistWrite) => Promise<void>;
+  persistChatWriteSync?: (payload: ChatPersistWrite) => void;
   /** 扫描生图目录、附件目录与会话中出现的图片路径合并去重（已删对话仍可保留磁盘文件） */
   listMediaLibraryImages: (payload?: {
     extraPaths?: string[];

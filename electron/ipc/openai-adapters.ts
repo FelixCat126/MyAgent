@@ -39,6 +39,26 @@ export function imageFileToDataUrl(file: NonNullable<Message['files']>[number]):
   return `data:${mime};base64,${base64}`;
 }
 
+/** 历史消息里的图片源文件可能已被清理：只有最后一条用户消息缺图才报错，历史缺图降级为文字说明 */
+function lastUserIndex(messages: Message[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === 'user') return i;
+  return -1;
+}
+
+function historyTolerantDataUrl(
+  file: NonNullable<Message['files']>[number],
+  isLatestUser: boolean
+): string | null {
+  try {
+    return imageFileToDataUrl(file);
+  } catch (e) {
+    if (isLatestUser) throw e;
+    return null;
+  }
+}
+
+const missingHistoryImageText = (name: string) => `（历史图片 ${name || ''} 已不在本地，已省略）`;
+
 export function messagesHaveImageFiles(messages: Message[]): boolean {
   return messages.some((m) => m.files?.some((f) => f.type.startsWith('image/')));
 }
@@ -73,7 +93,8 @@ export function formatOpenAIMultimodal(
   | { role: string; content: string }
   | { role: string; content: Array<{ type: string; text?: string; image_url?: { url: string } }> }
 > {
-  return messages.map((msg) => {
+  const latestUser = lastUserIndex(messages);
+  return messages.map((msg, index) => {
     const text = normalizeTextContent((msg as { content?: unknown }).content);
     if (isContextSummaryMessage(msg)) {
       return { role: 'system', content: text };
@@ -84,10 +105,12 @@ export function formatOpenAIMultimodal(
         role: msg.role,
         content: [
           { type: 'text', text },
-          ...imageFiles.map((imageFile) => ({
-            type: 'image_url' as const,
-            image_url: { url: imageFileToDataUrl(imageFile) },
-          })),
+          ...imageFiles.map((imageFile) => {
+            const url = historyTolerantDataUrl(imageFile, index === latestUser);
+            return url
+              ? { type: 'image_url' as const, image_url: { url } }
+              : { type: 'text', text: missingHistoryImageText(imageFile.name) };
+          }),
         ],
       };
     }
@@ -121,7 +144,8 @@ export function formatAnthropicMessages(
 } {
   let system = '';
   const out: Array<{ role: string; content: string | Array<Record<string, unknown>> }> = [];
-  for (const msg of messages) {
+  const latestUser = lastUserIndex(messages);
+  for (const [index, msg] of messages.entries()) {
     /** 上下文摘要并入 system，避免污染 assistant 多轮语义 */
     if (msg.role === 'system' || isContextSummaryMessage(msg)) {
       const t = normalizeTextContent((msg as { content?: unknown }).content);
@@ -136,7 +160,11 @@ export function formatAnthropicMessages(
         { type: 'text', text: text || '（空）' },
       ];
       for (const imageFile of imageFiles) {
-        const dataUrl = imageFileToDataUrl(imageFile);
+        const dataUrl = historyTolerantDataUrl(imageFile, index === latestUser);
+        if (!dataUrl) {
+          blocks.push({ type: 'text', text: missingHistoryImageText(imageFile.name) });
+          continue;
+        }
         const b64 = dataUrl.includes(',') ? dataUrl.split(',')[1]! : dataUrl;
         const mediaType =
           imageFile.type && imageFile.type.startsWith('image/') ? imageFile.type : 'image/png';

@@ -19,6 +19,8 @@ export type RunModelReplyUi = {
   streamUnsubRef: React.MutableRefObject<(() => void) | null>;
   streamHadErrorRef: React.MutableRefObject<boolean>;
   streamCancelledByUserRef: React.MutableRefObject<boolean>;
+  /** 停止时立即丢弃本轮打字机积压；由流式路径登记 */
+  cancelAnimRef?: React.MutableRefObject<(() => void) | null>;
   imageGenCancelledRef: React.MutableRefObject<boolean>;
   imageGenSyncRef: React.MutableRefObject<{ sessionId: string; messageId: string } | null>;
   speechReaderRef: React.MutableRefObject<StreamingSpeechReader | null>;

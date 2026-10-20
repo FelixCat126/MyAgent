@@ -16,6 +16,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { FiLayers, FiChevronUp, FiChevronDown, FiChevronRight } from 'react-icons/fi';
 import { IosSwitch } from '../IosSwitch';
 import { useKnowledgeStore } from '../../store/knowledgeStore';
+import { useConnectionStore } from '../../store/connectionStore';
 import { useWorkspaceStore } from '../../store/workspaceStore';
 import { showError, showInfo, showWarning } from '../../store/errorStore';
 import { formatDateTime } from '../../utils/formatDateTime';
@@ -49,7 +50,9 @@ export const KnowledgeSection: React.FC<KnowledgeSectionProps> = ({ cardShell, t
     embeddingVolcMultimodal,
     setEmbeddingVolcMultimodal,
     getEmbedConfigForIpc,
+    embeddingConnectionId,
   } = useKnowledgeStore();
+  const linkedConnection = useConnectionStore(s => s.connections.find(c => c.id === embeddingConnectionId));
 
   // 本组件内部状态：折叠态 + 索引状态
   const [knowledgeBlockExpanded, setKnowledgeBlockExpanded] = useState(false);
@@ -154,7 +157,12 @@ export const KnowledgeSection: React.FC<KnowledgeSectionProps> = ({ cardShell, t
               {t('settings.knowledgeHintLocal')}
             </p>
           )}
-          {embeddingProvider === 'openai' && (
+          {linkedConnection && embeddingProvider !== 'off' && (
+            <p className="text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
+              {t('settings.knowledgeLinkedConnection', { name: linkedConnection.name })}
+            </p>
+          )}
+          {embeddingProvider === 'openai' && !linkedConnection && (
             <>
               <p className="text-[10px] leading-relaxed text-stone-500 dark:text-slate-500">
                 {t('settings.knowledgeHintCloud')}
@@ -186,7 +194,7 @@ export const KnowledgeSection: React.FC<KnowledgeSectionProps> = ({ cardShell, t
             <div className="mt-2 space-y-2 border-t border-stone-300/35 pt-2 dark:border-white/8">
               {embeddingProvider !== 'off' && (
                 <>
-                  <div>
+                  {!linkedConnection && <div>
                     <label className="mb-0.5 block text-[9px] font-medium text-stone-500 dark:text-slate-500">
                       {t('settings.embedUrl')}
                     </label>
@@ -201,7 +209,7 @@ export const KnowledgeSection: React.FC<KnowledgeSectionProps> = ({ cardShell, t
                       }
                       className="w-full rounded-md border border-stone-400/30 bg-stone-100/95 px-2 py-1 font-mono text-[10px] text-stone-900 focus:outline-none focus:ring-1 focus:ring-primary-500/70 dark:border-gray-600 dark:bg-slate-800/95 dark:text-slate-100"
                     />
-                  </div>
+                  </div>}
                   <div>
                     <label className="mb-0.5 block text-[9px] font-medium text-stone-500 dark:text-slate-500">
                       {t('settings.embedModel')}

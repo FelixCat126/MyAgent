@@ -74,6 +74,42 @@ function FencedCodeBlock(props: {
   );
 }
 
+/** 只允许外部打开 http / https / mailto；其余协议（javascript:、file: 等）降级为纯文本 */
+export function safeExternalHref(href: string | undefined): string | null {
+  const v = String(href || '').trim();
+  return /^(https?:|mailto:)/i.test(v) ? v : null;
+}
+
+/** 远程图片不自动加载（防止提示注入借图片 URL 外泄会话内容），点击后才请求 */
+export function isAutoLoadImageSrc(src: string | undefined): boolean {
+  return /^(data:image\/|local-file:|blob:)/i.test(String(src || '').trim());
+}
+
+function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
+  const [load, setLoad] = useState(false);
+  const url = String(src || '').trim();
+  if (isAutoLoadImageSrc(url) || (load && /^https?:/i.test(url))) {
+    return <img src={url} alt={alt ?? ''} className="max-w-full rounded" />;
+  }
+  if (!/^https?:/i.test(url)) return <span>{alt ?? ''}</span>;
+  let host = url;
+  try {
+    host = new URL(url).host;
+  } catch {
+    /* 保留原文 */
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => setLoad(true)}
+      className="rounded border border-dashed border-stone-400 px-2 py-0.5 text-xs text-stone-600 hover:bg-stone-100 dark:border-slate-500 dark:text-slate-300 dark:hover:bg-slate-800"
+      title={url}
+    >
+      🖼 {alt || 'image'} · {host}
+    </button>
+  );
+}
+
 type CodeProps = {
   inline?: boolean;
   className?: string;
@@ -92,6 +128,18 @@ const MarkdownContent: React.FC<MarkdownContentProps> = React.memo(({
   const mdComponents: Partial<Components> = {
     /** paragraph 改用 div：允许与块级自定义组件共存且不触发 validateDOMNesting */
     p: ({ children }) => <div className="myagent-md-p">{children}</div>,
+    /** 新窗口打开交给主进程 setWindowOpenHandler 转系统浏览器，避免主窗口被导航到外站 */
+    a: ({ href, children }) => {
+      const safe = safeExternalHref(href);
+      return safe ? (
+        <a href={safe} target="_blank" rel="noopener noreferrer">
+          {children}
+        </a>
+      ) : (
+        <span>{children}</span>
+      );
+    },
+    img: ({ src, alt }) => <MarkdownImage src={typeof src === 'string' ? src : undefined} alt={alt} />,
     /** 默认 </pre><code> 中我们渲染含 div 的 fenced 组件，去掉 pre 壳避免 pre>div */
     pre({ children }: { children?: ReactNode }) {
       return <>{children}</>;

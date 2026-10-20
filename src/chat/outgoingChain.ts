@@ -6,7 +6,7 @@ import { isAttachmentPlaceholder } from '../utils/attachmentPlaceholder';
 import { modelHasUsableImageGenerator } from '../store/modelStore';
 import { t as tUi } from '../i18n/ui';
 import type { Locale } from '../i18n/types';
-import { personalContextMessage, resolveSessionProjectContext } from '../features/personal/context';
+import { resolveSessionProjectContext } from '../features/personal/context';
 import { useChatStore } from '../store/chatStore';
 import { withoutGeneratedRuntimeContext } from '../utils/runtimeContext';
 
@@ -228,9 +228,7 @@ export async function buildOutgoingChain(
     session.messages.some((message) => message.id === userMessage.id)
   )?.id ?? useChatStore.getState().currentSessionId;
   const context = resolveSessionProjectContext(sessionId);
-  const personal = personalContextMessage(userQueryTextForRag(userMessage), sessionId);
-  const ordinaryHistory = withoutGeneratedRuntimeContext(historyWithoutUser);
-  const history = personal ? [personal, ...ordinaryHistory] : ordinaryHistory;
+  const history = withoutGeneratedRuntimeContext(historyWithoutUser);
   const vec = await maybeInjectVectorRag(history, userMessage, skip, context.rootPath);
   const withVec = vec.messages;
   const hist0 = withVec.slice(0, -1);

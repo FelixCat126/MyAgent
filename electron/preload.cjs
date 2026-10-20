@@ -1,8 +1,24 @@
 // Preload：必须在任何页面脚本之前运行，全局包装 ipcRenderer，避免 Structured Clone 报错
-const { ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer } = require('electron');
 
+function isBinary(v) {
+  return v instanceof ArrayBuffer || ArrayBuffer.isView(v);
+}
+
+/** 二进制须原样走结构化克隆：JSON 往返会把 Uint8Array 变成下标对象 */
 function cloneForIpc(v) {
   if (v === undefined || v === null) return v;
+  if (isBinary(v)) return v;
+  if (typeof v === 'object' && !Array.isArray(v)) {
+    const binaryKeys = Object.keys(v).filter((k) => isBinary(v[k]));
+    if (binaryKeys.length > 0) {
+      const rest = { ...v };
+      for (const k of binaryKeys) delete rest[k];
+      const cleaned = cloneForIpc(rest) ?? {};
+      for (const k of binaryKeys) cleaned[k] = v[k];
+      return cleaned;
+    }
+  }
   try {
     const s = JSON.stringify(v);
     if (s === undefined) return undefined;
@@ -26,10 +42,24 @@ function cloneForIpc(v) {
   };
 })();
 
-window.electron = {
+/** 通用 send/on 仅放行显式列出的通道，其余主进程通道须走下方具名方法 */
+const SEND_MESSAGE_CHANNELS = new Set([]);
+const ON_MESSAGE_CHANNELS = new Set([
+  'model-agent-thinking',
+  'myagent-clipboard-paste',
+  'volc-asr-text',
+  'volc-asr-error',
+  'volc-asr-ended',
+]);
+
+const api = {
   /** 注：invoke/send 已在上方 patch 中统一 cloneForIpc，各方法无需再克隆 */
-  sendMessage: (channel, data) => ipcRenderer.send(channel, data),
+  sendMessage: (channel, data) => {
+    if (!SEND_MESSAGE_CHANNELS.has(channel)) throw new Error(`IPC 通道未授权: ${channel}`);
+    ipcRenderer.send(channel, data);
+  },
   onMessage: (channel, func) => {
+    if (!ON_MESSAGE_CHANNELS.has(channel)) throw new Error(`IPC 通道未授权: ${channel}`);
     const handler = (_event, ...args) => func(...args);
     ipcRenderer.on(channel, handler);
     return () => ipcRenderer.removeListener(channel, handler);
@@ -37,13 +67,17 @@ window.electron = {
   callModel: (messages, config, options) =>
     ipcRenderer.invoke('call-model', messages, config, options ?? null),
   subscribeModelStream: (messages, config, handlers) => {
-    const d = (_e, t) => handlers.onDelta(t);
-    const think = (_e, t) => {
-      if (handlers.onThinkingDelta) handlers.onThinkingDelta(t);
+    /** 同一窗口可并行多条流；主进程事件末尾带 streamId，只处理属于本订阅的事件 */
+    const streamId = `ms-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const d = (_e, t, id) => {
+      if (id === streamId) handlers.onDelta(t);
     };
-    const err = (_e, m) => {
-      if (ended) return;
-      try { handlers.onError(m); } finally { end(); }
+    const think = (_e, t, id) => {
+      if (id === streamId && handlers.onThinkingDelta) handlers.onThinkingDelta(t);
+    };
+    const err = (_e, m, id) => {
+      if (id !== streamId || ended) return;
+      try { handlers.onError(m); } finally { finish(); }
 
     };
     let ended = false;
@@ -55,10 +89,13 @@ window.electron = {
       ipcRenderer.removeListener('model-stream-error', err);
       ipcRenderer.removeListener('model-stream-end', end);
     };
-    const end = () => {
+    const finish = () => {
       if (ended) return;
       cleanup();
       handlers.onEnd();
+    };
+    const end = (_e, id) => {
+      if (id === streamId) finish();
     };
     ipcRenderer.on('model-stream-delta', d);
     ipcRenderer.on('model-stream-thinking-delta', think);
@@ -67,13 +104,15 @@ window.electron = {
     ipcRenderer.send('model-stream-start', {
       messages,
       config,
+      streamId,
       locale: handlers.locale || 'zh',
       ...(typeof handlers.temperature === 'number' ? { temperature: handlers.temperature } : {}),
     });
     return () => {
-      ipcRenderer.send('model-stream-abort');
+      ipcRenderer.send('model-stream-abort', streamId);
     };
   },
+  /** 不带参数：中止本窗口全部模型流 */
   closeModelStream: () => ipcRenderer.send('model-stream-abort'),
   cancelImageGeneration: (requestId) => ipcRenderer.send('image-generation-cancel', requestId),
   generateImage: (params, handlers) => {
@@ -105,6 +144,10 @@ window.electron = {
   },
   persistSetSync: (name, value) => {
     ipcRenderer.send('persist-state-set-sync', name, value);
+  },
+  persistChatWrite: (payload) => ipcRenderer.invoke('persist-chat-write', payload),
+  persistChatWriteSync: (payload) => {
+    ipcRenderer.send('persist-chat-write-sync', payload);
   },
   capturePageToClipboard: () => ipcRenderer.invoke('capture-page-to-clipboard'),
   generateVideo: (params, handlers) => {
@@ -184,12 +227,15 @@ const INVOKE_CHANNELS = {
 };
 
 for (const [method, channel] of Object.entries(INVOKE_CHANNELS)) {
-  window.electron[method] = (...args) => ipcRenderer.invoke(channel, ...args);
+  api[method] = (...args) => ipcRenderer.invoke(channel, ...args);
 }
 
-Object.assign(window.electron, require('./preload-runtime.cjs').createRuntimeApi(ipcRenderer), require('./preload-voice-quick.cjs').createVoiceQuickApi(ipcRenderer), require('./preload-media.cjs').createMediaWorkbenchApi(ipcRenderer), require('./preload-documents.cjs').createDocumentWorkbenchApi(ipcRenderer), {
+Object.assign(api, require('./preload-runtime.cjs').createRuntimeApi(ipcRenderer), require('./preload-voice-quick.cjs').createVoiceQuickApi(ipcRenderer), require('./preload-media.cjs').createMediaWorkbenchApi(ipcRenderer), require('./preload-documents.cjs').createDocumentWorkbenchApi(ipcRenderer), {
   discoverServiceModels: (config) => ipcRenderer.invoke('model-service:discover', config),
   diagnoseModel: (config, checks) => ipcRenderer.invoke('model-service:diagnose', config, checks),
   callAgentModel: (arg) => ipcRenderer.invoke('model-service:agent', arg),
   abortAgentModel: (requestId) => ipcRenderer.send('model-service:abort', requestId),
 });
+
+if (process.contextIsolated) contextBridge.exposeInMainWorld('electron', api);
+else window.electron = api;

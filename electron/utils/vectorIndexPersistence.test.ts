@@ -11,7 +11,7 @@ vi.mock('./embeddingClient', () => ({
   fetchQueryEmbedding: vi.fn(async () => [1, 0]),
 }));
 import { readVectorIndex, searchIndex, vectorIndexFilePath, writeVectorIndex, type VectorIndexFileV1 } from './vectorIndexPersistence';
-import { performFullKnowledgeIndex } from './knowledgeIndexOperations';
+import { performFullKnowledgeIndex, performIncrementalKnowledgeIndex } from './knowledgeIndexOperations';
 import { fetchEmbeddingsBatched, fetchQueryEmbedding } from './embeddingClient';
 
 let fixture = '';
@@ -81,12 +81,19 @@ describe('per-directory vector persistence and automatic freshness', () => {
     await fs.writeFile(vectorIndexFilePath(), JSON.stringify(legacy));
     expect(await readVectorIndex(b)).toBeNull();
     expect((await readVectorIndex(a))?.chunks[0].text).toBe('Legacy A content');
+    expect((await search(a)).error).toContain('索引版本过旧');
+    expect(vi.mocked(fetchEmbeddingsBatched)).not.toHaveBeenCalled();
+    expect((await performIncrementalKnowledgeIndex(a, embed)).ok).toBe(true);
     expect((await search(a)).text).toContain('Project A report version one');
     expect((await readVectorIndex(a))?.baseUrl).toBe(embed.baseUrl);
     expect((await fs.stat(vectorIndexFilePath())).isFile()).toBe(true);
   });
 
-  it('supports first-use indexing and serializes simultaneous updates without losing files', async () => {
+  it('never builds a missing index during search and serializes simultaneous index updates', async () => {
+    expect((await search(a)).error).toContain('尚未建立索引');
+    expect(vi.mocked(fetchEmbeddingsBatched)).not.toHaveBeenCalled();
+    const built = await Promise.all([performIncrementalKnowledgeIndex(a, embed), performIncrementalKnowledgeIndex(a, embed), performIncrementalKnowledgeIndex(b, embed)]);
+    expect(built.every((result) => result.ok)).toBe(true);
     const results = await Promise.all([search(a), search(a), search(b)]);
     expect(results.every((result) => result.ok)).toBe(true);
     expect(results[0].text).toContain('Project A');
@@ -98,6 +105,7 @@ describe('per-directory vector persistence and automatic freshness', () => {
 
   it('returns an explicit error for a missing root or unconfigured embedding and ignores symlink sources', async () => {
     await fs.symlink(path.join(b, 'report.md'), path.join(a, 'outside.md'));
+    await performFullKnowledgeIndex(a, embed);
     const result = await search(a);
     expect(result.text).not.toContain('Project B');
     expect((await search(path.join(fixture, 'missing'))).ok).toBe(false);
@@ -115,11 +123,23 @@ describe('per-directory vector persistence and automatic freshness', () => {
     expect((await search(a)).text).toBe('');
   });
 
+  it('reports a changed embedding model instead of re-embedding the directory during search', async () => {
+    await performFullKnowledgeIndex(a, embed);
+    const calls = vi.mocked(fetchEmbeddingsBatched).mock.calls.length;
+    const result = await searchIndex({ root: a, query: 'report', topK: 5, maxChars: 8000, embed: { ...embed, model: 'other-embed' } });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('不一致');
+    expect(vi.mocked(fetchEmbeddingsBatched).mock.calls.length).toBe(calls);
+    expect((await readVectorIndex(a))?.model).toBe('test-embed');
+  });
+
   it('rejects malformed persisted dimensions and invalid query vectors', async () => {
     await performFullKnowledgeIndex(a, embed);
     const original = (await readVectorIndex(a))!;
     await fs.writeFile(vectorIndexFilePath(a), JSON.stringify({ ...original, dim: 100 }));
     expect(await readVectorIndex(a)).toBeNull();
+    expect((await search(a)).error).toContain('尚未建立索引');
+    await performFullKnowledgeIndex(a, embed);
     expect((await search(a)).text).toContain('Project A');
     vi.mocked(fetchQueryEmbedding).mockResolvedValueOnce([Number.NaN, 0]);
     expect((await search(a)).error).toContain('无效向量');

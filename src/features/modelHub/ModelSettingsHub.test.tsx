@@ -19,7 +19,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 const mount = (hardware = { systemTtsAvailable: true, microphoneMissing: false }) => render(<ModelSettingsHub cardShell="bg-white dark:bg-slate-900" {...hardware} />);
 const panel = () => within(screen.getByRole('tabpanel'));
-const openTab = (name: string) => fireEvent.click(screen.getByRole('tab', { name, exact: true }));
+const openTab = (name: string) => fireEvent.click(screen.getByRole('tab', { name }));
 
 describe('unified model settings', () => {
   it('starts with configured models and exposes one visible panel with category counts', () => {
@@ -30,27 +30,27 @@ describe('unified model settings', () => {
     expect(panel().getByText('Local chat', { selector: 'span' })).toBeInTheDocument();
     expect(panel().getByText('Local image', { selector: 'span' })).toBeInTheDocument();
     expect(panel().queryByText('My video')).toBeNull();
-    openTab('视频模型');
+    openTab('全局能力'); fireEvent.click(panel().getByRole('button', { name: '视频生成' }));
     expect(panel().getByText('My video')).toBeInTheDocument();
     openTab('服务连接');
     expect(panel().getByText('Shared fixture')).toBeInTheDocument();
-    openTab('语音与回答');
+    openTab('全局能力'); fireEvent.click(panel().getByRole('button', { name: '语音与回答' }));
     expect(panel().getByRole('switch', { name: '启用流式输出' })).toBeInTheDocument();
   });
 
   it('keeps a model draft across tabs and saves the retained edits', () => {
     mount();
-    fireEvent.click(panel().getAllByRole('button', { name: '编辑', exact: true })[0]);
+    fireEvent.click(panel().getAllByRole('button', { name: '编辑' })[0]);
     fireEvent.change(panel().getByPlaceholderText('服务提供的模型名称'), { target: { value: 'gemma-draft' } });
     openTab('服务连接'); openTab('对话与图片');
     expect(panel().getByDisplayValue('gemma-draft')).toBeInTheDocument();
-    fireEvent.click(panel().getByRole('button', { name: '保存', exact: true }));
+    fireEvent.click(panel().getByRole('button', { name: '保存' }));
     expect(useModelStore.getState().models.find(m => m.id === 'chat')?.modelName).toBe('gemma-draft');
   });
 
   it('reduces a linked model to service and model fields, and opens service management without losing its draft', () => {
     useModelStore.setState({ models: [{ ...chat, connectionId: 'shared', isLocal: false }], activeModelId: chat.id });
-    mount(); fireEvent.click(panel().getByRole('button', { name: '编辑', exact: true }));
+    mount(); fireEvent.click(panel().getByRole('button', { name: '编辑' }));
     expect(panel().getByLabelText('服务连接')).toHaveValue('shared');
     expect(panel().getByText('https://fixture.example/v1')).toBeInTheDocument();
     expect(panel().getByText('Anthropic Messages · A')).toBeInTheDocument();
@@ -60,14 +60,14 @@ describe('unified model settings', () => {
     expect(panel().queryByDisplayValue('fixture-secret')).toBeNull();
     fireEvent.change(panel().getByPlaceholderText('服务提供的模型名称'), { target: { value: 'shared-draft' } });
     fireEvent.click(panel().getByRole('button', { name: '管理服务' }));
-    expect(screen.getByRole('tab', { name: '服务连接', exact: true })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: '服务连接' })).toHaveAttribute('aria-selected', 'true');
     openTab('对话与图片');
     expect(panel().getByDisplayValue('shared-draft')).toBeInTheDocument();
   });
 
   it('exposes a missing service and editable fallback without silently detaching it', () => {
     useModelStore.setState({ models: [{ ...chat, connectionId: 'removed' }], activeModelId: chat.id });
-    mount(); fireEvent.click(panel().getByRole('button', { name: '编辑', exact: true }));
+    mount(); fireEvent.click(panel().getByRole('button', { name: '编辑' }));
     expect(panel().getByLabelText('服务连接')).toHaveValue('removed');
     expect(panel().getByRole('status')).toHaveTextContent('原服务连接已移除');
     expect(panel().getByRole('combobox', { name: '提供商 *' })).not.toBeDisabled();
@@ -75,35 +75,35 @@ describe('unified model settings', () => {
     expect(useModelStore.getState().models[0].connectionId).toBe('removed');
     fireEvent.change(panel().getByLabelText('服务连接'), { target: { value: '' } });
     fireEvent.change(panel().getByPlaceholderText('服务提供的模型名称'), { target: { value: 'retained-model' } });
-    fireEvent.click(panel().getByRole('button', { name: '保存', exact: true }));
+    fireEvent.click(panel().getByRole('button', { name: '保存' }));
     expect(useModelStore.getState().models[0].connectionId).toBeUndefined();
     expect(useModelStore.getState().models[0].apiUrl).toBe(chat.apiUrl);
   });
 
   it('hides irrelevant chat connections for a local image script', () => {
     useModelStore.setState({ models: [image] });
-    mount(); fireEvent.click(panel().getByRole('button', { name: '编辑', exact: true }));
+    mount(); openTab('对话与图片'); fireEvent.click(panel().getByRole('button', { name: '编辑' }));
     expect(panel().queryByLabelText('服务连接')).toBeNull();
     expect(panel().getByDisplayValue('fixture.py')).toBeInTheDocument();
   });
 
   it('keeps a CLI image model local and actually clears removed command-line arguments', () => {
     useModelStore.setState({ models: [{ ...image, imageGeneratorConfig: { ...image.imageGeneratorConfig!, cliArgLines: '--old-argument' } }] });
-    mount(); fireEvent.click(panel().getByRole('button', { name: '编辑', exact: true }));
+    mount(); openTab('对话与图片'); fireEvent.click(panel().getByRole('button', { name: '编辑' }));
     fireEvent.click(panel().getByText('高级设置（可选）'));
     fireEvent.change(panel().getByLabelText(/命令行参数/), { target: { value: '' } });
-    fireEvent.click(panel().getByRole('button', { name: '保存', exact: true }));
+    fireEvent.click(panel().getByRole('button', { name: '保存' }));
     expect(useModelStore.getState().models[0].isLocal).toBe(true);
     expect(useModelStore.getState().models[0].imageGeneratorConfig?.cliArgLines).toBeUndefined();
   });
 
   it('retains a shared key for an HTTP image-only model when saving its model ID', () => {
     useModelStore.setState({ models: [{ ...image, connectionId: 'shared', imageGeneratorConfig: { type: 'http', endpoint: 'https://images.example/v1/images/generations', httpFormat: 'openai_images', model: 'fixture-image', apiKeySource: 'connection' } }] });
-    mount(); fireEvent.click(panel().getByRole('button', { name: '编辑', exact: true }));
+    mount(); openTab('对话与图片'); fireEvent.click(panel().getByRole('button', { name: '编辑' }));
     expect(panel().getByRole('checkbox', { name: '使用所选服务的密钥' })).toBeChecked();
     expect(panel().queryByDisplayValue('fixture-secret')).toBeNull();
     fireEvent.change(panel().getByDisplayValue('fixture-image'), { target: { value: 'image-edited' } });
-    fireEvent.click(panel().getByRole('button', { name: '保存', exact: true }));
+    fireEvent.click(panel().getByRole('button', { name: '保存' }));
     const saved = useModelStore.getState().models[0];
     expect(saved.connectionId).toBe('shared');
     expect(saved.imageGeneratorConfig).toMatchObject({ model: 'image-edited', apiKeySource: 'connection' });
@@ -113,17 +113,17 @@ describe('unified model settings', () => {
 
   it('preserves shared image authentication when changing a combined model to images only', () => {
     useModelStore.setState({ models: [{ ...chat, isImageGenerator: true, connectionId: 'shared', imageGeneratorConfig: { type: 'http', endpoint: 'https://images.example/v1/images/generations', model: 'fixture-image', apiKeySource: 'connection' } }] });
-    mount(); fireEvent.click(panel().getByRole('button', { name: '编辑', exact: true }));
+    mount(); fireEvent.click(panel().getByRole('button', { name: '编辑' }));
     fireEvent.change(panel().getByLabelText('用途'), { target: { value: 'image' } });
     expect(panel().getByRole('checkbox', { name: '使用所选服务的密钥' })).toBeChecked();
-    fireEvent.click(panel().getByRole('button', { name: '保存', exact: true }));
+    fireEvent.click(panel().getByRole('button', { name: '保存' }));
     expect(useModelStore.getState().models[0]).toMatchObject({ isChatModel: false, connectionId: 'shared', imageGeneratorConfig: { apiKeySource: 'connection' } });
   });
 
   it('uses updated transport credentials after editing a service in another tab without losing the model draft', async () => {
     const call = vi.spyOn(window.electron, 'callModel').mockResolvedValue({ content: 'OK' });
     useModelStore.setState({ models: [{ ...chat, connectionId: 'shared', isLocal: false }] });
-    mount(); fireEvent.click(panel().getByRole('button', { name: '编辑', exact: true }));
+    mount(); fireEvent.click(panel().getByRole('button', { name: '编辑' }));
     fireEvent.change(panel().getByPlaceholderText('服务提供的模型名称'), { target: { value: 'draft-model' } });
     fireEvent.click(panel().getByRole('button', { name: '管理服务' }));
     fireEvent.click(panel().getByRole('button', { name: '编辑连接 Shared fixture' }));
@@ -139,7 +139,7 @@ describe('unified model settings', () => {
 
   it('keeps the fresh fallback after deleting a service while a linked model draft is open', async () => {
     useModelStore.setState({ models: [{ ...chat, connectionId: 'shared', isLocal: false }] });
-    mount(); fireEvent.click(panel().getByRole('button', { name: '编辑', exact: true }));
+    mount(); fireEvent.click(panel().getByRole('button', { name: '编辑' }));
     fireEvent.change(panel().getByPlaceholderText('服务提供的模型名称'), { target: { value: 'detached-draft' } });
     openTab('服务连接');
     fireEvent.click(panel().getByRole('button', { name: '编辑连接 Shared fixture' }));
@@ -151,7 +151,7 @@ describe('unified model settings', () => {
     expect(panel().getByLabelText('服务连接')).toHaveValue('');
     expect(panel().getByDisplayValue('fresh-fallback-key')).toBeInTheDocument();
     expect(panel().getByDisplayValue('detached-draft')).toBeInTheDocument();
-    fireEvent.click(panel().getByRole('button', { name: '保存', exact: true }));
+    fireEvent.click(panel().getByRole('button', { name: '保存' }));
     expect(useModelStore.getState().models[0]).toMatchObject({ apiKey: 'fresh-fallback-key', modelName: 'detached-draft', apiUrl: 'https://fixture.example/v1' });
     expect(useModelStore.getState().models[0].connectionId).toBeUndefined();
   });
@@ -160,7 +160,7 @@ describe('unified model settings', () => {
     mount(); openTab('服务连接');
     fireEvent.click(panel().getByRole('button', { name: '添加服务连接' }));
     fireEvent.change(panel().getByLabelText('连接名称'), { target: { value: 'New draft service' } });
-    openTab('视频模型'); openTab('服务连接');
+    openTab('全局能力'); openTab('服务连接');
     expect(panel().getByLabelText('连接名称')).toHaveValue('New draft service');
     fireEvent.click(panel().getByRole('button', { name: '保存连接' }));
     expect(useConnectionStore.getState().connections.some(c => c.name === 'New draft service')).toBe(true);
@@ -168,19 +168,19 @@ describe('unified model settings', () => {
 
   it('keeps hardware guards and changes reply presentation, length and quick chat', () => {
     const quick = vi.spyOn(window.electron, 'showQuickPanel');
-    mount({ systemTtsAvailable: false, microphoneMissing: true }); openTab('语音与回答');
+    mount({ systemTtsAvailable: false, microphoneMissing: true }); openTab('全局能力');
     expect(panel().getByRole('switch', { name: '启用语音输入' })).toBeDisabled();
     expect(panel().getByRole('switch', { name: '朗读助手回复' })).toBeDisabled();
     fireEvent.click(panel().getByRole('switch', { name: '启用流式输出' }));
     expect(useSettingStore.getState().streamResponses).toBe(false);
     fireEvent.change(panel().getByLabelText('语音回答长度'), { target: { value: 'full' } });
     expect(useSettingStore.getState().voiceReplyMode).toBe('full');
-    fireEvent.click(panel().getByRole('button', { name: '打开', exact: true }));
+    fireEvent.click(panel().getByRole('button', { name: '打开' }));
     expect(quick).toHaveBeenCalledOnce();
   });
 
   it('retains microphone, wake phrase, speech service and spoken reply controls in one page', () => {
-    mount(); openTab('语音与回答');
+    mount(); openTab('全局能力');
     fireEvent.click(panel().getByRole('switch', { name: '启用语音输入' }));
     fireEvent.click(panel().getByRole('switch', { name: '语音唤醒' }));
     fireEvent.change(panel().getByLabelText('唤醒词'), { target: { value: '小助手' } });
@@ -189,7 +189,7 @@ describe('unified model settings', () => {
     expect(panel().getByText(/App Key/)).toBeInTheDocument();
     fireEvent.click(panel().getByRole('switch', { name: '朗读助手回复' }));
     expect(useSettingStore.getState().voiceReplyEnabled).toBe(true);
-    openTab('对话与图片'); openTab('语音与回答');
+    openTab('对话与图片'); openTab('全局能力');
     expect(panel().getByLabelText('唤醒词')).toHaveValue('小助手');
   });
 
@@ -198,10 +198,11 @@ describe('unified model settings', () => {
     useConnectionStore.setState({ organizationSummary: { status: 'ready', services: 1, models: 1, organizedServices: 1, organizedModels: 1, skippedModels: 0 } });
     mount();
     expect(screen.getByRole('status')).toHaveTextContent('Existing service settings organized');
-    fireEvent.keyDown(screen.getByRole('tab', { name: 'Chat & images', exact: true }), { key: 'End' });
-    expect(screen.getByRole('tab', { name: 'Voice & reply', exact: true })).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Chat & images' }), { key: 'ArrowRight' });
+    expect(screen.getByRole('tab', { name: 'Capabilities' })).toHaveFocus();
     expect(panel().getByLabelText('Spoken answer length')).toBeInTheDocument();
-    fireEvent.keyDown(screen.getByRole('tab', { name: 'Voice & reply', exact: true }), { key: 'ArrowRight' });
-    expect(screen.getByRole('tab', { name: 'Chat & images', exact: true })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Capabilities' }), { key: 'End' });
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Services' }), { key: 'ArrowRight' });
+    expect(screen.getByRole('tab', { name: 'Quick setup' })).toHaveAttribute('aria-selected', 'true');
   });
 });

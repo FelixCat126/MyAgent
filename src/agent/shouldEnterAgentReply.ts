@@ -2,6 +2,7 @@ import { isAgentToolsBuildEnabled } from './buildFlags';
 import { looksLikeLocalFileAgentRequest } from './localFileIntent';
 import { looksLikeWebBrowseRequest } from './webBrowseIntent';
 import { useSettingStore } from '../store/settingStore';
+import { mentionsConnectedExternalTool } from './toolRegistry';
 
 export type AgentReplyGate = {
   /** 是否进入 Agent 回复路径 */
@@ -21,7 +22,7 @@ export function shouldEnterAgentReply(opts: {
   hasDataAttachments?: boolean;
 }): AgentReplyGate {
   const dataTask=opts.hasDataAttachments && /分析|计算|汇总|去重|筛选|统计|同比|环比|chart|calculat|analys|group|sum|filter|dedup/i.test(opts.userText);
-  const externalTask=/\bMCP\b|外部工具|外部服务|connected tool/i.test(opts.userText);
+  const externalTask=/\bMCP\b|外部工具|外部服务|connected tool/i.test(opts.userText)||mentionsConnectedExternalTool(opts.userText);
   if (!isAgentToolsBuildEnabled() || (opts.exportDocument && !dataTask)) {
     return { enter: false, willRunLocalAgent: false, willRunWebAgent: false };
   }

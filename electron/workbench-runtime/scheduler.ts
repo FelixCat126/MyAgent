@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import axios from 'axios';
 import type { RuntimeSchedule, RuntimeTask } from '../../src/features/runtime/api';
-import { TaskLedger } from './taskStore';
+import { TaskLedger, nextIntervalRun } from './taskStore';
 export async function directoryFingerprint(directory:string, limit=5000, signal?:AbortSignal):Promise<string> {
   const rows:string[]=[];
   const walk=async(dir:string):Promise<void>=>{if(signal?.aborted)throw new Error('监控已取消');for(const entry of (await fs.readdir(dir,{withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name))){if(entry.isSymbolicLink())continue;if(signal?.aborted)throw new Error('监控已取消');const full=path.join(dir,entry.name);const stat=await fs.stat(full);rows.push(`${path.relative(directory,full)}:${stat.size}:${stat.mtimeMs}`);if(rows.length>limit)throw new Error('目录超过 5000 个条目，请选择更小范围');if(entry.isDirectory())await walk(full);}};
@@ -21,9 +21,14 @@ export class RuntimeScheduler {
   async tick(now=Date.now()):Promise<void>{
     if(this.checking||this.cancelled)return;this.checking=true;
     try {for(const schedule of this.ledger.state.schedules){if(this.cancelled)break;if(!schedule.enabled||schedule.nextRunAt>now)continue;
-      if(now-schedule.nextRunAt>60_000){schedule.missedAt=schedule.nextRunAt;schedule.enabled=false;schedule.lastError='应用休眠或长时间未检查时错过计划，请手动执行或重新启用';await this.ledger.save();this.notify('计划已错过',schedule.title);this.changed();continue;}
+      if(now-schedule.nextRunAt>60_000){
+        // 休眠唤醒后循环计划顺延到下个周期继续运行，只有一次性计划需要用户手动处理
+        if(schedule.intervalMinutes){schedule.nextRunAt=nextIntervalRun(schedule.nextRunAt,schedule.intervalMinutes,now);schedule.lastError='应用休眠或长时间未检查时错过一次计划，已顺延到下个周期';}
+        else{schedule.missedAt=schedule.nextRunAt;schedule.enabled=false;schedule.lastError='应用休眠或长时间未检查时错过计划，请手动执行或重新启用';}
+        await this.ledger.save();this.notify('计划已错过',schedule.title);this.changed();continue;
+      }
       // Claim and persist the occurrence before execution; closing the app cannot replay it silently.
-      const due=schedule.nextRunAt;schedule.nextRunAt=schedule.intervalMinutes?now+schedule.intervalMinutes*60_000:now;schedule.enabled=Boolean(schedule.intervalMinutes);await this.ledger.save();
+      const due=schedule.nextRunAt;schedule.nextRunAt=schedule.intervalMinutes?nextIntervalRun(due,schedule.intervalMinutes,now):now;schedule.enabled=Boolean(schedule.intervalMinutes);await this.ledger.save();
       try {await this.run(schedule,`schedule:${schedule.id}:${due}`);}catch(error){schedule.lastError=error instanceof Error?error.message:String(error);this.notify('计划执行失败',`${schedule.title}：${schedule.lastError}`);await this.ledger.save();}
       this.changed();
     }}finally{this.checking=false;}

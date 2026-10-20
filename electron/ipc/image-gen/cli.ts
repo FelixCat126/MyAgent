@@ -37,13 +37,22 @@ function applyCliPlaceholders(
   const count = String(params.count ?? 1);
   const steps = String((params as { steps?: number }).steps ?? process.env.MYAGENT_SD_STEPS ?? 20);
   const p = params.prompt ?? '';
-  return line
-    .replace(/\{\{prompt\}\}/g, p)
-    .replace(/\{\{outputPath\}\}/g, outputPath)
-    .replace(/\{\{width\}\}/g, w)
-    .replace(/\{\{height\}\}/g, h)
-    .replace(/\{\{count\}\}/g, count)
-    .replace(/\{\{steps\}\}/g, steps);
+  const values: Record<string, string> = { prompt: p, outputPath, width: w, height: h, count, steps };
+  /** 单趟函数替换：避免 `$&` 等替换模式改写 prompt，也避免 prompt 内的占位符被二次展开 */
+  return line.replace(/\{\{(prompt|outputPath|width|height|count|steps)\}\}/g, (_m, key: string) => values[key]);
+}
+
+/** cmd.exe 下参数仅按空格拼接、不转义；prompt 只能经环境变量传入，杜绝 `&`/`|` 命令注入 */
+function assertSafeShellArgLines(rawLines: string[]): void {
+  if (rawLines.some((line) => /\{\{prompt\}\}/.test(line))) {
+    throw new Error(
+      'Windows 批处理/PowerShell 脚本不能在参数中使用 {{prompt}}（存在命令注入风险）；请在脚本中读取环境变量 MYAGENT_PROMPT。'
+    );
+  }
+}
+
+function quoteCmdArg(arg: string): string {
+  return /[\s"&|<>^%!()]/.test(arg) ? `"${arg.replace(/"/g, '""')}"` : arg;
 }
 
 /**
@@ -82,10 +91,13 @@ async function generateImageCliOneShot(
     envVars.MYAGENT_IMAGE_TOTAL = String(batch.total);
   }
 
+  const useShell = process.platform === 'win32' && looksLikeWindowsExec(exe);
   const rawLines = (config.cliArgLines || '').split('\n');
+  if (useShell) assertSafeShellArgLines(rawLines);
   const argv = rawLines
     .map((line) => applyCliPlaceholders(line.trim(), params, outputPath))
-    .filter((line) => line.length > 0);
+    .filter((line) => line.length > 0)
+    .map((line) => (useShell ? quoteCmdArg(line) : line));
 
   imgGenDebug('[生图 CLI] 启动', {
     command: exe,
@@ -101,8 +113,6 @@ async function generateImageCliOneShot(
       ? { batchIndex: batch.index, batchTotal: batch.total }
       : {}),
   });
-
-  const useShell = process.platform === 'win32' && looksLikeWindowsExec(exe);
 
   checkImageTask();
   const signal = imageTaskContext.getStore();
@@ -199,6 +209,8 @@ export {
   generateImageCli,
   generateImageCliOneShot,
   applyCliPlaceholders,
+  assertSafeShellArgLines,
+  quoteCmdArg,
   looksLikeWindowsExec,
   appendCappedCliLog,
 };

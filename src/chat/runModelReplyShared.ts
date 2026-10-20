@@ -402,6 +402,8 @@ export async function runImagePostProcess(opts: {
   generatedFiles?: FileInfo[];
   /** 已预计算的意图；缺省时内部计算 */
   plannedIntent?: ImageIntent;
+  /** beginReplyRun 返回的本轮令牌；缺省时退回用户消息 id */
+  runId?: string;
 }): Promise<{ content: string; files: FileInfo[] | undefined; plannedIntent: ImageIntent; taskError?: string }> {
   const { ui, sendSessionId, assistantId, rawText, userMessage, activeModel, historyBeforeUser } = opts;
   let plannedIntent =
@@ -437,7 +439,7 @@ export async function runImagePostProcess(opts: {
         referenceImages: plannedIntent.shouldGenerate ? resolveImageReferences(userMessage, historyBeforeUser) : [],
         userPromptContext: completedChartCreativePrompt ?? userMessage.content,
         plannedIntent,
-        shouldCancel: () => imageTaskWasCancelled(assistantId) || replyRunWasCancelled(sendSessionId, userMessage.id),
+        shouldCancel: () => imageTaskWasCancelled(assistantId) || replyRunWasCancelled(sendSessionId, opts.runId ?? userMessage.id),
       }
     );
   } catch (error) {

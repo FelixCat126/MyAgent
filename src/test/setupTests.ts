@@ -189,6 +189,15 @@ if (typeof window !== 'undefined') {
   if (canvasProto && typeof canvasProto.getContext !== 'function') {
     canvasProto.getContext = (): null => null;
   }
+
+  /** jsdom 未实现 ResizeObserver；ParticleField 等组件在 mount 时会创建 */
+  if (typeof window.ResizeObserver !== 'function') {
+    window.ResizeObserver = class {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    } as unknown as typeof ResizeObserver;
+  }
 }
 
 // Flush debounced persistence before jsdom is disposed, even in short test files.

@@ -19,6 +19,12 @@ describe('useVoiceWake helpers', () => {
     expect(detectWakePhraseLoose('今天天气不错', '小媛小媛')).toBe(false);
   });
 
+  it('叠词唤醒词只出现一半时不误唤醒', () => {
+    expect(detectWakePhraseLoose('小园里的花开了', '小媛小媛')).toBe(false);
+    expect(detectWakePhraseLoose('你好请问天气', '你好你好')).toBe(false);
+    expect(detectWakePhraseLoose('你好，你好在吗', '你好你好')).toBe(true);
+  });
+
   it('detectWakePhrase 自定义唤醒词', () => {
     expect(detectWakePhrase('你好助手帮我写', '你好助手')).toBe(true);
     expect(detectWakePhrase('助手你好', '你好助手')).toBe(false);

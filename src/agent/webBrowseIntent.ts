@@ -27,6 +27,7 @@ export function userWantsWebFirstImage(text: string): boolean {
 /** 用户要在网页上继续操作（点图片、取结果等），不能只打开搜索页就结束 */
 export function needsWebAgentWorkflow(text: string): boolean {
   const t = String(text || '');
+  if (wantsWebPageContent(t)) return true;
   return /进入.{0,8}图片|图片.{0,8}(搜索|结果|频道|tab)|图片搜索|第一张|第\s*[1一1]\s*张|[1一]张图|返回.{0,16}(图|照片|图片)|给我.{0,12}(图|照片|图片)|下载.{0,8}图|把.{0,16}(图|照片|图片).{0,8}(发|给|贴|返回|弄)|点开.{0,8}(图|结果|链接)|点击.{0,8}(图|图片|结果)/i.test(
     t
   );
@@ -112,6 +113,30 @@ export function extractUrlFromUserText(text: string): string | null {
   return null;
 }
 
+const OPEN_VERB_RE = /打开|访问|浏览|进入|看看|\bopen\b|\bvisit\b|\bbrowse\b|go\s+to/i;
+const PAGE_READ_RE =
+  /总结|概括|摘要|归纳|读一?下|读取|阅读|翻译|提取|讲了什么|说了什么|主要内容|看一?下|\bsummari[sz]e\b|\bread\b|\btranslate\b|\bextract\b/i;
+const FILE_NAME_RE = /\.(?:md|txt|docx?|xlsx?|pptx?|pdf|csv|tsv|json|ya?ml|html?|png|jpe?g|gif|webp|zip|js|ts|tsx|py)$/i;
+
+function explicitHttpUrl(text: string): string | null {
+  const m = text.match(/https?:\/\/[^\s，,。！!？?<>「」『』"'“”]+/i);
+  return m ? m[0].replace(/[)\]}>.]+$/, '') : null;
+}
+
+/** 裸域名只在紧跟「打开/访问」类动词时才视为网址，避免把文件名当网站 */
+function verbAnchoredDomain(text: string): string | null {
+  const m = text.match(
+    /(?:打开|访问|浏览|进入|\bopen\b|\bvisit\b|\bbrowse\b|go\s+to)\s*(?:一下\s*)?(?:这个\s*)?(?:网站|网址|网页|site|website)?[\s:：]*((?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s，,。！!？?]*)?)/i
+  );
+  if (!m?.[1] || FILE_NAME_RE.test(m[1].split(/[/?#]/)[0]!)) return null;
+  return `https://${m[1]}`;
+}
+
+/** 用户给了网址并要求阅读/总结其内容 */
+function wantsWebPageContent(text: string): boolean {
+  return Boolean(explicitHttpUrl(text)) && PAGE_READ_RE.test(text);
+}
+
 export function looksLikeWebBrowseRequest(text: string): boolean {
   return parseWebBrowseIntent(text) !== null || userWantsWebPageDescription(text);
 }
@@ -130,8 +155,10 @@ export function parseWebBrowseIntent(text: string): WebBrowseIntent | null {
     return { kind: 'google_search', query: googleQ };
   }
 
-  const urlOpen = t.match(/打开\s*(https?:\/\/[^\s，,。]+)/i);
-  if (urlOpen?.[1]) return { kind: 'open_url', url: urlOpen[1].trim() };
+  const url = explicitHttpUrl(t);
+  if (url && (OPEN_VERB_RE.test(t) || PAGE_READ_RE.test(t))) return { kind: 'open_url', url };
+  const domain = verbAnchoredDomain(t);
+  if (domain) return { kind: 'open_url', url: domain };
 
   if (OPEN_BAIDU_RE.test(t) && !/(?:搜索|搜|查)/.test(t)) {
     return { kind: 'open_url', url: 'https://www.baidu.com/' };

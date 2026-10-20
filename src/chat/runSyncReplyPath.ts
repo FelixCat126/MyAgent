@@ -22,6 +22,8 @@ export type RunSyncReplyPathArgs = {
   plainMessages: Message[];
   plainModel: ModelConfig;
   exportHint: Message['exportHint'];
+  /** beginReplyRun 返回的本轮令牌；缺省时退回用户消息 id */
+  runId?: string;
 };
 
 export async function runSyncReplyPath(args: RunSyncReplyPathArgs): Promise<void> {
@@ -36,6 +38,7 @@ export async function runSyncReplyPath(args: RunSyncReplyPathArgs): Promise<void
     exportHint,
   } = args;
 
+  const runId = args.runId ?? userMessage.id;
   let documentArtifactAssistantId = '';
   let replyAssistantId = '';
   try {
@@ -51,7 +54,16 @@ export async function runSyncReplyPath(args: RunSyncReplyPathArgs): Promise<void
       );
     }
     const response = await window.electron.callModel(plainMessages, plainModel, { locale: ui.locale });
-    if (replyRunWasCancelled(sendSessionId, userMessage.id)) return;
+    if (replyRunWasCancelled(sendSessionId, runId)) {
+      /** 结果直接丢弃；文档气泡不能停留在 generating */
+      if (documentArtifactAssistantId) {
+        ui.updateMessage(sendSessionId, documentArtifactAssistantId, {
+          content: ui.t('chat.stoppedBanner'),
+          exportHint: { ...exportHint, status: 'failed', error: ui.t('chat.stoppedBanner') },
+        });
+      }
+      return;
+    }
     if (exportHint?.document && response.truncated) {
       ui.updateMessage(sendSessionId, documentArtifactAssistantId, { content: response.content || ui.t('chat.fallbackReply'), exportHint: { ...exportHint, status: 'failed', error: '模型达到输出长度上限，正文尚未完整生成。请增加模型输出长度或分章节生成后重试。' } });
       return;
@@ -65,7 +77,7 @@ export async function runSyncReplyPath(args: RunSyncReplyPathArgs): Promise<void
         ui,
         sendSessionId,
         assistantId: documentArtifactAssistantId,
-        shouldCancel: () => replyRunWasCancelled(sendSessionId, userMessage.id),
+        shouldCancel: () => replyRunWasCancelled(sendSessionId, runId),
         rawText: content0,
         userText: userMessage.content,
         exportHint,
@@ -89,6 +101,7 @@ export async function runSyncReplyPath(args: RunSyncReplyPathArgs): Promise<void
       userMessage,
       activeModel,
       historyBeforeUser,
+      runId,
     });
     /** 内容驱动导出：AI 回复含文档/表格特征时自动给出导出格式（用户不必明说"下载"） */
     const replyHint = inferReplyExportHint(c, userMessage.content);
@@ -104,7 +117,7 @@ export async function runSyncReplyPath(args: RunSyncReplyPathArgs): Promise<void
     });
     void runVideoPostProcess({ ui, sendSessionId, assistantId, rawText: c, userMessage, activeModel, historyBeforeUser, currentMsg: useChatStore.getState().sessions.find(s => s.id === sendSessionId)?.messages.find(m => m.id === assistantId) }).catch(error => console.warn('[videoGenAssist]', error));
   } catch (error) {
-    if (replyRunWasCancelled(sendSessionId, userMessage.id)) return;
+    if (replyRunWasCancelled(sendSessionId, runId)) return;
     const msg = error instanceof Error ? error.message : String(error);
     if (documentArtifactAssistantId) {
       ui.updateMessage(sendSessionId, documentArtifactAssistantId, {
@@ -120,7 +133,7 @@ export async function runSyncReplyPath(args: RunSyncReplyPathArgs): Promise<void
     const failed=useChatStore.getState().sessions.find(s=>s.id===sendSessionId)?.messages.at(-1);
     if(failed)ui.updateMessage(sendSessionId,failed.id,{meta:{taskError:msg}});
   } finally {
-    if (!imageTaskWasCancelled(replyAssistantId) && !replyRunWasCancelled(sendSessionId, userMessage.id)) ui.clearLoadingForSession(sendSessionId);
+    if (!imageTaskWasCancelled(replyAssistantId) && !replyRunWasCancelled(sendSessionId, runId)) ui.clearLoadingForSession(sendSessionId);
     releaseImageTask(replyAssistantId);
   }
 }

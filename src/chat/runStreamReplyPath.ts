@@ -28,6 +28,8 @@ export type RunStreamReplyPathArgs = {
   plainMessages: Message[];
   plainModel: ModelConfig;
   exportHint: Message['exportHint'];
+  /** beginReplyRun 返回的本轮令牌；缺省时退回用户消息 id */
+  runId?: string;
 };
 
 /** @returns true 表示已启动流式路径，调用方应直接 return */
@@ -55,8 +57,11 @@ export function runStreamReplyPath(args: RunStreamReplyPathArgs): boolean {
 function runDocumentStreamReply(args: RunStreamReplyPathArgs): void {
   const { ui, sendSessionId, userMessage, activeModel, plainMessages, plainModel, exportHint } = args;
   if (!exportHint) return;
+  const runId = args.runId ?? userMessage.id;
+  const runCancelled = () => replyRunWasCancelled(sendSessionId, runId);
 
   let artifactBuffer = '';
+  let hadError = false;
   const assistantId = beginAssistantStream(ui, sendSessionId, {
     assistantId: `${Date.now()}-doc`,
     modelName: activeModel.name,
@@ -79,7 +84,8 @@ function runDocumentStreamReply(args: RunStreamReplyPathArgs): void {
     },
     onError: (m) => {
       reasoningStream.flush();
-      ui.streamHadErrorRef.current = true;
+      hadError = true;
+      if (!runCancelled()) ui.streamHadErrorRef.current = true;
       ui.updateMessage(sendSessionId, assistantId, {
         content: artifactBuffer || ui.t('chat.requestFailed') + m,
         exportHint: { ...exportHint, status: 'failed', error: m },
@@ -90,19 +96,22 @@ function runDocumentStreamReply(args: RunStreamReplyPathArgs): void {
     onEnd: () => {
       void (async () => {
         reasoningStream.flush();
-        ui.streamUnsubRef.current = null;
-        const aborted = replyRunWasCancelled(sendSessionId, userMessage.id) || ui.streamCancelledByUserRef.current;
-        ui.streamCancelledByUserRef.current = false;
+        /** 已被停止/顶替的旧轮次不得改写同会话新一轮的 ref */
+        const aborted = runCancelled() || ui.streamCancelledByUserRef.current;
+        if (!runCancelled()) {
+          ui.streamUnsubRef.current = null;
+          ui.streamCancelledByUserRef.current = false;
+        }
         await withStreamLifecycle(
           assistantId,
           {
             onFinalize: () => {
-              if (!imageTaskWasCancelled(assistantId) && !replyRunWasCancelled(sendSessionId, userMessage.id)) resetStreamingUi(ui, sendSessionId);
+              if (!imageTaskWasCancelled(assistantId) && !runCancelled()) resetStreamingUi(ui, sendSessionId);
               releaseImageTask(assistantId);
             },
           },
           async () => {
-            if (ui.streamHadErrorRef.current) return;
+            if (hadError) return;
             if (aborted) {
               ui.updateMessage(sendSessionId, assistantId, {
                 content: artifactBuffer || ui.t('chat.stoppedBanner'),
@@ -117,7 +126,7 @@ function runDocumentStreamReply(args: RunStreamReplyPathArgs): void {
               ui,
               sendSessionId,
               assistantId,
-              shouldCancel: () => replyRunWasCancelled(sendSessionId, userMessage.id),
+              shouldCancel: runCancelled,
               rawText: artifactBuffer,
               userText: userMessage.content,
               exportHint,
@@ -148,9 +157,18 @@ function runSseStreamReply(args: RunStreamReplyPathArgs): void {
     ...(exportHint ? { exportHint } : {}),
   });
 
+  const runId = args.runId ?? userMessage.id;
+  const runCancelled = () => replyRunWasCancelled(sendSessionId, runId);
+  /** 只操作本轮自己的朗读器；全局 speechReaderRef 可能已属于其他会话 */
   const voiceReader = createVoiceWakeReplyReader(ui);
   if (voiceReader) void voiceReader.start();
   const voiceReplyThisTurn = Boolean(voiceReader);
+  const cancelVoice = () => {
+    if (!voiceReader) return;
+    voiceReader.cancel();
+    if (ui.speechReaderRef.current === voiceReader) ui.setVoiceReplySpeaking(false);
+  };
+  let hadError = false;
 
   /** 正文先缓冲；思考逐字排空后才恢复，避免两段内容在界面上交叉播放。 */
   const contentStream = createAnimStream(sendSessionId, assistantId, ui.appendToMessage, {
@@ -168,6 +186,12 @@ function runSseStreamReply(args: RunStreamReplyPathArgs): void {
   const finishReasoningAtComfortablePace = reasoningStream.finish;
   const queueContentDeltaChunk = contentStream.push;
   const queueReasoningDeltaChunk = reasoningStream.push;
+  /** 停止时丢弃打字机积压：网络已结束但正文仍在逐字放出时，停止必须立即生效 */
+  const cancelAnim = () => {
+    contentStream.cancel();
+    reasoningStream.cancel();
+  };
+  if (ui.cancelAnimRef) ui.cancelAnimRef.current = cancelAnim;
   let contentStartPromise: Promise<void> | null = null;
   let contentHasStarted = false;
   let pendingVoiceContent = '';
@@ -178,7 +202,7 @@ function runSseStreamReply(args: RunStreamReplyPathArgs): void {
         contentHasStarted = true;
         contentStream.resume();
         if (voiceReplyThisTurn && pendingVoiceContent) {
-          ui.speechReaderRef.current?.push(pendingVoiceContent);
+          voiceReader?.push(pendingVoiceContent);
           pendingVoiceContent = '';
         }
       });
@@ -190,7 +214,7 @@ function runSseStreamReply(args: RunStreamReplyPathArgs): void {
     onDelta: (d) => {
       queueContentDeltaChunk(d);
       if (voiceReplyThisTurn) {
-        if (contentHasStarted) ui.speechReaderRef.current?.push(d);
+        if (contentHasStarted) voiceReader?.push(d);
         else pendingVoiceContent += d;
       }
       void startContentAfterReasoning();
@@ -201,9 +225,9 @@ function runSseStreamReply(args: RunStreamReplyPathArgs): void {
     onError: (m) => {
       drainReasoningBufferUnsafe();
       flushPendingContentDeltaImmediately();
-      ui.speechReaderRef.current?.cancel();
-      ui.setVoiceReplySpeaking(false);
-      ui.streamHadErrorRef.current = true;
+      cancelVoice();
+      hadError = true;
+      if (!runCancelled()) ui.streamHadErrorRef.current = true;
       const sess = useChatStore.getState().sessions.find((s) => s.id === sendSessionId);
       const prior = sess?.messages.find((x) => x.id === assistantId)?.content?.trimEnd() ?? '';
       const injected = prior
@@ -214,29 +238,35 @@ function runSseStreamReply(args: RunStreamReplyPathArgs): void {
     locale: ui.locale,
     onEnd: () => {
       void (async () => {
-        const aborted = replyRunWasCancelled(sendSessionId, userMessage.id) || ui.streamCancelledByUserRef.current;
-        if (aborted || ui.streamHadErrorRef.current) {
+        const wasAborted = () => runCancelled() || ui.streamCancelledByUserRef.current;
+        if (wasAborted() || hadError) {
           drainReasoningBufferUnsafe();
           flushPendingContentDeltaImmediately();
         } else {
           await startContentAfterReasoning();
           await finishContentAtComfortablePace();
         }
-        ui.streamUnsubRef.current = null;
-        ui.streamCancelledByUserRef.current = false;
+        /** 排空期间可能已被停止；须在等待之后再判定 */
+        const aborted = wasAborted();
+        if (ui.cancelAnimRef?.current === cancelAnim) ui.cancelAnimRef.current = null;
+        /** 已被停止/顶替的旧轮次不得改写同会话新一轮的 ref 与界面态 */
+        const ownsRefs = !runCancelled();
+        if (ownsRefs) {
+          ui.streamUnsubRef.current = null;
+          ui.streamCancelledByUserRef.current = false;
+        }
 
         await withStreamLifecycle(
           assistantId,
           {
             onFinalize: () => {
-              if (!imageTaskWasCancelled(assistantId) && !replyRunWasCancelled(sendSessionId, userMessage.id)) resetStreamingUi(ui, sendSessionId);
+              if (!imageTaskWasCancelled(assistantId) && !runCancelled()) resetStreamingUi(ui, sendSessionId);
               releaseImageTask(assistantId);
             },
           },
           async () => {
-            if (ui.streamHadErrorRef.current) {
-              ui.speechReaderRef.current?.cancel();
-              ui.setVoiceReplySpeaking(false);
+            if (hadError) {
+              cancelVoice();
               return;
             }
 
@@ -248,19 +278,21 @@ function runSseStreamReply(args: RunStreamReplyPathArgs): void {
 
             const plannedIntent = planAssistantImageIntent(userMessage, historyBeforeUser, raw);
 
-            if (aborted && !raw.trim() && !plannedIntent.shouldGenerate) {
-              ui.speechReaderRef.current?.cancel();
-              ui.setVoiceReplySpeaking(false);
+            if (aborted && !raw.trim() && !reasoningText && !plannedIntent.shouldGenerate) {
+              cancelVoice();
               ui.removeMessage(sendSessionId, assistantId);
               return;
             }
 
             /** SSE 正文已全部写入；先于生图后处理解除流式态 */
-            ui.setIsStreaming(false);
-            ui.streamingAssistantIdRef.current = null;
-            ui.streamingSessionIdRef.current = null;
-            ui.setStreamingTargetAssistantId(null);
-            ui.speechReaderRef.current?.finish();
+            if (ownsRefs && !runCancelled()) {
+              ui.setIsStreaming(false);
+              ui.streamingAssistantIdRef.current = null;
+              ui.streamingSessionIdRef.current = null;
+              ui.setStreamingTargetAssistantId(null);
+            }
+            if (aborted) cancelVoice();
+            else voiceReader?.finish();
 
             let nextContent = raw;
             let nextFiles = msg?.files as Message['files'] | undefined;
@@ -275,6 +307,7 @@ function runSseStreamReply(args: RunStreamReplyPathArgs): void {
                   activeModel,
                   historyBeforeUser,
                   plannedIntent,
+                  runId,
                 });
                 nextContent = content;
                 nextFiles = files;
@@ -307,7 +340,7 @@ function runSseStreamReply(args: RunStreamReplyPathArgs): void {
               ...(effectiveExportHint ? { exportHint: effectiveExportHint } : {}),
               imageGenProgress: undefined,
             });
-            if (!aborted && !replyRunWasCancelled(sendSessionId, userMessage.id)) void runVideoPostProcess({ ui, sendSessionId, assistantId, rawText: nextContent, userMessage, activeModel, historyBeforeUser, currentMsg: useChatStore.getState().sessions.find(s => s.id === sendSessionId)?.messages.find(m => m.id === assistantId) }).catch(error => console.warn('[videoGenAssist]', error));
+            if (!aborted && !runCancelled()) void runVideoPostProcess({ ui, sendSessionId, assistantId, rawText: nextContent, userMessage, activeModel, historyBeforeUser, currentMsg: useChatStore.getState().sessions.find(s => s.id === sendSessionId)?.messages.find(m => m.id === assistantId) }).catch(error => console.warn('[videoGenAssist]', error));
           }
         );
       })();

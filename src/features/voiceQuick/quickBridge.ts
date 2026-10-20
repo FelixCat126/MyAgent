@@ -17,7 +17,7 @@ export function installQuickChatBridge(options:{runModelReply:RunModelReplyFn;st
  const send=async(request:QuickRequest)=>{
   if(active){update({id:request.id,status:'failed',error:'上一条快捷任务尚未结束'});return;}
   const modelState=useModelStore.getState();const fallback=modelState.getActiveModel();if(!fallback){update({id:request.id,status:'failed',error:'请先在设置中选择默认对话模型'});return;}
-  const chat=useChatStore.getState();if(chat.loadingSessionIds.size||chat.compressingSessionIds.size){update({id:request.id,status:'failed',error:'其他对话仍在处理，请等待完成或停止后再发送'});return;}const previousSessionId=chat.currentSessionId;let session=chat.sessions.find(s=>s.id===quickSessionId);
+  const chat=useChatStore.getState();const previousSessionId=chat.currentSessionId;let session=chat.sessions.find(s=>s.id===quickSessionId);
   if(!session){quickSessionId=chat.createSession();session=useChatStore.getState().sessions.find(s=>s.id===quickSessionId);if(previousSessionId)useChatStore.getState().switchSession(previousSessionId);}
   if(!session)return;
   const sessionId=session.id;if(!tryClaimSessionSend(sessionId)){update({id:request.id,status:'failed',sessionId,error:'这个对话仍在处理上一条消息'});return;}

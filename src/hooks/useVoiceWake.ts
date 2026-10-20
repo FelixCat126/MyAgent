@@ -77,18 +77,11 @@ export function detectWakePhraseLoose(transcript: string, phrase: string): boole
     if (half === p.slice(p.length / 2)) {
       const variants =
         half === normalizeWakeText('小媛') ? XIAOYUAN_VARIANTS : [half];
-      let hits = 0;
-      for (const v of variants) {
-        const nv = normalizeWakeText(v);
-        let idx = 0;
-        while ((idx = tail.indexOf(nv, idx)) !== -1) {
-          hits += 1;
-          idx += nv.length;
-        }
-      }
-      if (hits >= 2) return true;
-      /** 只识别出一次完整重复短语（如「小园小园」） */
-      if (hits >= 1 && tail.length >= half.length * 2) return true;
+      /** 必须两次相邻出现（间隔 ≤2 字）；只出现一次（如「小园里的花」）不算唤醒 */
+      const alt = variants
+        .map((v) => normalizeWakeText(v).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+        .join('|');
+      if (new RegExp(`(?:${alt}).{0,2}(?:${alt})`).test(tail)) return true;
     }
   }
 
@@ -399,9 +392,18 @@ export function useVoiceWake({
         onError: (rawMsg) => {
           if (rawMsg.trim()) setWakeError('volc-error');
           if (volcActiveRef.current) {
+            const sid = wakeSessionRef.current;
             teardownVolcWake({ abortSocket: true });
             setListening(false);
             setStarting(false);
+            /** 网络抖动等瞬时错误后自动重连，与 onEnded 一致 */
+            if (shouldRunRef.current) {
+              window.setTimeout(() => {
+                if (shouldRunRef.current && !volcActiveRef.current && sid === wakeSessionRef.current) {
+                  void startVolcWakeRef.current(sid);
+                }
+              }, RESTART_AFTER_ERROR_MS);
+            }
           }
         },
         onEnded: () => {

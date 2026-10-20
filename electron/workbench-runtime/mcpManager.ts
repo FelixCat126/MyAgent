@@ -5,11 +5,19 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import type { McpConnection, McpTool, McpCallResult, JsonObject } from '../../src/features/runtime/api';
 
 const CALL_TIMEOUT = 30_000;
+const WRITE_VERBS = new Set(['create','update','delete','write','send','post','remove','push','merge','edit','modify','set','put','patch','insert','drop','move','rename','upload','publish','commit','deploy','archive','assign','transfer','pay','execute','exec','run','close','add','replace','destroy','kill','reset','revoke','grant','invite','submit']);
+/** readOnlyHint 只是服务端自述；工具名含写入动词时仍需单次审批 */
+export function trustReadOnlyHint(name: string, readOnlyHint: boolean | undefined): boolean {
+  if (readOnlyHint !== true) return false;
+  const words = name.replace(/([a-z\d])([A-Z])/g, '$1_$2').toLowerCase().split(/[^a-z\d]+/).filter(Boolean);
+  return !words.some(word => WRITE_VERBS.has(word));
+}
 export class McpManager {
   private clients = new Map<string, Client>();
   private tools = new Map<string, McpTool[]>();
   private approvals = new Map<string, { connectionId: string; tool: string; args: JsonObject; expiresAt: number }>();
   private calls = new Map<string, AbortController>();
+  private approvalIds = new Set<string>();
   private callConnections = new Map<string,string>();
   private connecting = new Map<string, Promise<McpTool[]>>();
   private openingClients = new Map<string, Client>();
@@ -40,6 +48,8 @@ export class McpManager {
       await Promise.race([client.connect(transport), new Promise<never>((_, reject) => { timer = setTimeout(() => { void client.close(); reject(new Error('MCP 连接超时（20 秒）')); }, 20_000); })]);
       if (generation !== (this.generations.get(connection.id) || 0)) throw new Error('连接已撤销');
       this.clients.set(connection.id, client);
+      // 服务进程退出或连接断开后移除旧客户端，避免状态仍显示已连接
+      client.onclose = () => { if (this.clients.get(connection.id) === client) { this.clients.delete(connection.id); this.tools.delete(connection.id); } };
       return await this.listTools(connection.id);
     } catch (error) { await client.close().catch(() => undefined); if (this.clients.get(connection.id) === client) this.clients.delete(connection.id); throw error; }
     finally { if (timer) clearTimeout(timer); if (this.openingClients.get(connection.id) === client) this.openingClients.delete(connection.id); }
@@ -59,7 +69,7 @@ export class McpManager {
     const cursors = new Set<string>();
     do {
       const response = await client.listTools(cursor ? { cursor } : {}, { timeout: CALL_TIMEOUT });
-      tools.push(...response.tools.map(tool => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema as JsonObject, readOnly: tool.annotations?.readOnlyHint === true, destructive: tool.annotations?.destructiveHint !== false })));
+      tools.push(...response.tools.map(tool => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema as JsonObject, readOnly: trustReadOnlyHint(tool.name, tool.annotations?.readOnlyHint), destructive: tool.annotations?.destructiveHint !== false })));
       if (tools.length > 1000) throw new Error('MCP 工具数量超过 1000');
       cursor = response.nextCursor;
       if (cursor && cursors.has(cursor)) throw new Error('MCP 工具分页重复');
@@ -67,7 +77,7 @@ export class McpManager {
     } while (cursor);
     this.tools.set(id, tools); return tools;
   }
-  async call(connectionId: string, toolName: string, args: JsonObject): Promise<McpCallResult> {
+  async call(connectionId: string, toolName: string, args: JsonObject, callId?: string): Promise<McpCallResult> {
     if (Buffer.byteLength(JSON.stringify(args)) > 1024 * 1024) throw new Error('工具参数超过 1 MB');
     const available = this.tools.get(connectionId) || await this.listTools(connectionId);
     const tool = available.find(t => t.name === toolName); if (!tool) throw new Error('工具不存在');
@@ -76,17 +86,21 @@ export class McpManager {
       const id = randomUUID(); const value = { connectionId, tool: toolName, args: structuredClone(args), expiresAt: Date.now() + 5 * 60_000 };
       this.approvals.set(id, value); return { authorizationRequired: { id, ...value } };
     }
-    return this.execute(connectionId, toolName, args);
+    const externalId = typeof callId === 'string' && /^agent:[\w-]{1,80}$/.test(callId) && !this.calls.has(callId) ? callId : undefined;
+    return this.execute(connectionId, toolName, args, externalId);
   }
   async approve(id: string): Promise<McpCallResult> {
     const item = this.approvals.get(id); this.approvals.delete(id);
     if (!item || item.expiresAt < Date.now()) throw new Error('授权已失效，请重新发起工具调用');
-    return this.execute(item.connectionId, item.tool, item.args, id);
+    this.approvalIds.add(id);
+    try { return await this.execute(item.connectionId, item.tool, item.args, id); } finally { this.approvalIds.delete(id); }
   }
   pendingCalls():NonNullable<McpCallResult['authorizationRequired']>[] {
     const now=Date.now();for(const [id,item] of this.approvals)if(item.expiresAt<now)this.approvals.delete(id);
     return [...this.approvals].map(([id,item])=>({id,...structuredClone(item)}));
   }
+  /** 已批准且仍在执行的调用；渲染进程据此区分「超时未批准」与「执行中」 */
+  executingApprovals(): string[] { return [...this.calls.keys()].filter(id => this.approvalIds.has(id)); }
   async cancel(id: string): Promise<void> { this.approvals.delete(id); this.calls.get(id)?.abort(); }
   private async execute(connectionId: string, name: string, args: JsonObject, approvalId?: string): Promise<McpCallResult> {
     const client = this.clients.get(connectionId); if (!client) throw new Error('连接已断开，请重新连接');

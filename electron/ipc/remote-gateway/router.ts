@@ -13,9 +13,9 @@ import { writeUploadBufferToUserData } from '../file';
 import type { RemoteGatewayFileConfig } from './config';
 import { REMOTE_MODEL_IDS_FALLBACK, coerceRemoteModelSnap, deriveModelsFromPersistDisk } from './config';
 import { BODY_JSON_CAP, BODY_UPLOAD_CAP, collectBody, normalizeRemoteRequestPathname, parseMultipartFiles } from './multipart';
-import { authorize } from './auth';
+import { authorize, createAuthFailureLimiter } from './auth';
 import {
-  assertRemoteFileAccess,
+  resolveRemoteFileAccess,
   mimeForPath,
   pickRemoteStandaloneAsset,
   publicRemoteGatewayGet,
@@ -27,6 +27,7 @@ let getMainWindowImpl: () => BrowserWindow | null = () => null;
 let activeConfig: RemoteGatewayFileConfig | null = null;
 let server: http.Server | null = null;
 let lastListenError: string | null = null;
+const authLimiter = createAuthFailureLimiter();
 
 export function setMainWindowGetter(getter: () => BrowserWindow | null): void {
   getMainWindowImpl = getter;
@@ -173,9 +174,8 @@ async function handleRequest(req: IncomingMessage, res: http.ServerResponse): Pr
         port: activeConfig?.port ?? null,
         listening: Boolean(server?.listening),
         shellExists: sh.shellExists,
-        shellChosenPath: sh.chosenPath,
-        shellSearchList: sh.searchedPaths,
-        listenLastError: lastListenError,
+        /** 免令牌接口：不回传本机路径（含用户名）与原始错误文本，仅给错误码 */
+        listenLastError: lastListenError ? /\bE[A-Z]{2,}\b/.exec(lastListenError)?.[0] ?? 'listen-failed' : null,
         /** 常见问题提示（非本地化，供手机用户直接阅读） */
         hints: ['令牌与桌面设置一致；勿将端口暴露到公网。'],
       };
@@ -209,9 +209,19 @@ async function handleRequest(req: IncomingMessage, res: http.ServerResponse): Pr
     const publicShellGet = publicRemoteGatewayGet(method, pathNorm);
 
     const token = activeConfig.token;
-    if (!publicShellGet && !authorize(req, token)) {
-      sendJson(res, 401, { error: 'Unauthorized' });
-      return;
+    if (!publicShellGet) {
+      const ip = req.socket.remoteAddress || 'unknown';
+      if (authLimiter.isBlocked(ip)) {
+        res.setHeader('Retry-After', '900');
+        sendJson(res, 429, { error: 'Too many failed attempts' });
+        return;
+      }
+      if (!authorize(req, token)) {
+        authLimiter.recordFailure(ip);
+        sendJson(res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      authLimiter.recordSuccess(ip);
     }
 
     const standaloneAsset = pickRemoteStandaloneAsset(pathNorm);
@@ -519,12 +529,13 @@ async function handleRequest(req: IncomingMessage, res: http.ServerResponse): Pr
         return;
       }
       try {
-        assertRemoteFileAccess(filePath);
-      } catch {
-        sendJson(res, 403, { error: 'Forbidden' });
+        filePath = resolveRemoteFileAccess(filePath);
+      } catch (e) {
+        const missing = (e as NodeJS.ErrnoException)?.code === 'ENOENT';
+        sendJson(res, missing ? 404 : 403, { error: missing ? 'Not found' : 'Forbidden' });
         return;
       }
-      if (!fsSync.existsSync(filePath)) {
+      if (!fsSync.statSync(filePath).isFile()) {
         sendJson(res, 404, { error: 'Not found' });
         return;
       }
@@ -589,6 +600,11 @@ export async function applyRemoteGatewayListening(cfg: RemoteGatewayFileConfig):
       s.once('error', reject);
       s.listen(cfg.port, '0.0.0.0', () => {
         s.off('error', reject);
+        /** 监听成功后仍须常驻 error 监听，否则后续服务器错误会成为主进程未捕获异常 */
+        s.on('error', (err) => {
+          lastListenError = err instanceof Error ? err.message : String(err);
+          console.error('[RemoteGateway] server error:', lastListenError);
+        });
         server = inst;
         lastListenError = null;
         console.log(`[RemoteGateway] listening 0.0.0.0:${cfg.port}`);

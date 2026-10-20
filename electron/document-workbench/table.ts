@@ -5,6 +5,16 @@ import type { DataScalar, TableCell, TablePreview } from '../../src/features/doc
 
 export const MAX_DATA_ROWS = 10_000;
 export const MAX_DATA_COLS = 100;
+/** ExcelJS 会把整份工作簿解压进主进程内存，超过此大小直接拒绝，避免卡死或内存溢出 */
+export const MAX_WORKBOOK_FILE_SIZE = 20 * 1024 * 1024;
+function checkSignal(signal?: AbortSignal) { if (signal?.aborted) throw new Error('DOCUMENT_CANCELED'); }
+/** CSV 常见于 Excel 中文导出（GBK）或「Unicode 文本」（UTF-16），不能一律按 UTF-8 解码 */
+export function decodeCsvBytes(bytes: Uint8Array): { text: string; encoding: string } {
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return { text: new TextDecoder('utf-16le').decode(bytes.subarray(2)), encoding: 'utf-16le' };
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return { text: new TextDecoder('utf-16be').decode(bytes.subarray(2)), encoding: 'utf-16be' };
+  try { return { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes), encoding: 'utf-8' }; }
+  catch { return { text: new TextDecoder('gb18030').decode(bytes), encoding: 'gb18030' }; }
+}
 export function columnName(number: number): string {
   let name = ''; for (let n = number; n > 0; n = Math.floor((n - 1) / 26)) name = String.fromCharCode(65 + (n - 1) % 26) + name; return name;
 }
@@ -51,27 +61,33 @@ export function scalarCell(cell: ExcelJS.Cell, warnings: Set<string>): DataScala
   if ('error' in value) { warnings.add(`单元格错误 / Cell error: ${cell.address} ${value.error}`); return null; }
   return String(value);
 }
-export async function readWorkbook(filePath: string): Promise<ExcelJS.Workbook> {
+export async function readWorkbook(filePath: string, options: { signal?: AbortSignal; warnings?: Set<string> } = {}): Promise<ExcelJS.Workbook> {
   const workbook = new ExcelJS.Workbook();
   if (/\.csv$/i.test(filePath)) {
-    const rows = parseCsv(await fs.readFile(filePath, 'utf8'));
+    const decoded = decodeCsvBytes(await fs.readFile(filePath)); checkSignal(options.signal);
+    if (decoded.encoding !== 'utf-8') options.warnings?.add(`CSV 按 ${decoded.encoding} 编码读取 / CSV decoded as ${decoded.encoding}`);
+    const rows = parseCsv(decoded.text);
     const sheet = workbook.addWorksheet('CSV'); rows.forEach((r) => sheet.addRow(r));
   } else if (/\.(xlsx|xlsm)$/i.test(filePath)) {
-    const bytes = await fs.readFile(filePath);
+    if ((await fs.stat(filePath)).size > MAX_WORKBOOK_FILE_SIZE) throw new Error('Excel 文件超过 20MB，请拆分或另存为 CSV 后再计算 / Workbook exceeds 20MB; split it or save as CSV');
+    const bytes = await fs.readFile(filePath); checkSignal(options.signal);
     await workbook.xlsx.load(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
   } else throw new Error(`不支持的数据格式 / Unsupported data format: ${path.extname(filePath)}`);
   return workbook;
 }
-export async function readTable(filePath: string, options: { sheet?: string; range?: string; maxRows?: number; strict?: boolean } = {}): Promise<{ table: TablePreview; sheets: string[] }> {
-  const workbook = await readWorkbook(filePath);
+export async function readTable(filePath: string, options: { sheet?: string; range?: string; maxRows?: number; strict?: boolean; signal?: AbortSignal } = {}): Promise<{ table: TablePreview; sheets: string[] }> {
+  const readWarnings = new Set<string>();
+  const workbook = await readWorkbook(filePath, { signal: options.signal, warnings: readWarnings });
+  checkSignal(options.signal);
   const sheet = options.sheet ? workbook.getWorksheet(options.sheet) : workbook.worksheets[0];
   if (!sheet) throw new Error('未找到指定工作表 / Worksheet not found');
   if (!sheet.rowCount || !sheet.columnCount) return { table: { sheet: sheet.name, range: 'A1:A1', columns: [], rows: [], totalRows: 0, truncated: false, warnings: [] }, sheets: workbook.worksheets.map((s) => s.name) };
   if (!options.range && options.strict && (sheet.rowCount > MAX_DATA_ROWS + 1 || sheet.columnCount > MAX_DATA_COLS)) throw new Error('工作表过大，请指定 sheet 与 range（最多 10,000 行、100 列） / Specify a smaller sheet range');
   const bounds = parseRange(options.range || `A1:${columnName(Math.min(sheet.columnCount, MAX_DATA_COLS))}${Math.min(sheet.rowCount, MAX_DATA_ROWS + 1)}`, sheet.rowCount, sheet.columnCount);
   const maxRows = Math.min(options.maxRows ?? 500, MAX_DATA_ROWS + 1);
-  const rows: TableCell[][] = []; const warnings = new Set<string>();
+  const rows: TableCell[][] = []; const warnings = new Set<string>(readWarnings);
   for (let row = bounds.startRow; row <= Math.min(bounds.endRow, bounds.startRow + maxRows - 1); row++) {
+    if ((row - bounds.startRow) % 500 === 0) checkSignal(options.signal);
     const cells: TableCell[] = [];
     for (let col = bounds.startCol; col <= bounds.endCol; col++) {
       const cell = sheet.getCell(row, col);

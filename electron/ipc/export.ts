@@ -3,6 +3,9 @@ import fs from 'fs/promises';
 import path from 'path';
 import { expandUserPath } from '../utils/expandUserPath';
 import { buildSessionExportZip, type ExportResult } from '../utils/sessionExport';
+import { readChatAssembledSync } from './chatPersist';
+import { isSensitiveReadPath, readTextFileDecoded } from '../utils/documentText';
+import { safeBaseName } from './documents';
 
 const TEXT_LIMIT = 800_000;
 
@@ -80,7 +83,11 @@ ipcMain.handle('import-text-file', async () => {
     return { ok: false as const };
   }
   const p = filePaths[0];
-  const text = await fs.readFile(p, 'utf8');
+  const st = await fs.stat(p);
+  if (st.size > TEXT_LIMIT) {
+    return { ok: false as const, error: `文件过大（>${TEXT_LIMIT} 字节）` };
+  }
+  const text = await readTextFileDecoded(p);
   return { ok: true as const, text, name: path.basename(p) };
 });
 
@@ -91,12 +98,15 @@ ipcMain.handle('read-text-file-absolute', async (_e, filePath: string) => {
     return { ok: false as const, error: '路径为空' };
   }
   const resolved = path.resolve(p);
+  if (isSensitiveReadPath(resolved)) {
+    return { ok: false as const, error: '该路径属于系统或凭据目录，已拒绝读取' };
+  }
   try {
     const st = await fs.stat(resolved);
     if (st.size > TEXT_LIMIT) {
       return { ok: false as const, error: `文件过大（>${TEXT_LIMIT} 字节）` };
     }
-    const text = await fs.readFile(resolved, 'utf8');
+    const text = await readTextFileDecoded(resolved);
     return { ok: true as const, path: resolved, text };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -120,13 +130,15 @@ ipcMain.handle(
     const rawRoot = String(arg?.root || '').trim();
     if (!rawRoot) return { ok: false as const };
     const root = path.resolve(expandUserPath(rawRoot));
+    if (isSensitiveReadPath(root)) return { ok: false as const };
     const max = Math.min(200_000, Math.max(500, arg?.maxChars ?? 12_000));
     for (const name of ['MYAGENT_KNOWLEDGE.md', 'knowledge.md', 'README.md']) {
       const p = path.join(root, name);
       try {
         const st = await fs.stat(p);
         if (st.size > TEXT_LIMIT) continue;
-        const text = (await fs.readFile(p, 'utf8')).slice(0, max);
+        if (isSensitiveReadPath(p)) continue;
+        const text = (await readTextFileDecoded(p)).slice(0, max);
         return { ok: true as const, fileName: name, text };
       } catch {
         /* 尝试下一个 */
@@ -172,13 +184,10 @@ ipcMain.handle(
         activeLeafId: arg.session.activeLeafId,
       };
     } else {
-      const persistPath = path.join(
-        (await import('electron')).app.getPath('userData'),
-        'persist',
-        'chat-storage.json'
-      );
+      const persistDir = path.join((await import('electron')).app.getPath('userData'), 'persist');
       try {
-        const raw = await fs.readFile(persistPath, 'utf-8');
+        const raw = readChatAssembledSync(persistDir);
+        if (raw == null) throw new Error('chat storage not found');
         const parsed = JSON.parse(raw) as {
           state?: {
             sessions?: Array<{
@@ -205,7 +214,7 @@ ipcMain.handle(
         return { ok: false, error: `加载会话失败：${e instanceof Error ? e.message : String(e)}` };
       }
     }
-    const safeName = (arg.defaultName || session.title || 'session').replace(/[\\/:*?"<>|]/g, '_');
+    const safeName = safeBaseName(arg.defaultName || session.title || 'session');
     const { canceled, filePath } = await dialog.showSaveDialog({
       defaultPath: `${safeName}.zip`,
       filters: [

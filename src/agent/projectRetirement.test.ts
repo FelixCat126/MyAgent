@@ -11,7 +11,6 @@ vi.mock('./tools/localTools', async (load) => ({ ...await load<typeof import('./
 import { runAgentLoop } from './agentRunner';
 import { callModelAgentRound } from './callModelAgentRound';
 import { executeDurableToolBatch } from './tools/durableTools';
-import { useProjectStore } from '../store/projectStore';
 import { useChatStore } from '../store/chatStore';
 import { useWorkspaceStore } from '../store/workspaceStore';
 import { useKnowledgeStore } from '../store/knowledgeStore';
@@ -23,7 +22,6 @@ const user: Message = { id: 'user', role: 'user', content: '分析上传附件�
 beforeEach(() => {
   vi.clearAllMocks();
   checkpoint.task = undefined;
-  useProjectStore.setState({ projects: [{ id: 'legacy', name: 'Old project', rootPath: '/legacy-project', rules: 'LEGACY_SECRET_RULE', description: '', createdAt: 1, updatedAt: 1 }], activeProjectId: 'legacy' });
   useChatStore.setState({ sessions: [{ id: 'chat', title: 'Old chat', messages: [user], projectId: 'legacy', createdAt: 1, updatedAt: 1 }], currentSessionId: 'chat' });
   useWorkspaceStore.setState({ rootPath: '/ordinary-directory' });
   useKnowledgeStore.setState({ embeddingProvider: 'off', vectorRagEnabled: false });

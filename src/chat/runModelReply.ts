@@ -31,7 +31,7 @@ export async function runModelReply(
   userMessage: Message,
   activeModel: ModelConfig
 ): Promise<void> {
-  beginReplyRun(sendSessionId, userMessage.id);
+  const runId = beginReplyRun(sendSessionId, userMessage.id);
   ui.imageGenCancelledRef.current = false;
   ui.streamCancelledByUserRef.current = false;
   const session = useChatStore.getState().sessions.find((s) => s.id === sendSessionId);
@@ -43,15 +43,15 @@ export async function runModelReply(
   let ragHint: VectorRagSendHint;
   const exportHint = inferDocumentExportHint(userMessage.content);
   if (unsupportedDocumentRequest(userMessage.content)) {
-    ui.addMessage(sendSessionId, { id: `${Date.now()}-unsupported-format`, role: 'assistant', content: ui.t('document.unsupported'), timestamp: Date.now(), model: activeModel.name });
+    resolveOrCreateAssistantBubble(ui, sendSessionId, `${Date.now()}-unsupported-format`, { modelName: activeModel.name, content: ui.t('document.unsupported') });
     ui.clearLoadingForSession(sendSessionId);
     return;
   }
   const previousBody = previousDocumentBody(userMessage.content, historyBeforeUser);
   if (exportHint && previousBody && !userMessage.files?.length) {
     const assistantId = resolveOrCreateAssistantBubble(ui, sendSessionId, `${Date.now()}-convert`, { modelName: activeModel.name, exportHint: { ...exportHint, status: 'generating' } });
-    try { await fulfillDocumentArtifact({ ui, sendSessionId, assistantId, shouldCancel: () => replyRunWasCancelled(sendSessionId, userMessage.id), rawText: previousBody, userText: userMessage.content, exportHint }); }
-    finally { ui.clearLoadingForSession(sendSessionId); }
+    try { await fulfillDocumentArtifact({ ui, sendSessionId, assistantId, shouldCancel: () => replyRunWasCancelled(sendSessionId, runId), rawText: previousBody, userText: userMessage.content, exportHint }); }
+    finally { if (!replyRunWasCancelled(sendSessionId, runId)) ui.clearLoadingForSession(sendSessionId); }
     return;
   }
   const isLocalImageFind = looksLikeLocalImageFindRequest(userMessage.content);
@@ -65,16 +65,15 @@ export async function runModelReply(
   const skipContextInject = agentGate.enter;
   /** 链路构建失败的统一收尾：插入错误气泡 + 清 loading（id 后缀区分两个阶段） */
   const failWith = (idSuffix: string, e: unknown): void => {
-    if (replyRunWasCancelled(sendSessionId, userMessage.id)) return;
+    if (replyRunWasCancelled(sendSessionId, runId)) return;
     console.error(e);
-    ui.addMessage(sendSessionId, {
-      id: `${Date.now()}-${idSuffix}`,
-      role: 'assistant',
-      meta:{taskError:e instanceof Error?e.message:String(e)},
-      content: ui.t('chat.buildFailed') + (e instanceof Error ? e.message : String(e)),
-      timestamp: Date.now(),
-      model: activeModel.name,
+    const detail = e instanceof Error ? e.message : String(e);
+    /** 重新生成预置的空气泡直接复用，避免空白气泡下再挂一个错误气泡 */
+    const assistantId = resolveOrCreateAssistantBubble(ui, sendSessionId, `${Date.now()}-${idSuffix}`, {
+      modelName: activeModel.name,
+      content: ui.t('chat.buildFailed') + detail,
     });
+    ui.updateMessage(sendSessionId, assistantId, { meta: { taskError: detail } });
     ui.clearLoadingForSession(sendSessionId);
   };
   try {
@@ -118,7 +117,7 @@ export async function runModelReply(
     return;
   }
 
-  if (replyRunWasCancelled(sendSessionId, userMessage.id)) return;
+  if (replyRunWasCancelled(sendSessionId, runId)) return;
   ui.setVectorRagStatus(formatVectorRagHint(ragHint, ui.t));
 
   const plainMessages = JSON.parse(JSON.stringify(sanitizeMessagesForModel(chainForModel))) as Message[];
@@ -135,10 +134,12 @@ export async function runModelReply(
       exportHint,
       isLocalImageFind,
       isWebBrowseTask,
+      runId,
     })
   ) {
     return;
   }
+  if (replyRunWasCancelled(sendSessionId, runId)) return;
 
   if (
     runStreamReplyPath({
@@ -150,6 +151,7 @@ export async function runModelReply(
       plainMessages,
       plainModel,
       exportHint,
+      runId,
     })
   ) {
     return;
@@ -164,5 +166,6 @@ export async function runModelReply(
     plainMessages,
     plainModel,
     exportHint,
+    runId,
   });
 }

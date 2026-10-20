@@ -15,6 +15,7 @@ import { IosSwitch } from '../IosSwitch';
 import { useSettingStore } from '../../store/settingStore';
 import { useWorkspaceStore } from '../../store/workspaceStore';
 import { PERSIST_KEYS } from '../../utils/persistKeys';
+import { resumeFilePersistAfterRestoreFailure, suspendFilePersistForRestore } from '../../utils/zustandFileStorage';
 import { isAgentToolsBuildEnabled } from '../../agent/buildFlags';
 import { showError, showSuccess, showWarning } from '../../store/errorStore';
 import { confirmDestructive } from '../../store/confirmStore';
@@ -377,11 +378,16 @@ export const AppSection: React.FC<AppSectionProps> = ({
                 if (!(await confirmDestructive(t('settings.confirmClear')))) {
                   return;
                 }
+                let suspended = false;
                 try {
+                  /** 先冻结写入：避免防抖中的状态或 beforeunload 冲刷把数据写回已清空的目录 */
+                  await suspendFilePersistForRestore();
+                  suspended = true;
                   if (window.electron?.persistClearAll) {
                     await window.electron.persistClearAll();
                   }
                 } catch (err) {
+                  if (suspended) resumeFilePersistAfterRestoreFailure();
                   showError('settings.clearFailed', {
                     detail: err instanceof Error ? err.message : String(err),
                   });

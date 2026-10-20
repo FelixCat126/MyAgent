@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware';
 import { PERSIST_KEYS } from '../utils/persistKeys';
 import { zustandPersistJson } from '../utils/zustandFileStorage';
 import type { EmbeddingProviderKey, KnowledgeEmbedConfig } from '../types';
+import { useConnectionStore } from './connectionStore';
 
 const DEFAULT_OPENAI_URL = 'https://api.openai.com/v1';
 const DEFAULT_OLLAMA_URL = 'http://127.0.0.1:11434';
@@ -19,6 +20,11 @@ interface KnowledgeStore {
   embeddingModel: string;
   /** 豆包 Doubao-embedding-vision 且模型名仅 ep- 时，需手动开启（名称含 embedding-vision 且为方舟址时常自动为 true） */
   embeddingVolcMultimodal: boolean;
+  /** 复用服务连接的地址与密钥；连接被删除时回落到上面保存的地址与密钥 */
+  embeddingConnectionId: string | null;
+  setEmbeddingConnection: (connectionId: string | null) => void;
+  /** 删除服务连接前调用：解除关联并保留该连接当前的地址与密钥 */
+  detachEmbeddingConnection: (connectionId: string) => void;
   setVectorRagEnabled: (v: boolean) => void;
   setVectorTopK: (n: number) => void;
   setRagMaxInjectChars: (n: number) => void;
@@ -60,6 +66,29 @@ export const useKnowledgeStore = create<KnowledgeStore>()(
       embeddingApiKey: '',
       embeddingModel: 'text-embedding-3-small',
       embeddingVolcMultimodal: false,
+      embeddingConnectionId: null,
+      setEmbeddingConnection: (connectionId) => {
+        const connection = connectionId ? useConnectionStore.getState().connections.find(c => c.id === connectionId) : undefined;
+        if (!connection) { set({ embeddingConnectionId: null }); return; }
+        const provider: EmbeddingProviderKey = connection.provider === 'ollama' ? 'ollama' : 'openai';
+        set((state) => ({
+          embeddingConnectionId: connection.id,
+          embeddingProvider: provider,
+          embeddingApiUrl: connection.apiUrl,
+          /** 快照连接密钥：连接被删除后仍能按保存的地址与密钥继续工作 */
+          embeddingApiKey: connection.apiKey,
+          embeddingModel: state.embeddingProvider === provider ? state.embeddingModel : defaultModelForProvider(provider),
+        }));
+      },
+      detachEmbeddingConnection: (connectionId) => {
+        const s = get();
+        if (s.embeddingConnectionId !== connectionId) return;
+        const connection = useConnectionStore.getState().connections.find(c => c.id === connectionId);
+        set({
+          embeddingConnectionId: null,
+          ...(connection ? { embeddingApiUrl: connection.apiUrl, embeddingApiKey: connection.apiKey } : {}),
+        });
+      },
       setVectorRagEnabled: (v) => set({ vectorRagEnabled: v }),
       setVectorTopK: (n) => set({ vectorTopK: Math.min(12, Math.max(1, Math.floor(n) || 5)) }),
       setRagMaxInjectChars: (n) =>
@@ -67,6 +96,7 @@ export const useKnowledgeStore = create<KnowledgeStore>()(
       setEmbeddingProvider: (p) =>
         set((state) => ({
           embeddingProvider: p,
+          embeddingConnectionId: null,
           embeddingApiUrl: p === 'off' ? state.embeddingApiUrl : defaultUrlForProvider(p),
           embeddingModel: p === 'off' ? state.embeddingModel : defaultModelForProvider(p),
         })),
@@ -77,7 +107,9 @@ export const useKnowledgeStore = create<KnowledgeStore>()(
       getEmbedConfigForIpc: () => {
         const s = get();
         if (s.embeddingProvider === 'off') return null;
-        const baseUrl = s.embeddingApiUrl.trim() || defaultUrlForProvider(s.embeddingProvider);
+        const linked = s.embeddingConnectionId ? useConnectionStore.getState().connections.find(c => c.id === s.embeddingConnectionId) : undefined;
+        const baseUrl = linked?.apiUrl.trim() || s.embeddingApiUrl.trim() || defaultUrlForProvider(s.embeddingProvider);
+        const apiKey = linked ? linked.apiKey : s.embeddingApiKey;
         const model = s.embeddingModel.trim() || defaultModelForProvider(s.embeddingProvider);
         const looksArk = /volces\.com|ark\.cn-/i.test(baseUrl);
         const nameSuggestsVision = /embedding-vision/i.test(model);
@@ -87,7 +119,7 @@ export const useKnowledgeStore = create<KnowledgeStore>()(
         return {
           provider: s.embeddingProvider,
           baseUrl,
-          apiKey: s.embeddingApiKey || undefined,
+          apiKey: apiKey || undefined,
           model,
           volcMultimodal: volcMultimodal || undefined,
         };

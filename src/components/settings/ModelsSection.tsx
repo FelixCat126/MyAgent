@@ -456,19 +456,6 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t, embe
                     <option value="openai">OpenAI</option><option value="claude">Claude / Anthropic</option><option value="ollama">Ollama</option><option value="custom">{t('settings.provider.compatible')}</option>
                   </select>
                 </label>
-                <label className={HUB_LABEL}>
-                  <span>{t('settings.form.chatApiMode')}</span>
-                  <select aria-label={t('settings.form.chatApiMode')} className={FORM_INPUT_LG} value={formData.chatApiMode} onChange={e => setFormData({...formData, chatApiMode:e.target.value as EditingFormData['chatApiMode']})}>
-                    <option value="auto">{t('settings.form.chatApiMode.auto')}</option>
-                    <option value="anthropic">{t('settings.form.chatApiMode.anthropic')}</option>
-                    <option value="openai">{t('settings.form.chatApiMode.openai')}</option>
-                  </select>
-                  <span className="block leading-relaxed text-stone-500 dark:text-slate-400">
-                    {formData.chatApiMode === 'auto'
-                      ? t('settings.form.chatApiModeDetected', { mode: resolvedChatApiMode === 'anthropic' ? 'Anthropic Messages (A)' : 'OpenAI Chat Completions (O)' })
-                      : t('settings.form.chatApiModeHint')}
-                  </span>
-                </label>
                 <label className={HUB_LABEL}><span>{t('settings.form.apiUrl')}</span><input className={FORM_INPUT_LG} value={formData.apiUrl} placeholder="https://api.openai.com/v1" onChange={e => setFormData({...formData, apiUrl:e.target.value})}/></label>
                 <label className={HUB_LABEL}><span>{t('settings.form.apiKey')}</span><input type="password" autoComplete="off" className={FORM_INPUT_LG} value={formData.apiKey} onChange={e => setFormData({...formData, apiKey:e.target.value})}/></label>
                 </>}
@@ -499,6 +486,19 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ cardShell, t, embe
                 <div className="mt-3 space-y-3">
                   <label className={HUB_LABEL}><span>{label('显示名称（留空自动命名）', 'Display name (optional)')}</span><input className={FORM_INPUT_LG} value={formData.name} placeholder="My GPT-4" onChange={e => setFormData({...formData, name:e.target.value})}/></label>
                   {formData.isChatModel !== false && <>
+                    {!selectedConnection && <label className={HUB_LABEL}>
+                      <span>{t('settings.form.chatApiMode')}</span>
+                      <select aria-label={t('settings.form.chatApiMode')} className={FORM_INPUT_LG} value={formData.chatApiMode} onChange={e => setFormData({...formData, chatApiMode:e.target.value as EditingFormData['chatApiMode']})}>
+                        <option value="auto">{t('settings.form.chatApiMode.auto')}</option>
+                        <option value="anthropic">{t('settings.form.chatApiMode.anthropic')}</option>
+                        <option value="openai">{t('settings.form.chatApiMode.openai')}</option>
+                      </select>
+                      <span className="block leading-relaxed text-stone-500 dark:text-slate-400">
+                        {formData.chatApiMode === 'auto'
+                          ? t('settings.form.chatApiModeDetected', { mode: resolvedChatApiMode === 'anthropic' ? 'Anthropic Messages (A)' : 'OpenAI Chat Completions (O)' })
+                          : t('settings.form.chatApiModeHint')}
+                      </span>
+                    </label>}
                     <label className={HUB_LABEL}><span>{label('最大输出长度（token）', 'Maximum output tokens')}</span><input type="number" min="1" className={FORM_INPUT_LG} value={formData.maxTokens} onChange={e => setFormData({...formData, maxTokens:Math.max(1, Number(e.target.value) || 4096)})}/></label>
                     <label className={HUB_LABEL}><span>{label('上下文容量（token，留空自动识别）', 'Context tokens (blank: auto detect)')}</span><input type="number" min="1024" className={FORM_INPUT_LG} value={formData.contextWindowTokens ?? ''} onChange={e => setFormData({...formData, contextWindowTokens:e.target.value ? Math.max(1024, Number(e.target.value)) : undefined})}/></label>
                   </>}

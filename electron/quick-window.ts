@@ -18,11 +18,21 @@ send.onclick=submit;input.onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isCo
 api.onFocus(()=>input.focus());api.onUpdate(update=>{id=update.id;sessionId=update.sessionId||sessionId;preview.textContent=update.content||preview.textContent;files.textContent=(update.files||[]).map(f=>'附件：'+f.name).join(' · ');open.disabled=!sessionId;error.textContent=update.error||'';busy(update.status==='running');status.textContent=({running:'正在处理…',completed:'已完成',failed:'执行失败',cancelled:'已停止'})[update.status];if(!running)input.focus();preview.scrollTop=preview.scrollHeight;});input.focus();
 </script></body></html>`;
 function quickDocument(locale:string):string{if(locale!=='en')return quickHtml;const phrases:Record<string,string>={'MyAgent · 快捷对话':'MyAgent · Quick chat','隐藏快捷窗口':'Hide quick chat','随手问一句，或交给助手做件事…':'Ask a question or give the assistant a task…','快捷对话输入':'Quick chat input','使用当前默认模型 · 内容保存在正常会话中':'Current default model · Saved in normal chat history','发送 ↵':'Send ↵','按 Enter 发送，Shift + Enter 换行。':'Enter to send, Shift + Enter for a new line.','打开完整对话':'Open full chat','正在处理…':'Working…','发送失败':'Send failed','已完成':'Completed','执行失败':'Failed','已停止':'Stopped','附件：':'File: ','停止':'Stop','隐藏':'Hide','随时唤起':'Open any time'};let html=quickHtml.replace('lang="zh-CN"','lang="en"');for(const[zh,en]of Object.entries(phrases))html=html.split(zh).join(en);return html;}
+let unwatchMainRenderer:(()=>void)|undefined;
+/** 主窗口渲染进程重载/崩溃会丢失进行中的快捷请求；此时置为失败，否则后续发送一直被「仍在处理」拒绝 */
+function watchMainRenderer(target:BrowserWindow,id:string):void{
+ unwatchMainRenderer?.();
+ const contents=target.webContents;
+ const fail=()=>{if(activeRequest!==id||lastUpdate?.status!=='running')return;if(firstUpdateTimer){clearTimeout(firstUpdateTimer);firstUpdateTimer=undefined;}lastUpdate={...lastUpdate,status:'failed',error:'主对话窗口已重新加载，本次快捷对话已中断，请重新发送'};publishQuick(lastUpdate);};
+ const onNavigate=(_event:unknown,_url:string,inPlace:boolean,isMainFrame:boolean)=>{if(isMainFrame&&!inPlace)fail();};
+ contents.on('render-process-gone',fail);contents.on('did-start-navigation',onNavigate);contents.on('destroyed',fail);
+ unwatchMainRenderer=()=>{if(!contents.isDestroyed()){contents.removeListener('render-process-gone',fail);contents.removeListener('did-start-navigation',onNavigate);contents.removeListener('destroyed',fail);}unwatchMainRenderer=undefined;};
+}
 export function registerQuickWindow(options:{preloadPath:string;getMainWindow:()=>BrowserWindow|null;getLocale?:()=>string}):void{
  const main=()=>{const window=options.getMainWindow();return window&&!window.isDestroyed()?window:null;};
  const show=()=>{
   if(quickWindow&&!quickWindow.isDestroyed()){quickWindow.show();quickWindow.focus();quickWindow.webContents.send('quick-panel-focus');return;}
-  quickWindow=new BrowserWindow({width:680,height:540,minWidth:560,minHeight:500,resizable:false,frame:false,show:false,alwaysOnTop:true,skipTaskbar:true,title:'MyAgent 快捷对话',backgroundColor:'#111827',webPreferences:{preload:options.preloadPath,nodeIntegration:false,contextIsolation:false,sandbox:false}});
+  quickWindow=new BrowserWindow({width:680,height:540,minWidth:560,minHeight:500,resizable:false,frame:false,show:false,alwaysOnTop:true,skipTaskbar:true,title:'MyAgent 快捷对话',backgroundColor:'#111827',webPreferences:{preload:options.preloadPath,nodeIntegration:false,contextIsolation:true,sandbox:false}});
   quickWindow.webContents.setWindowOpenHandler(()=>({action:'deny'}));quickWindow.webContents.on('will-navigate',event=>event.preventDefault());
   quickWindow.on('closed',()=>{quickWindow=null;});
   quickWindow.webContents.once('did-finish-load',()=>{quickWindow?.show();quickWindow?.focus();if(lastUpdate)publishQuick(lastUpdate);});
@@ -34,16 +44,16 @@ export function registerQuickWindow(options:{preloadPath:string;getMainWindow:()
   if(typeof text!=='string'||!text.trim()||text.length>32000)throw new Error('请输入 1 到 32000 字的内容');
   const id=randomUUID();const target=main();if(!target)return{id,error:'主对话窗口尚未就绪，请先打开 MyAgent'};
   if(activeRequest&&lastUpdate?.status==='running')return{id,error:'上一条快捷对话仍在处理，请停止后再发送'};
-  activeRequest=id;lastUpdate={id,status:'running'};if(firstUpdateTimer)clearTimeout(firstUpdateTimer);firstUpdateTimer=setTimeout(()=>{if(activeRequest===id&&lastUpdate?.status==='running'){lastUpdate={id,status:'failed',error:'主对话尚未响应，请打开主窗口后重试'};publishQuick(lastUpdate);target.webContents.send('quick-panel-cancel',id);}},20_000);target.webContents.send('quick-panel-submit',{id,text:text.trim()});return{id};
+  activeRequest=id;lastUpdate={id,status:'running'};if(firstUpdateTimer)clearTimeout(firstUpdateTimer);watchMainRenderer(target,id);firstUpdateTimer=setTimeout(()=>{if(activeRequest===id&&lastUpdate?.status==='running'){lastUpdate={id,status:'failed',error:'主对话尚未响应，请打开主窗口后重试'};publishQuick(lastUpdate);target.webContents.send('quick-panel-cancel',id);}},20_000);target.webContents.send('quick-panel-submit',{id,text:text.trim()});return{id};
  });
  ipcMain.handle('quick-panel-update',(event,update:QuickUpdate)=>{
   if(event.sender.id!==main()?.webContents.id)throw new Error('回复来源无效');
   if(update.id!==activeRequest)return;if(firstUpdateTimer){clearTimeout(firstUpdateTimer);firstUpdateTimer=undefined;}lastUpdate={...update,content:update.content?.slice(0,120000),error:update.error?.slice(0,2000)};publishQuick(lastUpdate);
  });
- ipcMain.handle('quick-panel-cancel',(event,id:string)=>{if(event.sender.id!==quickWindow?.webContents.id)return;if(id===activeRequest)main()?.webContents.send('quick-panel-cancel',id);});
+ ipcMain.handle('quick-panel-cancel',(event,id:string)=>{if(event.sender.id!==quickWindow?.webContents.id)return;if(id!==activeRequest)return;main()?.webContents.send('quick-panel-cancel',id);/** 主窗口可能已丢失该请求而不回执；本地先置为已停止，避免永久卡在处理中 */if(lastUpdate?.id===id&&lastUpdate.status==='running'){lastUpdate={...lastUpdate,status:'cancelled'};publishQuick(lastUpdate);}});
  ipcMain.handle('quick-panel-hide',event=>{if(event.sender.id===quickWindow?.webContents.id)quickWindow?.hide();});
  ipcMain.handle('quick-panel-open',(event,sessionId:string)=>{if(event.sender.id!==quickWindow?.webContents.id||sessionId!==lastUpdate?.sessionId)return;const target=main();target?.show();target?.focus();target?.webContents.send('quick-panel-open-session',sessionId);quickWindow?.hide();});
  shortcutRegistered=globalShortcut.register(shortcut,show);
  if(!shortcutRegistered)console.warn('[MyAgent] 快捷窗口热键被占用，可从应用内按钮打开');
 }
-export function shutdownQuickWindow():void{if(firstUpdateTimer)clearTimeout(firstUpdateTimer);if(shortcutRegistered)globalShortcut.unregister(shortcut);quickWindow?.destroy();quickWindow=null;activeRequest=undefined;lastUpdate=undefined;}
+export function shutdownQuickWindow():void{if(firstUpdateTimer)clearTimeout(firstUpdateTimer);unwatchMainRenderer?.();if(shortcutRegistered)globalShortcut.unregister(shortcut);quickWindow?.destroy();quickWindow=null;activeRequest=undefined;lastUpdate=undefined;}

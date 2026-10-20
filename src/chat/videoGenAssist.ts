@@ -14,8 +14,9 @@ import { resolveModelConnection } from '../store/connectionStore';
 import { useChatStore } from '../store/chatStore';
 import { replyRunWasCancelled } from './imageTaskState';
 
-const VIDEO_ACTION_RE = /(?:生成|制作|合成|做|出|来|录|拍).{0,24}(?:视频|短片|动图)|\b(?:generate|create|make|produce)\b.{0,40}\b(?:video|clip|mp4)\b/i;
-const NEGATIVE_RE = /(?:不用|不要|别|无需|不需要).{0,8}(?:生成|制作|合成|做)?.{0,8}(?:视频|短片|动图)|\b(?:do not|don't|no need to)\b.{0,30}\b(?:video|clip)\b/i;
+/** 动词须直接作用于「视频」：「来/出」必须带量词；中间不得跨标点，避免「我录的视频」「出差时看到视频」误触发付费任务 */
+const VIDEO_ACTION_RE = /(?:生成|制作|合成|创作|做(?:成|出)?|(?:来|出)(?=一?[个段条部支]))(?:[一个段条部支]|\s)*[^，。,.!?！？；;\n]{0,12}?(?:短?视频|短片|动图)|\b(?:generate|create|make|produce)\b.{0,40}\b(?:video|clip|mp4)\b/i;
+const NEGATIVE_RE = /(?:不用|不要|别|无需|不需要).{0,8}(?:生成|制作|合成|做)?.{0,8}(?:视频|短片|动图)|(?:做|生成|制作|合成|拍|录)(?:好)?了.{0,8}(?:视频|短片)|(?:视频|短片)(?:剪辑|教程|课程|学习|脚本|文案|分镜|封面|标题|账号|号|平台|网站|软件|工具|会议|通话|编辑|博主|频道|字幕)|\b(?:do not|don't|no need to)\b.{0,30}\b(?:video|clip)\b/i;
 const DISCUSSION_RE = /(?:如何|怎么|怎样|能否|是否|能不能|可不可以).{0,24}(?:生成|制作|合成|做).{0,12}(?:视频|短片)|(?:生成|制作).{0,12}(?:视频|短片).{0,10}(?:教程|提示词|prompt|脚本|分镜|费用|收费|原理)|\b(?:how (?:to|can)|can (?:you|it)|tutorial|prompt for)\b.{0,50}\b(?:video|clip)\b/i;
 
 export type VideoIntent = {
@@ -44,6 +45,37 @@ export interface VideoGenResult {
   plannedIntent: VideoIntent;
 }
 const dispatched = new Set<string>();
+/** 本进程内正在等待的视频：assistantId → 会话与取消状态 */
+const activeVideoRuns = new Map<string, { sessionId: string; requestId: string; cancelled: boolean }>();
+const GENERATING_MARK_RE = /\n*_🎬 视频生成中[^\n]*_\s*$/;
+const INTERRUPTED_NOTE = '\n\n_⚠️ 视频生成已中断（应用已重启或等待被停止）。若已提交，可在任务列表继续；否则请重新发送。_';
+
+/** 停止某会话正在等待的视频：中止本机等待，并让后处理不再写回消息 */
+export function cancelVideoForSession(sessionId: string): void {
+  for (const run of activeVideoRuns.values()) {
+    if (run.sessionId !== sessionId || run.cancelled) continue;
+    run.cancelled = true;
+    void window.electron?.cancelVideo?.(run.requestId)?.catch?.((error: unknown) => console.warn('[videoGenAssist] cancel', error));
+  }
+}
+
+/** 启动后残留的「生成中」标记均来自上次进程（本进程无对应等待），改为可重试的中断提示 */
+export function repairInterruptedVideoMessages(): number {
+  const state = useChatStore.getState();
+  let repaired = 0;
+  for (const session of state.sessions) {
+    for (const message of session.messages) {
+      if (message.role !== 'assistant' || activeVideoRuns.has(message.id) || !GENERATING_MARK_RE.test(message.content || '')) continue;
+      state.updateMessage(session.id, message.id, { content: message.content.replace(GENERATING_MARK_RE, INTERRUPTED_NOTE) });
+      repaired++;
+    }
+  }
+  return repaired;
+}
+
+const chatPersist = (useChatStore as { persist?: { hasHydrated?: () => boolean; onFinishHydration?: (fn: () => void) => unknown } }).persist;
+if (chatPersist?.hasHydrated?.()) repairInterruptedVideoMessages();
+else chatPersist?.onFinishHydration?.(() => repairInterruptedVideoMessages());
 
 export async function runVideoPostProcess(opts: {
   ui: RunModelReplyUi;
@@ -88,6 +120,14 @@ export async function runVideoPostProcess(opts: {
   const videoModel = resolveModelConnection(configuredVideoModel);
 
   const fileBaseName = `video-${assistantId.slice(0, 8)}`;
+  const run = { sessionId: sendSessionId, requestId: `vid-${assistantId}`, cancelled: false };
+  activeVideoRuns.set(assistantId, run);
+  const stopped = () => run.cancelled || replyRunWasCancelled(sendSessionId, userMessage.id);
+  const stoppedResult = (): VideoGenResult => {
+    const content = `${rawText}\n\n_⏹ 已停止视频生成等待（远端任务可能仍在继续，可在任务列表查看）_`;
+    ui.updateMessage(sendSessionId, assistantId, { content });
+    return { content, files: undefined, plannedIntent: intent };
+  };
   try {
     const electron = (window as { electron?: { generateVideo?: Function } }).electron;
     if (!electron?.generateVideo) {
@@ -97,15 +137,17 @@ export async function runVideoPostProcess(opts: {
     ui.updateMessage(sendSessionId, assistantId, {
       content: `${rawText}\n\n_🎬 视频生成中…_`,
     });
+    if (stopped()) return stoppedResult();
     const result = (await electron.generateVideo(
       {
         modelId: videoModel.id,
         prompt: intent.prompt,
         videoGeneratorConfig: videoModel.videoGeneratorConfig,
-        streamRequestId: `vid-${assistantId}`,
+        streamRequestId: run.requestId,
       },
       {
         onProgress: (p: { status: string; message?: string }) => {
+          if (stopped()) return;
           if (p.status === 'polling' || p.status === 'started') {
             ui.updateMessage(sendSessionId, assistantId, {
               content: `${rawText}\n\n_🎬 视频生成中：${p.message || '排队中'}_`,
@@ -115,6 +157,7 @@ export async function runVideoPostProcess(opts: {
       }
     )) as { ok: boolean; localPath?: string; error?: string };
 
+    if (stopped()) return stoppedResult();
     if (!result.ok || !result.localPath) {
       /** 失败：去掉「生成中」提示，追加失败说明 */
       ui.updateMessage(sendSessionId, assistantId, {
@@ -127,6 +170,7 @@ export async function runVideoPostProcess(opts: {
       };
     }
     const size = await getFileSizeSafe(result.localPath);
+    if (stopped()) return stoppedResult();
     const file: FileInfo = {
       name: `${fileBaseName}.mp4`,
       path: result.localPath,
@@ -144,6 +188,7 @@ export async function runVideoPostProcess(opts: {
       plannedIntent: intent,
     };
   } catch (e) {
+    if (stopped()) return stoppedResult();
     const msg = e instanceof Error ? e.message : String(e);
     ui.updateMessage(sendSessionId, assistantId, {
       content: `${rawText}\n\n_⚠️ 视频生成异常：${msg}_`,
@@ -153,6 +198,8 @@ export async function runVideoPostProcess(opts: {
       files: undefined,
       plannedIntent: intent,
     };
+  } finally {
+    activeVideoRuns.delete(assistantId);
   }
 }
 

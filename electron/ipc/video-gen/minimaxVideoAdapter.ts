@@ -36,6 +36,20 @@ function validateResponse(data: unknown): Record<string, unknown> {
 export function createMiniMaxClient(apiKey: string, endpoint: string): AxiosInstance {
   return axios.create({ baseURL: endpoint.replace(/\/v1\/.*$/, '/v1'), timeout: 60_000, maxContentLength: 2 * 1024 * 1024, maxBodyLength: 2 * 1024 * 1024, headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' } });
 }
+/**
+ * MiniMax /v1/video_generation 文档：resolution 取 `720P`/`768P`/`1080P`；duration 取 6 或 10。
+ * Hailuo-02/2.3：768P 支持 6/10 秒，1080P 仅 6 秒；其他模型仅 720P/1080P、6 秒。
+ * 本地配置沿用 '768' 等数字串与历史值 480/5，这里映射为厂商取值，不支持的组合在提交前拒绝（避免无效请求）。
+ */
+export function minimaxVideoOptions(model: string, resolution?: MiniMaxVideoConfig['resolution'], duration?: MiniMaxVideoConfig['duration']): { resolution?: string; duration?: number } {
+  const hailuo = /^MiniMax-Hailuo-/i.test(model.trim());
+  const res = resolution && resolution !== '480' ? `${resolution}P` : undefined;
+  const dur = duration === 10 ? 10 : duration ? 6 : undefined;
+  if (res && hailuo && res === '720P') throw new MiniMaxVideoError('unsupported_resolution', `${model} 不支持 720P，请选择 768P 或 1080P / ${model} does not support 720P`);
+  if (res && !hailuo && res === '768P') throw new MiniMaxVideoError('unsupported_resolution', `${model} 不支持 768P，请选择 720P 或 1080P / ${model} does not support 768P`);
+  if (dur === 10 && (!hailuo || res === '1080P')) throw new MiniMaxVideoError('unsupported_duration', `${model}${res ? ` ${res}` : ''} 仅支持 6 秒 / Only 6-second videos are supported for this combination`);
+  return { ...(res ? { resolution: res } : {}), ...(dur ? { duration: dur } : {}) };
+}
 async function pause(milliseconds: number, signal: AbortSignal): Promise<void> {
   signal.throwIfAborted(); await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => { signal.removeEventListener('abort', onAbort); resolve(); }, milliseconds);
@@ -53,7 +67,7 @@ export async function generateMiniMaxVideo(config: MiniMaxVideoConfig): Promise<
   try {
     signal.throwIfAborted(); let endpoint = normalizeEndpoint(config.endpoint); let client = createMiniMaxClient(config.apiKey, endpoint); let taskId = config.existingTaskId;
     if (!taskId) {
-      const body = { model: config.model, prompt: config.prompt, ...(config.resolution ? { resolution: config.resolution } : {}), ...(config.duration ? { duration: config.duration } : {}) };
+      const body = { model: config.model, prompt: config.prompt, ...minimaxVideoOptions(config.model, config.resolution, config.duration) };
       let submitted: Record<string, unknown>;
       try { submitted = validateResponse((await client.post('/video_generation', body, { signal })).data); }
       catch (e) { const alternate = e instanceof MiniMaxVideoError && e.code === 2049 ? alternateEndpoint(endpoint) : null; if (!alternate) throw e; endpoint = alternate; client = createMiniMaxClient(config.apiKey, endpoint); submitted = validateResponse((await client.post('/video_generation', body, { signal })).data); }

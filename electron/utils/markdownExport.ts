@@ -42,7 +42,7 @@ const wordFont = {
   cs: "Arial",
 };
 function columnWeights(n: Node): number[] {
-  const rows = children(n).map((r) => children(r).map(text));
+  const rows = tableRows(n).map((r) => children(r).map(text));
   return Array.from({ length: rows[0]?.length ?? 0 }, (_, i) =>
     Math.min(
       24,
@@ -58,9 +58,27 @@ function columnWeights(n: Node): number[] {
     ),
   );
 }
+/** XML 1.0 不允许的控制字符会让 Word 判定文档损坏 */
+const xmlSafe = (s: string) =>
+  s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, "");
 const parse = (s: string) =>
-  unified().use(remarkParse).use(remarkGfm).parse(s) as unknown as Node;
+  unified().use(remarkParse).use(remarkGfm).parse(xmlSafe(s)) as unknown as Node;
 const children = (n: Node) => n.children ?? [];
+/** 各行补齐到最宽一行的列数，避免 docx / HTML 表格错位 */
+function tableRows(n: Node): Node[] {
+  const rows = children(n);
+  const width = Math.max(0, ...rows.map((r) => children(r).length));
+  return rows.map((r) => ({
+    ...r,
+    children: [
+      ...children(r),
+      ...Array.from({ length: width - children(r).length }, () => ({
+        type: "tableCell",
+        children: [],
+      })),
+    ],
+  }));
+}
 const text = (n: Node): string =>
   n.value ?? (n.type === "break" ? "\n" : children(n).map(text).join(""));
 const safeLink = (url = "") => (/^(https?:|mailto:)/i.test(url) ? url : "");
@@ -142,7 +160,10 @@ export async function markdownToXlsxBuffer(md: string): Promise<Buffer> {
   wb.creator = "MyAgent";
   for (const [index, table] of tables.entries()) {
     const name =
-      (table.name.replace(/[\\/*?:\[\]]/g, "_").slice(0, 24) || "Table") +
+      (table.name
+        .replace(/[\\/*?:\[\]]/g, "_")
+        .replace(/^'+/, "")
+        .slice(0, 24) || "Table") +
       ` ${index + 1}`;
     const sheet = wb.addWorksheet(name, {
       views: [{ state: "frozen", ySplit: 1 }],
@@ -243,12 +264,8 @@ export async function markdownToXlsxBuffer(md: string): Promise<Buffer> {
             ),
         ),
       );
-      const height = Math.max(index === 1 ? 30 : 24, lines * 15 + 10);
-      if (height > 409)
-        throw new Error(
-          "表格单元格内容过长，无法在 Excel 行高限制内完整显示，请拆成多行。",
-        );
-      row.height = height;
+      /** Excel 行高上限 409；超出部分在单元格内换行查看，不中断导出 */
+      row.height = Math.min(409, Math.max(index === 1 ? 30 : 24, lines * 15 + 10));
     });
     sheet.autoFilter = {
       from: { row: 1, column: 1 },
@@ -323,7 +340,7 @@ export async function plainMarkdownToDocxBuffer(md: string): Promise<Buffer> {
               ),
             ),
             width: { size: 100, type: WidthType.PERCENTAGE },
-            rows: children(n).map(
+            rows: tableRows(n).map(
               (r, i) =>
                 new TableRow({
                   tableHeader: i === 0,
@@ -534,7 +551,7 @@ export function markdownToHtml(md: string): string {
             (w) =>
               `<col style="width:${(w / columnWeights(n).reduce((a, b) => a + b, 0)) * 100}%">`,
           )
-          .join("")}</colgroup><thead>${children(n)
+          .join("")}</colgroup><thead>${tableRows(n)
           .slice(0, 1)
           .map(
             (r) =>
@@ -544,7 +561,7 @@ export function markdownToHtml(md: string): string {
                 .join("") +
               "</tr>",
           )
-          .join("")}</thead><tbody>${children(n)
+          .join("")}</thead><tbody>${tableRows(n)
           .slice(1)
           .map(
             (r) =>

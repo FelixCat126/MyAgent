@@ -3,6 +3,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { RuntimeTask, RuntimeSchedule, McpConnection, RuntimeSnapshot, JsonObject, RuntimeStep } from '../../src/features/runtime/api';
 export interface RuntimeState extends RuntimeSnapshot { version: 1; allowedDirectories: string[] }
+/** 循环计划的下一个未来触发点：按原计划时间对齐，跳过错过的周期，避免逐次漂移 */
+export function nextIntervalRun(due: number, intervalMinutes: number, now: number): number {
+  const interval = intervalMinutes * 60_000;
+  return due + Math.max(1, Math.floor((now - due) / interval) + 1) * interval;
+}
 export const emptyState = (): RuntimeState => ({ version: 1, tasks: [], schedules: [], connections: [], allowedDirectories: [] });
 export async function atomicJson(file: string, value: unknown): Promise<void> {
   await fs.mkdir(path.dirname(file), { recursive: true });
@@ -25,7 +30,11 @@ export class TaskLedger {
       for (const step of task.steps) if (step.status === 'running') step.status = 'interrupted';
     }
     const now = Date.now();
-    for (const schedule of this.state.schedules) if (schedule.enabled && schedule.nextRunAt < now) { schedule.missedAt = schedule.nextRunAt; schedule.enabled = false; schedule.lastError = '应用未运行时错过计划；请手动执行或重新启用'; }
+    for (const schedule of this.state.schedules) if (schedule.enabled && schedule.nextRunAt < now) {
+      // 循环计划只跳过错过的周期并继续；一次性计划标记错过并等待用户处理
+      if (schedule.intervalMinutes) { schedule.nextRunAt = nextIntervalRun(schedule.nextRunAt, schedule.intervalMinutes, now); schedule.lastError = '应用未运行时错过一次计划，已顺延到下个周期'; }
+      else { schedule.missedAt = schedule.nextRunAt; schedule.enabled = false; schedule.lastError = '应用未运行时错过计划；请手动执行或重新启用'; }
+    }
     await this.save();
   }
   async save(): Promise<void> {

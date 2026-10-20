@@ -7,9 +7,8 @@ export type EmbeddingProviderKey = 'openai' | 'ollama';
 function openAiEmbeddingsUrl(base: string): string {
   const b = base.replace(/\/$/, '');
   // OpenAI 官方：…/v1/embeddings
-  if (b.endsWith('/v1')) return `${b}/embeddings`;
-  // 火山方舟 / 豆包等：…/api/v3/embeddings（见官网向量化 API，勿再套一层 /v1）
-  if (/\/v3$/i.test(b)) return `${b}/embeddings`;
+  // 火山方舟 …/api/v3、智谱 …/api/paas/v4 等：根上已带版本号时直接拼，勿再套一层 /v1
+  if (/\/v\d+$/i.test(b)) return `${b}/embeddings`;
   // 其它兼容：根上已带版本时由用户写全，否则按 OpenAI 习惯补 v1
   return `${b}/v1/embeddings`;
 }
@@ -118,7 +117,8 @@ export async function fetchEmbeddingsOllama(
   inputs: string[],
   opts: { baseUrl: string; model: string }
 ): Promise<number[][]> {
-  const host = opts.baseUrl.replace(/\/$/, '');
+  // 连接常填成 OpenAI 兼容的 …/v1，原生嵌入接口在服务根上
+  const host = opts.baseUrl.replace(/\/+$/, '').replace(/\/v1$/i, '');
   const url = `${host}/api/embeddings`;
   const out: number[][] = [];
   for (const prompt of inputs) {

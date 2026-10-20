@@ -125,7 +125,7 @@ export class BackupService {
   private async fingerprint(): Promise<string> { return createHash('sha256').update(JSON.stringify(Object.entries(await this.repositoryFiles()).map(([name,bytes])=>[name,createHash('sha256').update(bytes).digest('hex')]))).digest('hex'); }
   async preview(bytes: Buffer, password: string): Promise<BackupPreview> {
     const files = unpackEncrypted(bytes,password); const manifest = JSON.parse(Buffer.from(files['manifest.json']||[]).toString('utf8')) as BackupManifest;
-    if (manifest.version!==2 || !Array.isArray(manifest.repositories) || !Array.isArray(manifest.attachments) || !manifest.checksums || manifest.repositories.length>1000 || manifest.attachments.length>10000) throw new Error('备份清单格式不兼容');
+    if (manifest.version!==2 || !Array.isArray(manifest.repositories) || !Array.isArray(manifest.attachments) || !manifest.checksums || manifest.repositories.length>20000 || manifest.attachments.length>10000) throw new Error('备份清单格式不兼容');
     for (const [name,value] of Object.entries(files)) if (name !== 'manifest.json' && (!manifest.checksums[name] || createHash('sha256').update(value).digest('hex')!==manifest.checksums[name])) throw new Error('备份校验失败');
     for (const name of manifest.repositories) if (!isRepositoryPath(name) || !files[name]) throw new Error('备份仓库路径无效');
     for (const item of manifest.attachments) if (!this.options.managedRoots[item.root] || !safeArchivePath(item.relative) || item.archive!==`attachments/${item.root}/${item.relative}` || !files[item.archive] || item.hash!==manifest.checksums[item.archive]) throw new Error('附件清单路径或校验值无效');

@@ -94,6 +94,11 @@ export async function writeVectorIndex(data: VectorIndexFileV1): Promise<void> {
   } finally { await fs.unlink(tmp).catch(() => {}); }
 }
 
+/** 「清除所有本地数据」：索引含文档原文分块，须一并删除 */
+export async function removeAllVectorIndexes(): Promise<void> {
+  await fs.rm(knowledgeDir(), { recursive: true, force: true });
+}
+
 export function rootsMatchIndex(stored: string, current: string): boolean {
   const a = normalizedIndexRoot(stored);
   const b = normalizedIndexRoot(current);
@@ -125,8 +130,11 @@ export async function searchIndex(args: {
     if (!args.root?.trim()) return { ok: false, error: '资料目录为空。' };
     root = await fs.realpath(path.resolve(expandUserPath(args.root)));
     // Inspect every file's mtime/size before querying. Changed/deleted text is never served from stale embeddings.
-    const { performIncrementalKnowledgeIndex } = await import('./knowledgeIndexOperations');
-    const refreshed = await performIncrementalKnowledgeIndex(root, args.embed);
+    // A missing or mismatched index is reported instead of rebuilding the whole directory inside a chat send.
+    const { incrementalReuseBlocker, performIncrementalKnowledgeIndex } = await import('./knowledgeIndexOperations');
+    const blocker = incrementalReuseBlocker(await readVectorIndex(root), root, args.embed);
+    if (blocker) return { ok: false, error: blocker };
+    const refreshed = await performIncrementalKnowledgeIndex(root, args.embed, { allowFullRebuild: false });
     if (!refreshed.ok) return { ok: false, error: `资料索引更新失败：${refreshed.error}` };
     idx = await readVectorIndex(root);
   } catch (error) { return { ok: false, error: `资料索引不可用：${error instanceof Error ? error.message : String(error)}` }; }

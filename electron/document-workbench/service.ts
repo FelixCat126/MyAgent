@@ -126,7 +126,7 @@ export class DocumentWorkbenchService {
   async calculate(arg: DataCalculationRequest, signal?: AbortSignal): Promise<DataCalculationResult> {
     const sourcePath = await readable(await resolveDataSourcePath(arg.path,arg.scope)); check(signal);
     const before = await fs.stat(sourcePath, { bigint: true });
-    const { table } = await readTable(sourcePath, { sheet: arg.sheet, range: arg.range, maxRows: 10_001, strict: true });
+    const { table } = await readTable(sourcePath, { sheet: arg.sheet, range: arg.range, maxRows: 10_001, strict: true, signal });
     const after = await fs.stat(sourcePath, { bigint: true }).catch(() => null); check(signal);
     if (!after || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) throw new Error('读取数据时源文件发生变化，请重新执行 / Source file changed during data read; retry');
     if (table.truncated) throw new Error('数据被截断，不能据此计算，请指定完整范围 / Truncated input; specify a complete range');

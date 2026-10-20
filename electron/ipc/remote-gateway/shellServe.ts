@@ -96,20 +96,38 @@ function resolvedUnderRoot(absFile: string, root: string): boolean {
   return f === r || f.startsWith(r + path.sep);
 }
 
-export function assertRemoteFileAccess(absPath: string): void {
-  const target = path.resolve(absPath);
-  /** 与图库/会话附件常见落点一致：令牌保护下允许读取，避免聊天里图片路径落在下载/桌面却因 403 整页图库空白 */
-  const roots = [
-    path.resolve(getUploadDir()),
-    path.resolve(path.join(app.getPath('documents'), 'MyAgent')),
-    path.resolve(app.getPath('desktop')),
-    path.resolve(app.getPath('downloads')),
-    path.resolve(app.getPath('pictures')),
-  ];
-  for (const r of roots) {
-    if (resolvedUnderRoot(target, r)) return;
+function realpathOrResolve(p: string): string {
+  try {
+    return fsSync.realpathSync.native(p);
+  } catch {
+    return path.resolve(p);
   }
+}
+
+/**
+ * 校验并返回真实路径（解析符号链接）：下载/桌面中的符号链接不能把读取引到白名单之外。
+ * 文件不存在时抛 ENOENT 风格错误，由调用方回 404。
+ */
+export function resolveRemoteFileAccess(absPath: string): string {
+  /** 与图库/会话附件常见落点一致：令牌保护下允许读取，避免聊天里图片路径落在下载/桌面却因 403 整页图库空白 */
+  const lexicalRoots = [
+    getUploadDir(),
+    path.join(app.getPath('documents'), 'MyAgent'),
+    app.getPath('desktop'),
+    app.getPath('downloads'),
+    app.getPath('pictures'),
+  ];
+  const realRoots = lexicalRoots.map(realpathOrResolve);
+  const lexical = path.resolve(absPath);
+  /** 先按字面路径过滤，白名单外的路径不暴露「是否存在」 */
+  if (![...lexicalRoots, ...realRoots].some((r) => resolvedUnderRoot(lexical, r))) throw new Error('forbidden path');
+  const target = fsSync.realpathSync.native(lexical);
+  if (realRoots.some((r) => resolvedUnderRoot(target, r))) return target;
   throw new Error('forbidden path');
+}
+
+export function assertRemoteFileAccess(absPath: string): void {
+  resolveRemoteFileAccess(absPath);
 }
 
 export {

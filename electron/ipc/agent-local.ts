@@ -7,10 +7,12 @@ import { extractTextFromPath } from '../utils/documentText';
 import {
   buildAgentPathPolicy,
   isAgentPathAllowed,
+  realAgentPath,
   resolveAgentPath,
   resolveAgentReadPath,
   toAgentDisplayPath,
 } from '../utils/agentPathScope';
+import { readPersistParsedSync } from './persist';
 import { toRelPosix } from '../utils/workspaceIndex';
 import { resolveProjectAgentPath, resolveProjectAgentScope, type ProjectScopeArg } from '../utils/projectAgentScope';
 
@@ -77,8 +79,27 @@ function coerceExtensions(raw: unknown): Set<string> | null {
   return s.size ? s : null;
 }
 
+/** 非授权列表以主进程读到的设置为准；渲染端传参只能追加、不能删减 */
+function effectiveDeniedPaths(argDenied: unknown): string[] {
+  const persisted = (readPersistParsedSync('setting-storage') as { state?: { agentDeniedPaths?: unknown } } | null)
+    ?.state?.agentDeniedPaths;
+  const out: string[] = [];
+  for (const list of [persisted, argDenied]) {
+    if (!Array.isArray(list)) continue;
+    for (const p of list) if (typeof p === 'string' && p.trim()) out.push(p);
+  }
+  return out;
+}
+
 function policyFromArg(arg: { deniedPaths?: string[] }) {
-  return buildAgentPathPolicy(arg?.deniedPaths ?? []);
+  return buildAgentPathPolicy(effectiveDeniedPaths(arg?.deniedPaths));
+}
+
+/** 目录按真实路径再判一次：经符号链接进入的目录，其子项也须受非授权列表约束 */
+function realDirIfAllowed(dir: string, deniedPaths: string[]): string | null {
+  if (!isAgentPathAllowed(dir, deniedPaths)) return null;
+  const real = realAgentPath(dir);
+  return isAgentPathAllowed(real, deniedPaths) ? real : null;
 }
 
 ipcMain.handle(
@@ -93,7 +114,7 @@ ipcMain.handle(
     }
   ) => {
     const policy = policyFromArg(arg);
-    const project = await resolveProjectAgentScope(arg);
+    const project = await resolveProjectAgentScope({ ...arg, deniedPaths: effectiveDeniedPaths(arg?.deniedPaths) });
     if (!project.ok) return project;
     const projectPath = project.value ? await resolveProjectAgentPath(String(arg?.subpath || ''), project.value, true) : null;
     if (projectPath && !projectPath.ok) return projectPath;
@@ -109,7 +130,8 @@ ipcMain.handle(
 
     async function walk(dir: string, root: string, depth: number) {
       if (depth > maxDepth || entries.length >= MAX_LIST_ENTRIES) return;
-      if (!isAgentPathAllowed(dir, policy.deniedPaths)) return;
+      const realDir = realDirIfAllowed(dir, policy.deniedPaths);
+      if (!realDir) return;
       let items: Dirent[];
       try {
         items = await fs.readdir(dir, { withFileTypes: true });
@@ -120,6 +142,7 @@ ipcMain.handle(
         if (entries.length >= MAX_LIST_ENTRIES) return;
         const full = path.join(dir, ent.name);
         if (!isAgentPathAllowed(full, policy.deniedPaths)) continue;
+        if (!isAgentPathAllowed(path.join(realDir, ent.name), policy.deniedPaths)) continue;
         if (ent.isDirectory()) {
           if (shouldSkipDir(ent.name)) continue;
           entries.push({
@@ -190,7 +213,7 @@ ipcMain.handle(
     }
   ) => {
     const policy = policyFromArg(arg);
-    const project = await resolveProjectAgentScope(arg);
+    const project = await resolveProjectAgentScope({ ...arg, deniedPaths: effectiveDeniedPaths(arg?.deniedPaths) });
     if (!project.ok) return project;
     const pattern = String(arg?.pattern || '').trim().toLowerCase();
     if (!pattern) return { ok: false as const, error: 'pattern 为空' };
@@ -200,7 +223,8 @@ ipcMain.handle(
 
     async function walk(dir: string, root: string, depth: number) {
       if (depth > MAX_LIST_DEPTH || matches.length >= limit) return;
-      if (!isAgentPathAllowed(dir, policy.deniedPaths)) return;
+      const realDir = realDirIfAllowed(dir, policy.deniedPaths);
+      if (!realDir) return;
       let items: Dirent[];
       try {
         items = await fs.readdir(dir, { withFileTypes: true });
@@ -211,6 +235,7 @@ ipcMain.handle(
         if (matches.length >= limit) return;
         const full = path.join(dir, ent.name);
         if (!isAgentPathAllowed(full, policy.deniedPaths)) continue;
+        if (!isAgentPathAllowed(path.join(realDir, ent.name), policy.deniedPaths)) continue;
         if (ent.isDirectory()) {
           if (shouldSkipDir(ent.name)) continue;
           await walk(full, root, depth + 1);
@@ -261,7 +286,7 @@ ipcMain.handle(
     }
   ) => {
     const policy = policyFromArg(arg);
-    const project = await resolveProjectAgentScope(arg);
+    const project = await resolveProjectAgentScope({ ...arg, deniedPaths: effectiveDeniedPaths(arg?.deniedPaths) });
     if (!project.ok) return project;
     const projectPath = project.value ? await resolveProjectAgentPath(String(arg?.path || ''), project.value) : null;
     if (projectPath && !projectPath.ok) return projectPath;
@@ -297,13 +322,13 @@ ipcMain.handle(
 ipcMain.handle('agent-local-is-in-scope', async (_e, arg: ProjectScopeArg & { path?: string }) => {
   const p = String(arg?.path || '').trim();
   if (!p) return { ok: true as const, allowed: false };
-  const project = await resolveProjectAgentScope(arg);
+  const project = await resolveProjectAgentScope({ ...arg, deniedPaths: effectiveDeniedPaths(arg?.deniedPaths) });
   if (!project.ok) return { ok: true as const, allowed: false };
   if (project.value) {
     const scoped = await resolveProjectAgentPath(p, project.value);
     return { ok: true as const, allowed: scoped.ok };
   }
-  const resolved = resolveAgentPath(p, arg?.deniedPaths ?? []);
+  const resolved = resolveAgentPath(p, effectiveDeniedPaths(arg?.deniedPaths));
   if (!resolved.ok) return { ok: true as const, allowed: false };
   return { ok: true as const, allowed: true };
 });

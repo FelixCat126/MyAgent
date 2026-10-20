@@ -11,6 +11,8 @@ import {
 } from './contextBudget';
 import { resolveContextSoftLimitChars } from './inferContextWindow';
 
+const UNPARSEABLE_RESPONSE_TEXT = '收到未能正确解析的响应';
+
 export type CompressSessionResult = {
   didCompress: boolean;
   messages: Message[];
@@ -77,6 +79,8 @@ export async function compressSessionContext(opts: {
       { locale, temperature: 0.2 }
     );
     summaryBody = typeof response?.content === 'string' ? response.content.trim() : '';
+    /** 旧版主进程把无法解析的响应当正文返回；绝不能拿它当摘要去替换历史 */
+    if (summaryBody.startsWith(UNPARSEABLE_RESPONSE_TEXT)) summaryBody = '';
   } catch (e) {
     console.warn('[compressSessionContext] 模型摘要失败，降级本地压缩', e);
   }

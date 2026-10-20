@@ -33,36 +33,72 @@ import {
   MODEL_STREAM_TIMEOUT_MS,
 } from '../constants/timeouts';
 
-const abortByStream = new Map<number, AbortController>();
+/** 键为 `${webContents.id}:${streamId}`；未带 streamId 的旧调用方共用 `legacy` 槽位，新流会顶替旧流 */
+const abortByStream = new Map<string, AbortController>();
+const LEGACY_STREAM_ID = 'legacy';
 
-function sendDelta(wc: WebContents, text: string) {
+/** 事件末尾附带 streamId，渲染端据此把同一窗口内的多条并行流分开 */
+type StreamTarget = { wc: WebContents; streamId: string };
+
+function sendDelta(out: StreamTarget, text: string) {
   if (!text) return;
-  wc.send('model-stream-delta', text);
+  out.wc.send('model-stream-delta', text, out.streamId);
 }
 
-function sendThinkingDelta(wc: WebContents, text: string) {
+function sendThinkingDelta(out: StreamTarget, text: string) {
   if (!text) return;
-  wc.send('model-stream-thinking-delta', text);
+  out.wc.send('model-stream-thinking-delta', text, out.streamId);
 }
 
-function sendEnd(wc: WebContents) {
-  wc.send('model-stream-end');
+function sendEnd(out: StreamTarget) {
+  out.wc.send('model-stream-end', out.streamId);
 }
 
-function sendErr(wc: WebContents, message: string) {
-  wc.send('model-stream-error', message);
+function sendErr(out: StreamTarget, message: string) {
+  out.wc.send('model-stream-error', message, out.streamId);
 }
 
-function reportDocumentLimit(wc: WebContents, messages: Message[], raw: string) {
+/** 文档输出已报截断：渲染端随即结束订阅，主进程也须停止读流 */
+class DocumentLimitReached extends Error {}
+
+function reportDocumentLimit(out: StreamTarget, messages: Message[], raw: string) {
   if (!messages.some(m => m.role === 'system' && m.model === 'myagent-document-export')) return;
+  let truncated = false;
   try {
-    if (completionWasTruncated(JSON.parse(raw))) sendErr(wc, '模型达到输出长度上限，正文尚未完整生成。已保留部分内容；请增加模型输出长度或分章节生成后重试。');
+    truncated = completionWasTruncated(JSON.parse(raw));
   } catch { /* Ignore non-JSON SSE markers. */ }
+  if (!truncated) return;
+  sendErr(out, '模型达到输出长度上限，正文尚未完整生成。已保留部分内容；请增加模型输出长度或分章节生成后重试。');
+  throw new DocumentLimitReached();
+}
+
+/** 长文/推理模型可能持续输出超过 5 分钟；总时长放宽，卡死由空闲超时兜底 */
+const STREAM_MAX_DURATION_MS = Math.max(MODEL_STREAM_TIMEOUT_MS, 15 * 60_000);
+
+/** 首包之后若连续无数据，主动销毁流，让 consumeSseLines 以超时错误结束 */
+function watchStreamIdle(stream: { on: (ev: 'data', fn: () => void) => void; destroy?: (err?: Error) => void }): () => void {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let stopped = false;
+  const arm = () => {
+    if (stopped) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      const error = new Error('MODEL_STREAM_IDLE_TIMEOUT') as Error & { code?: string };
+      error.code = 'ETIMEDOUT';
+      stream.destroy?.(error);
+    }, MODEL_STREAM_IDLE_TIMEOUT_MS);
+  };
+  stream.on('data', arm);
+  arm();
+  return () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+  };
 }
 
 /** 通用 Anthropic Messages 流式（Claude / MiniMax / 兼容网关） */
 async function streamAnthropicMessages(opts: {
-  wc: WebContents;
+  wc: StreamTarget;
   ac: AbortController;
   config: ModelConfig;
   temperature: number | undefined;
@@ -142,14 +178,19 @@ async function streamAnthropicMessages(opts: {
     }
   };
 
-  await consumeSseLines(stream, handleSseLine, {
-    firstEventTimeoutMs: MODEL_STREAM_FIRST_EVENT_TIMEOUT_MS,
-    maxDurationMs: MODEL_STREAM_TIMEOUT_MS,
-  });
+  const stopIdleWatch = watchStreamIdle(stream);
+  try {
+    await consumeSseLines(stream, handleSseLine, {
+      firstEventTimeoutMs: MODEL_STREAM_FIRST_EVENT_TIMEOUT_MS,
+      maxDurationMs: STREAM_MAX_DURATION_MS,
+    });
+  } finally {
+    stopIdleWatch();
+  }
 }
 
 async function streamOpenAiCompatible(opts: {
-  wc: WebContents;
+  wc: StreamTarget;
   ac: AbortController;
   config: ModelConfig;
   temperature: number | undefined;
@@ -214,15 +255,20 @@ async function streamOpenAiCompatible(opts: {
   };
 
   const splitter = new StreamingDeltaSplitter();
-  await consumeSseLines(stream, (line) => {
-    const trimmed = line.trim();
-    const { content, reasoning } = splitter.feed(trimmed);
-    sendDelta(wc, content);
-    sendThinkingDelta(wc, reasoning);
-    if (trimmed.startsWith('data:')) {
-      reportDocumentLimit(wc, messages, trimmed.slice(5).trim());
-    }
-  }, { firstEventTimeoutMs: MODEL_STREAM_FIRST_EVENT_TIMEOUT_MS, maxDurationMs: MODEL_STREAM_TIMEOUT_MS });
+  const stopIdleWatch = watchStreamIdle(stream);
+  try {
+    await consumeSseLines(stream, (line) => {
+      const trimmed = line.trim();
+      const { content, reasoning } = splitter.feed(trimmed);
+      sendDelta(wc, content);
+      sendThinkingDelta(wc, reasoning);
+      if (trimmed.startsWith('data:')) {
+        reportDocumentLimit(wc, messages, trimmed.slice(5).trim());
+      }
+    }, { firstEventTimeoutMs: MODEL_STREAM_FIRST_EVENT_TIMEOUT_MS, maxDurationMs: STREAM_MAX_DURATION_MS });
+  } finally {
+    stopIdleWatch();
+  }
   splitter.flush();
 }
 
@@ -236,6 +282,7 @@ function registerModelStreamIpc() {
         config: ModelConfig;
         locale?: 'zh' | 'en';
         temperature?: number;
+        streamId?: string;
       }
     ) => {
       const { messages, config, locale: loc, temperature: tRaw } = payload;
@@ -244,8 +291,13 @@ function registerModelStreamIpc() {
         typeof tRaw === 'number' && Number.isFinite(tRaw)
           ? Math.max(0, Math.min(2, tRaw))
           : undefined;
-      const wc = event.sender;
-      const sid = typeof wc.id === 'number' ? wc.id : 0;
+      const sender = event.sender;
+      const streamId =
+        typeof payload.streamId === 'string' && payload.streamId && payload.streamId.length <= 160
+          ? payload.streamId
+          : LEGACY_STREAM_ID;
+      const wc: StreamTarget = { wc: sender, streamId };
+      const sid = `${typeof sender.id === 'number' ? sender.id : 0}:${streamId}`;
       const prev = abortByStream.get(sid);
       prev?.abort();
       const ac = new AbortController();
@@ -265,7 +317,7 @@ function registerModelStreamIpc() {
               return;
             } catch (anthropicErr: unknown) {
               const status = (anthropicErr as AxiosError)?.response?.status;
-              if (!canFallbackAnthropicToOpenAi(config)) throw anthropicErr;
+              if (anthropicErr instanceof DocumentLimitReached || !canFallbackAnthropicToOpenAi(config)) throw anthropicErr;
               if (process.env.MYAGENT_DEBUG) {
                 console.warn('[model-stream] Anthropic 失败，回退 OpenAI 兼容', {
                   status,
@@ -294,7 +346,7 @@ function registerModelStreamIpc() {
           sendEnd(wc);
         } catch (e) {
           const ax = e as AxiosError;
-          if (ax?.name === 'CanceledError' || ac.signal.aborted) {
+          if (e instanceof DocumentLimitReached || ax?.name === 'CanceledError' || ac.signal.aborted) {
             sendEnd(wc);
           } else {
             sendErr(wc, mapModelCallError(e, locale));
@@ -307,9 +359,16 @@ function registerModelStreamIpc() {
     }
   );
 
-  ipcMain.on('model-stream-abort', (event) => {
-    const sid = event.sender.id;
-    abortByStream.get(sid)?.abort();
+  /** 带 streamId 只中止该流；不带则中止本窗口全部流（窗口卸载、旧调用方） */
+  ipcMain.on('model-stream-abort', (event, streamId?: unknown) => {
+    const prefix = `${event.sender.id}:`;
+    if (typeof streamId === 'string' && streamId) {
+      abortByStream.get(prefix + streamId)?.abort();
+      return;
+    }
+    for (const [key, controller] of abortByStream) {
+      if (key.startsWith(prefix)) controller.abort();
+    }
   });
 }
 

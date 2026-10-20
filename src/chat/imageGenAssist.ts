@@ -133,7 +133,10 @@ function cleanLocalCliPromptRewrite(raw: string): string {
 
 function isCliImageGenerator(model: ModelConfig | undefined): boolean {
   const cfg = model?.imageGeneratorConfig;
-  return cfg?.type === 'cli' && (cfg.promptLanguage === 'en' || (cfg.promptLanguage !== 'auto' && Boolean(cfg.env?.MYAGENT_SD_MODEL || /sd15|sdxl|diffusers/i.test(cfg.cliArgLines || ''))));
+  if (!cfg || cfg.promptLanguage === 'auto') return false;
+  /** HTTP 方式的 SD WebUI 同样只理解英文 prompt */
+  if (cfg.type === 'http') return cfg.provider === 'sdwebui' || cfg.httpFormat === 'sdwebui' || /sdapi\/v1\/(?:txt2img|img2img)/i.test(cfg.endpoint || '');
+  return cfg.type === 'cli' && (cfg.promptLanguage === 'en' || Boolean(cfg.env?.MYAGENT_SD_MODEL || /sd15|sdxl|diffusers/i.test(cfg.cliArgLines || '')));
 }
 
 async function rewritePromptForLocalCliIfNeeded(
@@ -190,7 +193,7 @@ async function rewritePromptForLocalCliIfNeeded(
   } catch (e) {
     console.warn('[生图 CLI] 中文 prompt 英文化失败', e);
   }
-  throw new Error('本地 CLI 生图需要英文 prompt，但当前本地对话模型没有返回可用英文提示词；已中止，避免把中文 prompt 直接送入 SD/SDXL。');
+  throw new Error('当前 SD 生图服务需要英文 prompt，但对话模型没有返回可用英文提示词；已中止，避免把中文 prompt 直接送入 SD/SDXL。');
 }
 
 export async function postProcessAssistantContent(

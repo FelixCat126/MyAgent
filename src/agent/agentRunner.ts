@@ -57,6 +57,38 @@ import { executeAgentLocalTool, findLocalImagesByKeyword } from './tools/localTo
 import type { AgentLocalToolContext } from './tools/localTools';
 
 const MAX_AGENT_ROUNDS = 10;
+/** 单个 MCP 连接列工具的等待上限；失败或超时的连接本轮跳过，不影响其他回复 */
+const MCP_LIST_TIMEOUT_MS = 5000;
+
+async function listConnectedMcpToolDescriptions(shouldCancel?: () => boolean): Promise<string[]> {
+  const state = await window.electron.runtimeGetState();
+  assertAgentNotCancelled(shouldCancel);
+  const connections = state.connections.filter((c) => c.enabled && c.status === 'connected');
+  const settled = await Promise.allSettled(
+    connections.map(async (connection) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const tools = await Promise.race([
+          window.electron.runtimeListTools(connection.id),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('MCP 列工具超时')), MCP_LIST_TIMEOUT_MS);
+          }),
+        ]);
+        return tools.map((tool) =>
+          JSON.stringify({ connectionId: connection.id, name: tool.name, description: tool.description, inputSchema: tool.inputSchema, readOnly: tool.readOnly })
+        );
+      } finally {
+        clearTimeout(timer);
+      }
+    })
+  );
+  assertAgentNotCancelled(shouldCancel);
+  return settled.flatMap((result, index) => {
+    if (result.status === 'fulfilled') return result.value;
+    console.warn('[Agent MCP tools]', connections[index]?.name, result.reason instanceof Error ? result.reason.message : String(result.reason));
+    return [];
+  });
+}
 
 function pickBestCachedToolBody(cache: Map<string, string>): string | null {
   for (const prefix of ['web_eval:', 'web_read:', 'web_open:'] as const) {
@@ -205,6 +237,7 @@ async function runAutoSearch(
   if (!looksLikeLocalFileAgentRequest(userText)) return null;
   const query = extractLocalSearchQuery(userText);
   if (!query) return null;
+  const checkCancel = () => assertAgentNotCancelled(ctx.shouldCancel);
 
   let body = await executeAgentLocalTool(
     { tool: 'local_search', query, mode: 'filename', raw: '{}' },
@@ -212,6 +245,7 @@ async function runAutoSearch(
     embed
   );
 
+  checkCancel();
   if (localSearchResultLooksEmpty(body) && ctx.workspaceRoot && embed) {
     const semanticBody = await executeAgentLocalTool(
       { tool: 'local_search', query, mode: 'semantic', raw: '{}' },
@@ -225,6 +259,7 @@ async function runAutoSearch(
     const keywords = query.split(/[\s,，、]+/).filter((k) => k.length >= 2);
     for (const kw of keywords) {
       if (kw === query) continue;
+      checkCancel();
       const kwBody = await executeAgentLocalTool(
         { tool: 'local_search', query: kw, mode: 'filename', raw: '{}' },
         ctx,
@@ -240,6 +275,7 @@ async function runAutoSearch(
   if (localSearchResultLooksEmpty(body)) {
     const synonyms = expandTopicSynonyms(query).filter((s) => s !== query);
     for (const syn of synonyms) {
+      checkCancel();
       const synBody = await executeAgentLocalTool(
         { tool: 'local_search', query: syn, mode: 'filename', raw: '{}' },
         ctx,
@@ -257,6 +293,7 @@ async function runAutoSearch(
     const dirs = ['~/Documents', '~/Downloads', '~/Desktop'];
     const sections: string[] = [];
     for (const subpath of dirs) {
+      checkCancel();
       const listText = await executeAgentLocalTool(
         { tool: 'local_list', subpath, maxDepth: 2, raw: '{}' },
         ctx,
@@ -273,6 +310,7 @@ async function runAutoSearch(
     }
     if (sections.length) candidateDirs = sections.join('\n\n').slice(0, 6000);
   }
+  checkCancel();
 
   return {
     message: autoSearchSystemMessage(query, body, locale, candidateDirs),
@@ -290,6 +328,7 @@ async function runAutoImageSearch(
   if (!query) return null;
   const limit = parseMaxImageAttachCount(userText) ?? 3;
   const files = await findLocalImagesByKeyword(query, ctx, limit);
+  assertAgentNotCancelled(ctx.shouldCancel);
   const body =
     files.length > 0
       ? files.map((f) => `- ${f.name} (${f.path})`).join('\n')
@@ -433,7 +472,21 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
   const workspaceRoot = resolveSessionProjectContext(args.chatSessionId).rootPath.trim();
   const deniedPaths = useSettingStore.getState().agentDeniedPaths;
   const attachmentPaths=args.chainMessages.filter(m=>m.role==='user').flatMap(m=>(m.files||[]).map(file=>file.path)).filter(Boolean);
-  const toolCtx = { deniedPaths, workspaceRoot, attachmentPaths, shouldCancel: args.shouldCancel };
+  const toolCtx: AgentLocalToolContext = {
+    deniedPaths,
+    workspaceRoot,
+    attachmentPaths,
+    shouldCancel: args.shouldCancel,
+    sessionId: args.chatSessionId,
+    acquireBrowserLock: () => {
+      if (browserLocked) return null;
+      const lock = acquireAgentBrowserLock(args.chatSessionId);
+      if (!lock.ok) return lock.error;
+      browserLocked = true;
+      browserLockToken = lock.token;
+      return null;
+    },
+  };
   const embed = useKnowledgeStore.getState().getEmbedConfigForIpc();
   const agentSystem: Message = {
     id: `agent-sys-${Date.now()}`,
@@ -470,8 +523,10 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
   let autoSearchQuery = '';
   let didReadSource = false;
   let webWrapNudged = false;
+  /** 从检查点恢复时预取结果已在 messages 中，不再重复执行与追加 */
+  const restored = Boolean(saved?.messages?.length);
 
-  if (webIntent && needsWebAgentWorkflow(args.userText) && browserEnabled) {
+  if (!restored && webIntent && needsWebAgentWorkflow(args.userText) && browserEnabled) {
     const openUrl = resolveWebBrowseOpenUrl(webIntent, args.userText);
     const opened = await agentBrowserOpen(openUrl, {
       revealPanel: true,
@@ -555,7 +610,9 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
     ];
   }
 
-  if (looksLikeLocalImageFindRequest(args.userText) && !looksLikeWebBrowseRequest(args.userText)) {
+  if (restored) {
+    autoSearchDone = true;
+  } else if (looksLikeLocalImageFindRequest(args.userText) && !looksLikeWebBrowseRequest(args.userText)) {
     /* 本机工具关闭时不做预取 */
     if (localEnabled) {
       const imgPrefetch = await runAutoImageSearch(args.userText, toolCtx, args.locale);
@@ -577,12 +634,8 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
     }
   }
 
-  if(window.electron.runtimeGetState){
-    const state=await window.electron.runtimeGetState();
-    const descriptions:string[]=[];
-    for(const connection of state.connections.filter(c=>c.enabled&&c.status==='connected')){
-      for(const tool of await window.electron.runtimeListTools(connection.id))descriptions.push(JSON.stringify({connectionId:connection.id,name:tool.name,description:tool.description,inputSchema:tool.inputSchema,readOnly:tool.readOnly}));
-    }
+  if(typeof window.electron.runtimeGetState==='function'){
+    const descriptions=await listConnectedMcpToolDescriptions(args.shouldCancel).catch((error)=>{if(isAgentCancelledError(error))throw error;console.warn('[Agent MCP tools]',error instanceof Error?error.message:String(error));return [] as string[];});
     setMcpToolDescriptions(descriptions.join('\n'));
     if(descriptions.length)messages.unshift({id:'mcp-tools',role:'system',content:'可用外部工具：\n'+descriptions.join('\n')+'\n使用 mcp_call 原生工具，或输出 {myagent_tool:"mcp_call",connectionId,name,args}。数据计算用 {myagent_tool:"data_calculate",path,sheet,steps,chart}。工具声明并不授权写入，应用会请求单次批准。',timestamp:Date.now(),model:'agent-capability'});
   }
@@ -743,7 +796,7 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
     messages = [...messages, assistantMsg];
 
     assertAgentNotCancelled(args.shouldCancel);
-    const { resultText, exportFiles, attachFiles, skippedDuplicate } =
+    const { resultText, exportFiles, attachFiles, skippedDuplicate, outcomes } =
       await executeDurableToolBatch(args.chatSessionId,toolCalls,toolCtx,embed,executedTools);
     assertAgentNotCancelled(args.shouldCancel);
     if (toolCalls.some((t) => t.tool === 'local_read' || t.tool === 'web_read')) {
@@ -762,7 +815,12 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
     collectedExportFiles = [...collectedExportFiles, ...exportFiles];
     collectedAttachFiles = [...collectedAttachFiles, ...attachFiles];
     const resultMessage = toolResultMessage(toolCalls.map((t) => t.tool).join(','), resultText);
-    if (response.toolCalls?.length) resultMessage.nativeToolResults = response.toolCalls.map((call, index) => ({ id:call.id, content: executedTools.get(toolCallSignature(toolCalls[index])) ?? resultText }));
+    if (response.toolCalls?.length) resultMessage.nativeToolResults = response.toolCalls.map((call, index) => {
+      const outcome = outcomes?.[index];
+      return outcome
+        ? { id: call.id, content: outcome.text, ...(outcome.isError ? { isError: true } : {}) }
+        : { id: call.id, content: args.locale === 'en' ? 'Not executed: the operation was stopped.' : '未执行：操作已停止。', isError: true };
+    });
     messages = [...messages, resultMessage];
     await saveSessionCheckpoint(args.chatSessionId,{agentState:{messages,executed:[...executedTools.entries()],exportFiles:collectedExportFiles,attachFiles:collectedAttachFiles}});
 

@@ -36,11 +36,9 @@ const KEYWORDS_CN = [
   '最新消息',
   '热点',
   '最新',
-  '今天',
   '今日',
   '近日',
   '昨天',
-  '刚才',
   '实时',
   '股价',
   '股市',
@@ -72,11 +70,14 @@ const KEYWORDS_CN = [
 const KEYWORD_EN_RE =
   /\b(google|search|lookup|wikipedia|weather)\b|look\s+up|latest\s+news|news\s+about|stock\s+price|exchange\s+rate|official\s+site/i;
 
+/** 「今天」多用于日常对话（今天要做什么），仅与时效类话题同现时才联网；「刚才」指对话上文，不触发 */
+const TODAY_TOPIC_RE = /今天.{0,8}(新闻|天气|股|汇率|比分|赛|热点|消息|发生|价格|油价|金价|限行)/;
+
 function hitKeywordCn(text: string): boolean {
   for (const k of KEYWORDS_CN) {
     if (text.includes(k)) return true;
   }
-  return false;
+  return TODAY_TOPIC_RE.test(text);
 }
 
 function hitKeywordEn(text: string): boolean {

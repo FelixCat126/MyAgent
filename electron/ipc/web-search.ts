@@ -211,18 +211,21 @@ ipcMain.handle(
       } else if (provider === 'brave') {
         text = await searchBrave(q, payload.apiKey || '');
       } else {
-        text = await searchDuckDuckGo(q);
-        if (!text) {
-          const wikiZh = await searchWikipediaZhTitles(q);
-          if (wikiZh) text = wikiZh;
-        }
-        if (!text) {
-          const wikiEn = await searchWikipediaEnTitles(q);
-          if (wikiEn) text = wikiEn;
-        }
-        if (!text) {
-          text = await searchDuckDuckGoLite(q);
-        }
+        /** 单个来源超时/不可达时继续尝试下一个，全部失败才报错 */
+        const failures: string[] = [];
+        const attempt = async (name: string, run: () => Promise<string>): Promise<string> => {
+          try {
+            return await run();
+          } catch (e) {
+            failures.push(`${name}: ${e instanceof Error ? e.message : String(e)}`);
+            return '';
+          }
+        };
+        text = await attempt('DuckDuckGo', () => searchDuckDuckGo(q));
+        if (!text) text = await attempt('Wikipedia(zh)', () => searchWikipediaZhTitles(q));
+        if (!text) text = await attempt('Wikipedia(en)', () => searchWikipediaEnTitles(q));
+        if (!text) text = await attempt('DuckDuckGo Lite', () => searchDuckDuckGoLite(q));
+        if (!text && failures.length >= 3) throw new Error(`联网检索均不可用（${failures.join('；')}）`);
       }
       text = truncate(text, 14000);
       if (!text) {

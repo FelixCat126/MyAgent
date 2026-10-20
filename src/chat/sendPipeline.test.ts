@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useChatStore } from '../store/chatStore';
-import { useMemoryStore } from '../store/memoryStore';
 import type { Message, ModelConfig } from '../types';
 import {
   tryClaimSessionSend,
@@ -54,7 +53,15 @@ describe('sendPipeline', () => {
     expect(tryClaimSessionSend('s1')).toBe(false);
   });
 
-  it('不同会话也串行，防止同窗口模型流和快捷面板互相覆盖',()=>{useChatStore.getState().setLoadingSession('another');expect(tryClaimSessionSend('s1')).toBe(false);expect(useChatStore.getState().isLoadingSession('s1')).toBe(false);});
+  it('不同会话可并行发送，同会话仍互斥', () => {
+    useChatStore.getState().setLoadingSession('another');
+    useChatStore.getState().setCompressingContext('third');
+    expect(tryClaimSessionSend('s1')).toBe(true);
+    expect(useChatStore.getState().isLoadingSession('s1')).toBe(true);
+    expect(useChatStore.getState().isLoadingSession('another')).toBe(true);
+    expect(tryClaimSessionSend('another')).toBe(false);
+    expect(tryClaimSessionSend('third')).toBe(false);
+  });
 
   it('tryClaimSessionSend 在 compressing 时拒绝', () => {
     useChatStore.getState().setCompressingContext('s1');
@@ -79,12 +86,8 @@ describe('sendPipeline', () => {
     expect(extras.workspaceLikely).toBe(false);
   });
 
-  it.each(['记住：我喜欢简洁回答', '忘掉全部记忆', '/remember I prefer concise replies'])('sends %s to the model without local memory changes or bypass', async textContent => {
-    useMemoryStore.setState({ memories: [], candidateExtractionEnabled: true });
-    useMemoryStore.getState().addMemory({ content: 'SENTINEL_RETIRED_MEMORY', scope: 'personal', alwaysApply: true });
-    const memories = structuredClone(useMemoryStore.getState().memories);
+  it.each(['记住：我喜欢简洁回答', '忘掉全部记忆', '/remember I prefer concise replies'])('sends %s to the model without bypass', async textContent => {
     const runModelReply = vi.fn(async () => { useChatStore.getState().clearLoadingForSession('s1'); });
-    expect(resolveInjectExtras({ webEnabled: false, sessionId: 's1', userText: textContent }).personalMaxChars).toBe(0);
     expect(tryClaimSessionSend('s1')).toBe(true);
     const result = await commitUserMessageAndReply({
       sessionId: 's1', textContent, model: fakeModel, locale: 'zh', summaryTitle: '【上下文摘要】',
@@ -93,7 +96,6 @@ describe('sendPipeline', () => {
     expect(result.bypassed).toBe(false);
     expect(runModelReply).toHaveBeenCalledWith('s1', [], expect.objectContaining({ role: 'user', content: textContent }), fakeModel);
     expect(useChatStore.getState().sessions[0].messages).toEqual([expect.objectContaining(result.userMessage)]);
-    expect(useMemoryStore.getState().memories).toEqual(memories);
   });
 });
 
@@ -171,10 +173,7 @@ describe('resubmitEditedUserMessage', () => {
     expect(userMsg.content).toBe('第二问改写');
   });
 
-  it('resubmits an edited memory-shaped request through the model and preserves old memory records', async () => {
-    useMemoryStore.setState({ memories: [], candidateExtractionEnabled: true });
-    useMemoryStore.getState().addMemory({ content: 'SENTINEL_RETIRED_MEMORY', scope: 'personal', alwaysApply: true });
-    const memories = structuredClone(useMemoryStore.getState().memories);
+  it('resubmits an edited memory-shaped request through the model', async () => {
     const runModelReply = vi.fn(async () => { useChatStore.getState().clearLoadingForSession('s1'); });
     const result = await resubmitEditedUserMessage({
       sessionId: 's1', messageId: 'u2', textContent: '记住：我喜欢简洁回答', model: fakeModel,
@@ -182,7 +181,6 @@ describe('resubmitEditedUserMessage', () => {
     });
     expect(result).toEqual({ ok: true });
     expect(runModelReply).toHaveBeenCalledWith('s1', expect.any(Array), expect.objectContaining({ id: 'u2', content: '记住：我喜欢简洁回答' }), fakeModel);
-    expect(useMemoryStore.getState().memories).toEqual(memories);
     expect(useChatStore.getState().sessions[0].messages.some(message => message.model === '本地记忆')).toBe(false);
   });
 

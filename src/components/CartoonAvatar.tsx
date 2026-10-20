@@ -12,13 +12,13 @@ import { useCanvas2DLoop, lerp } from '../hooks/useCanvas2DLoop';
  *  - 同组（脸轮廓 / 头发 / 眉 / 上下眼睑 / 鼻 / 上下唇）相邻粒子之间绘制
  *    淡薄的连线，形成"网格描边"的科技感；
  *  - 双层粒子：内核（亮）+ 外晕（径向梯度 sprite，按 颜色+半径 缓存，避免每帧数百个梯度对象）；
- *  - 眼睛除眼眶外，单独绘制实心瞳孔，跟随 gazeTarget 在眼眶内位移；
+ *  - 眼睛除眼眶外，单独绘制居中的实心瞳孔；
  *  - 眨眼时上眼睑 morph 到下眼睑中线；
  *  - 嘴唇按 mouthOpen 张合；
  *  - 整体随 motion.scale 缩放、随 headTilt 旋转。
  *
  * 与外部接口：
- *  - 仅消费 useParticleStore：mood / agentActivity / motion.scale / gazeTarget /
+ *  - 仅消费 useParticleStore：mood / agentActivity / motion.scale /
  *    blinkAmount / mouthOpen / headTilt；
  *  - 不依赖 props 颜色，按主题切换两套调色板；
  *  - 组件名保留 CartoonAvatar，FloatingParticleWindow 引用无需改动。
@@ -200,7 +200,6 @@ function generateFacePoints(blink: number, mouth: number): FacePoint[] {
 }
 
 const MOTION_LERP = 0.18;
-const GAZE_LERP = 0.18;
 const BLINK_LERP = 0.32;
 const MOUTH_LERP = 0.2;
 const TILT_LERP = 0.12;
@@ -233,7 +232,7 @@ const CartoonAvatar: React.FC<CartoonAvatarProps> = ({ className }) => {
   const theme = useResolvedTheme();
   const themeRef = useRef(theme);
   const blinkPhaseRef = useRef(0);
-  const smoothRef = useRef({ scale: 1, headTilt: 0, gazeX: 0, gazeY: 0, blink: 0, mouth: 0 });
+  const smoothRef = useRef({ scale: 1, headTilt: 0, blink: 0, mouth: 0 });
   const t0Ref = useRef(0);
   const lastTickRef = useRef(0);
   const haloSpriteRef = useRef<{ key: string; canvas: HTMLCanvasElement } | null>(null);
@@ -280,8 +279,6 @@ const CartoonAvatar: React.FC<CartoonAvatarProps> = ({ className }) => {
       const s = smoothRef.current;
       s.scale = lerp(s.scale, motion.scale, MOTION_LERP);
       s.headTilt = lerp(s.headTilt, targetTilt, TILT_LERP);
-      s.gazeX = lerp(s.gazeX, st.gazeTarget.x, GAZE_LERP);
-      s.gazeY = lerp(s.gazeY, st.gazeTarget.y, GAZE_LERP);
       s.blink = lerp(s.blink, targetBlink, BLINK_LERP);
       s.mouth = lerp(s.mouth, targetMouth, MOUTH_LERP);
 
@@ -349,7 +346,7 @@ const CartoonAvatar: React.FC<CartoonAvatarProps> = ({ className }) => {
         ctx.fill();
       }
 
-      // 4) 瞳孔：左右各一颗实心圆，受 gaze 控制在眼眶内位移；闭眼接近完全时不画
+      // 4) 瞳孔：左右各一颗实心圆，居中；闭眼接近完全时不画
       if (s.blink < 0.82) {
         const eyeCxL = -EYE.cx * half;
         const eyeCxR = EYE.cx * half;
@@ -357,10 +354,6 @@ const CartoonAvatar: React.FC<CartoonAvatarProps> = ({ className }) => {
         const eyeAx = EYE.ax * half;
         const eyeAy = EYE.ay * half;
         const pupilR = Math.max(2.0, half * 0.025);
-        const gazeMaxX = eyeAx - pupilR - 2;
-        const gazeMaxY = eyeAy - pupilR - 2;
-        const px = s.gazeX * gazeMaxX;
-        const py = s.gazeY * gazeMaxY;
         const drawPupil = (xCenter: number) => {
           ctx.save();
           ctx.beginPath();
@@ -368,12 +361,12 @@ const CartoonAvatar: React.FC<CartoonAvatarProps> = ({ className }) => {
           ctx.clip();
           ctx.fillStyle = pal.pupil;
           ctx.beginPath();
-          ctx.arc(xCenter + px, eyeCy + py, pupilR, 0, Math.PI * 2);
+          ctx.arc(xCenter, eyeCy, pupilR, 0, Math.PI * 2);
           ctx.fill();
           // 高光
           ctx.fillStyle = 'rgba(255,255,255,0.9)';
           ctx.beginPath();
-          ctx.arc(xCenter + px - pupilR * 0.35, eyeCy + py - pupilR * 0.35, pupilR * 0.3, 0, Math.PI * 2);
+          ctx.arc(xCenter - pupilR * 0.35, eyeCy - pupilR * 0.35, pupilR * 0.3, 0, Math.PI * 2);
           ctx.fill();
           ctx.restore();
         };

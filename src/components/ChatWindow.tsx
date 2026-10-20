@@ -1,6 +1,7 @@
 import { VoiceInteractionBar } from '../features/voiceQuick/VoiceInteractionBar';
 import { installQuickChatBridge } from '../features/voiceQuick/quickBridge';
 import { cancelImageTask, cancelReplyRun } from '../chat/imageTaskState';
+import { cancelVideoForSession } from '../chat/videoGenAssist';
 import React, {
   useState,
   useRef,
@@ -59,7 +60,7 @@ import { useChatScrollStick } from './ChatWindow/hooks/useChatScrollStick';
 import { useMessageSelection } from './ChatWindow/hooks/useMessageSelection';
 import { useChatAttachments } from './ChatWindow/hooks/useChatAttachments';
 import { useChatLifecycleCleanup } from './ChatWindow/hooks/useChatLifecycle';
-import { useChatStreamRefs } from './ChatWindow/hooks/useChatStreamRefs';
+import { IDLE_SESSION_RUN_UI, useSessionRunUi, useSessionStreamRefs } from './ChatWindow/hooks/useChatStreamRefs';
 import { useChatRunModelReply } from './ChatWindow/hooks/useChatRunModelReply';
 import {
   buildConversationImageGallery,
@@ -71,6 +72,9 @@ import { registerRuntimeTaskExecutor } from '../features/personal/runtimeDispatc
 import { executeDispatchedRuntimeTask } from '../features/personal/runtimeExecution';
 import { createSessionTask, cancelSessionTask, sessionTask } from '../features/runtime/taskBridge';
 import { useSessionComposerDrafts } from '../features/personal/useSessionComposerDrafts';
+
+/** 单个附件上限：超大文件一次性读入渲染进程并跨 IPC 复制，会卡死或撑爆内存 */
+const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
 const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) => {
   const {
@@ -103,18 +107,10 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
   // ===== 局部 state（保持原顺序） =====
   const [input, setInput] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
-  const [vectorRagStatus, setVectorRagStatus] = useState<{
-    text: string;
-    tone: 'success' | 'info' | 'error';
-  } | null>(null);
-  const [isStreaming, setIsStreaming] = useState(false);
-  /** 本地/HTTP 生图进行中：对话区占位，避免长耗时无反馈 */
-  const [imageGenProgress, setImageGenProgress] = useState<{
-    current: number;
-    total: number;
-    messageId: string;
-  } | null>(null);
-  const [streamingTargetAssistantId, setStreamingTargetAssistantId] = useState<string | null>(null);
+  /** 流式、生图进度、检索提示按会话各存一份；界面只展示当前会话 */
+  const { runUi, patchRunUi, clearVectorRagStatuses, pruneRunUi } = useSessionRunUi();
+  const currentRunUi = (currentSessionId && runUi[currentSessionId]) || IDLE_SESSION_RUN_UI;
+  const { isStreaming, streamingTargetAssistantId, imageGenProgress, vectorRagStatus } = currentRunUi;
   const [inlineImageIndex, setInlineImageIndex] = useState(0);
   const inlineImageIndexRef = useRef(0);
   inlineImageIndexRef.current = inlineImageIndex;
@@ -128,16 +124,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
 
   // ===== refs =====
   const inputAreaRef = useRef<HTMLTextAreaElement>(null);
-  /** 流式 ref 集群：抽到 useChatStreamRefs（762→<600 减少行数集中） */
-  const {
-    streamUnsubRef,
-    streamHadErrorRef,
-    imageGenCancelledRef,
-    streamCancelledByUserRef,
-    streamingAssistantIdRef,
-    streamingSessionIdRef,
-    imageGenSyncRef,
-  } = useChatStreamRefs();
+  /** 流式 ref 集群：每个会话一份，见 useChatStreamRefs */
+  const streamRefs = useSessionStreamRefs();
   /** 中文/日文等 IME 组字中为 true，避免 Enter 上屏时被当成发送 */
   const imeComposingRef = useRef(false);
   /** 语音识别：与 input 同步，避免 onresult 闭包陈旧 */
@@ -301,29 +289,27 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
     imageGenProgress,
     messages,
   });
-  useChatLifecycleCleanup({ cancelVoiceReply, streamUnsubRef });
+  useChatLifecycleCleanup({ cancelVoiceReply, streamRefs });
   const { runModelReply, runModelReplyRef } = useChatRunModelReply({
     uiLocale,
     t,
     consumeVoiceWakeReply,
     setVoiceReplySpeaking,
-    setVectorRagStatus,
-    setImageGenProgress,
-    setIsStreaming,
-    setStreamingTargetAssistantId,
+    patchRunUi,
+    streamRefs,
     setInlineImageIndex,
     inlineImageIndexRef,
-    streamingAssistantIdRef,
-    streamingSessionIdRef,
-    streamUnsubRef,
-    streamHadErrorRef,
-    streamCancelledByUserRef,
-    imageGenCancelledRef,
-    imageGenSyncRef,
     speechReaderRef,
   });
 
   // ===== 业务 effect（不抽到 hook 的部分） =====
+  /** 会话删除后回收其流式 ref 与界面态 */
+  const sessionIdsKey = sessions.map((s) => s.id).join('\n');
+  useEffect(() => {
+    const live = new Set(sessionIdsKey ? sessionIdsKey.split('\n') : []);
+    streamRefs.prune(live);
+    pruneRunUi(live);
+  }, [sessionIdsKey, streamRefs, pruneRunUi]);
   /** 流式开始即清掉唤醒态；同时唤醒态自动 30 秒超时 */
   useEffect(() => {
     if (isStreaming && voiceAwake) setVoiceAwake(false);
@@ -339,11 +325,8 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
    */
   useEffect(() => {
     const setAct = useParticleStore.getState().setAgentActivity;
-    const streamOwnsCurrent =
-      isStreaming &&
-      streamingSessionIdRef.current != null &&
-      streamingSessionIdRef.current === currentSessionId;
-    if (streamOwnsCurrent) {
+    /** isStreaming 已是当前会话自己的流式态 */
+    if (isStreaming) {
       const sess = sessions.find((s) => s.id === currentSessionId);
       const msg = sess?.messages.find((m) => m.id === streamingTargetAssistantId);
       const contentLen = (msg?.content ?? '').trim().length;
@@ -391,17 +374,18 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
     setVoiceInterruptRequested(false);
     setConversationGalleryIdx(null);
     setConversationGalleryNonce(0);
-    setVectorRagStatus(null);
+    clearVectorRagStatuses();
     speechDictation.abort();
     cancelVoiceReply();
     voiceWakeLoopRef.current = false;
-  }, [currentSessionId, speechDictation.abort, cancelVoiceReply]);
+  }, [currentSessionId, speechDictation.abort, cancelVoiceReply, clearVectorRagStatuses]);
 
   useEffect(() => {
-    if (!vectorRagStatus || vectorRagStatus.tone !== 'error') return;
-    const tid = window.setTimeout(() => setVectorRagStatus(null), 6500);
+    if (!currentSessionId || !vectorRagStatus || vectorRagStatus.tone !== 'error') return;
+    const sid = currentSessionId;
+    const tid = window.setTimeout(() => patchRunUi(sid, { vectorRagStatus: null }), 6500);
     return () => window.clearTimeout(tid);
-  }, [vectorRagStatus]);
+  }, [currentSessionId, vectorRagStatus, patchRunUi]);
 
   useEffect(() => {
     const api = typeof window !== 'undefined' ? window.electron : undefined;
@@ -423,28 +407,33 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
   // ===== 编辑 / 选择 / 导出 / 拖拽 / 输入 / 发送 / 停止 =====
   const stopSessionWork = useCallback((sessionId: string) => {
     cancelReplyRun(sessionId);
+    cancelVideoForSession(sessionId);
     void cancelSessionTask(sessionId).catch((error) => console.error('[Cancel task]', error));
-    const ownsStream = streamingSessionIdRef.current === sessionId;
-    if (ownsStream) streamCancelledByUserRef.current = true;
-    const p = imageGenSyncRef.current;
+    const refs = streamRefs.refsFor(sessionId);
+    /** 网络已结束但打字机仍在放积压正文时，停止必须立即生效 */
+    refs.cancelAnimRef.current?.();
+    refs.cancelAnimRef.current = null;
+    const ownsStream = refs.streamingSessionIdRef.current === sessionId;
+    if (ownsStream) refs.streamCancelledByUserRef.current = true;
+    const p = refs.imageGenSyncRef.current;
     if (p?.sessionId === sessionId) {
-      imageGenCancelledRef.current = true;
-      setImageGenProgress(null);
+      refs.imageGenCancelledRef.current = true;
+      patchRunUi(sessionId, { imageGenProgress: null });
       cancelImageTask(p.messageId);
       window.electron.cancelImageGeneration?.(p.messageId);
       updateMessage(p.sessionId, p.messageId, { imageGenProgress: undefined });
-      imageGenSyncRef.current = null;
+      refs.imageGenSyncRef.current = null;
     }
     if (ownsStream) {
-      window.electron.closeModelStream();
-      streamUnsubRef.current?.();
-      streamUnsubRef.current = null;
-      setIsStreaming(false);
-      streamingSessionIdRef.current = null;
+      /** 订阅返回的函数只中止本会话的流；其他会话的并行流不受影响 */
+      refs.streamUnsubRef.current?.();
+      refs.streamUnsubRef.current = null;
+      patchRunUi(sessionId, { isStreaming: false });
+      refs.streamingSessionIdRef.current = null;
     }
     clearLoadingForSession(sessionId);
     /** streamingAssistantIdRef 由 onEnd 清理，便于识别待删空气泡 */
-  }, [clearLoadingForSession, updateMessage, imageGenSyncRef, imageGenCancelledRef, streamingSessionIdRef, streamCancelledByUserRef, streamUnsubRef]);
+  }, [clearLoadingForSession, updateMessage, streamRefs, patchRunUi]);
   const handleStop = () => { if (currentSessionId) stopSessionWork(currentSessionId); };
 
   useEffect(() => installQuickChatBridge({runModelReply:(...args)=>runModelReplyRef.current(...args),stopSession:stopSessionWork}), [stopSessionWork]);
@@ -552,16 +541,25 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
       modelId: model.id,
     });
 
+    const sessionId = currentSessionId;
+    let forkId: string | null = null;
     try {
-      forkFromMessage(currentSessionId, parentId);
+      forkId = forkFromMessage(sessionId, parentId);
       stickToBottomRef.current = true;
-      await createSessionTask(currentSessionId,parent,{occurrenceId:requestId});
-      if(!useChatStore.getState().isLoadingSession(currentSessionId))return;
-      await runModelReply(currentSessionId, history, parent, model);
+      await createSessionTask(sessionId,parent,{occurrenceId:requestId});
+      if(!useChatStore.getState().isLoadingSession(sessionId))return;
+      await runModelReply(sessionId, history, parent, model);
     } catch (e) {
-      clearLoadingForSession(currentSessionId);
+      clearLoadingForSession(sessionId);
       const detail = e instanceof Error ? e.message : String(e);
       showError('chat.sendFailed', { detail });
+    } finally {
+      /** 未能开始回复时不留下预置的空白气泡 */
+      const chat = useChatStore.getState();
+      const fork = forkId ? chat.sessions.find((s) => s.id === sessionId)?.messages.find((m) => m.id === forkId) : undefined;
+      if (fork && !chat.isLoadingSession(sessionId) && !fork.content.trim() && !(fork.reasoning ?? '').trim() && !fork.files?.length) {
+        chat.removeMessage(sessionId, fork.id);
+      }
     }
   };
 
@@ -599,11 +597,17 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
       if (draftFiles.length > 0) {
         let uploadFailed = 0;
         for (const file of draftFiles) {
+          if (file.size > MAX_UPLOAD_BYTES) {
+            console.warn('附件超过大小上限，已跳过', file.name, file.size);
+            uploadFailed += 1;
+            continue;
+          }
           try {
             const buffer = await file.arrayBuffer();
             const info = await window.electron.uploadFile({
               name: file.name,
-              buffer: Array.from(new Uint8Array(buffer)),
+              /** 直接传字节视图（结构化克隆支持，主进程 Buffer.from 兼容）；number[] 会让内存膨胀数倍 */
+              buffer: new Uint8Array(buffer) as unknown as number[],
               type: file.type,
               size: file.size,
             });
@@ -921,7 +925,7 @@ const ChatWindow: React.FC<{ footerH?: number }> = ({ footerH = FOOTER_H_PX }) =
         contextSanitizeWarn={t('chat.contextSanitizeWarn')}
         onSend={() => void handleSend()}
         onStop={handleStop}
-        showStop={isCurrentSessionLoading && (isStreaming || !!imageGenProgress)}
+        showStop={isCurrentSessionLoading}
         sendLabel={t('chat.send')}
         sendTitle={t('chat.sendTitle')}
         stopLabel={t('chat.stop')}

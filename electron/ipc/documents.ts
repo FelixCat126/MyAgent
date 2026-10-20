@@ -1,7 +1,7 @@
 import { app, dialog, ipcMain } from "electron";
 import fs from "fs/promises";
 import path from "path";
-import { extractTextFromPath } from "../utils/documentText";
+import { extractTextFromPath, isSensitiveReadPath } from "../utils/documentText";
 import {
   markdownToXlsxBuffer,
   plainMarkdownToDocxBuffer,
@@ -21,13 +21,40 @@ const ATTACH_DOCUMENT_MAX_STATS_BYTES = 80 * 1024 * 1024;
 /** 与中文字符量级同阶的 JS 字符串长度上限（非严格 Unicode 语义） */
 const ATTACH_DOCUMENT_MAX_TEXT_CHARS = 600_000;
 
-function safeBaseName(input: string): string {
-  const s = String(input || "document")
-    .replace(/[\\/:"*?<>|\r\n\t]/g, "_")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 80);
-  return s || "document";
+export function safeBaseName(input: string): string {
+  const s = Array.from(
+    String(input || "document")
+      .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "")
+      .replace(/[\\/:"*?<>|\u0000-\u001F]/g, "_")
+      .replace(/\s+/g, " ")
+      .trim(),
+  )
+    .slice(0, 80)
+    .join("")
+    .replace(/[. ]+$/, "");
+  if (!s) return "document";
+  return /^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$/i.test(s) ? `${s}_` : s;
+}
+
+type ExtractResult = Awaited<ReturnType<typeof extractTextFromPath>>;
+/** 每轮发送都会对历史附件重新提取；按 路径+mtime+大小 缓存，避免扫描件反复 OCR */
+const extractCache = new Map<string, Promise<ExtractResult>>();
+const EXTRACT_CACHE_LIMIT = 32;
+
+function extractCached(p: string, name: string | undefined, st: { mtimeMs: number; size: number }) {
+  const key = `${path.resolve(p)}\n${name ?? ""}\n${st.mtimeMs}\n${st.size}`;
+  const hit = extractCache.get(key);
+  if (hit) {
+    extractCache.delete(key);
+    extractCache.set(key, hit);
+    return hit;
+  }
+  const task = extractTextFromPath(p, name);
+  extractCache.set(key, task);
+  task.catch(() => extractCache.delete(key));
+  while (extractCache.size > EXTRACT_CACHE_LIMIT)
+    extractCache.delete(extractCache.keys().next().value!);
+  return task;
 }
 
 ipcMain.handle(
@@ -35,6 +62,8 @@ ipcMain.handle(
   async (_e, arg: { path: string; name?: string }) => {
     const p = String(arg?.path || "").trim();
     if (!p) return { ok: false as const, error: "路径为空" };
+    if (isSensitiveReadPath(p))
+      return { ok: false as const, error: "该路径属于系统或凭据目录，已拒绝读取" };
     try {
       const st = await fs.stat(p);
       if (st.size > ATTACH_DOCUMENT_MAX_STATS_BYTES) {
@@ -43,7 +72,7 @@ ipcMain.handle(
           error: `文件过大（>${Math.round(ATTACH_DOCUMENT_MAX_STATS_BYTES / (1024 * 1024))}MB）；请压缩、拆分或使用较小附件。`,
         };
       }
-      const { text: rawText, kind, pages, truncated: extractionTruncated } = await extractTextFromPath(p, arg.name);
+      const { text: rawText, kind, pages, truncated: extractionTruncated } = await extractCached(p, arg.name, st);
       let text = rawText;
       let truncated = Boolean(extractionTruncated);
       if (text.length > ATTACH_DOCUMENT_MAX_TEXT_CHARS) {
@@ -149,6 +178,12 @@ async function writeDocument(
   const temporary = target + "." + randomUUID() + ".tmp";
   try {
     await fs.writeFile(temporary, buffer, { mode: 0o600 });
+    /** 临时文件 0600 仅用于写入过程；落盘后沿用已有文件权限，新文件用常规 0644 */
+    const mode = await fs
+      .stat(target)
+      .then((s) => s.mode & 0o777)
+      .catch(() => 0o644);
+    await fs.chmod(temporary, mode).catch(() => {});
     await fs.rename(temporary, target);
   } finally {
     await fs.unlink(temporary).catch(() => {});
@@ -162,9 +197,19 @@ ipcMain.handle("save-assistant-export", async (_e, arg: ExportRequest) => {
       filters: [{ name: arg.format.toUpperCase(), extensions: [arg.format] }],
     });
     if (canceled || !filePath) return { ok: false as const };
-    const target = filePath.toLowerCase().endsWith("." + arg.format)
-      ? filePath
-      : filePath + "." + arg.format;
+    const appended = !filePath.toLowerCase().endsWith("." + arg.format);
+    const target = appended ? filePath + "." + arg.format : filePath;
+    /** 自动补扩展名后的目标未经过保存对话框的覆盖确认 */
+    if (appended && (await fs.stat(target).then(() => true, () => false))) {
+      const { response } = await dialog.showMessageBox({
+        type: "warning",
+        buttons: ["覆盖", "取消"],
+        defaultId: 1,
+        cancelId: 1,
+        message: `“${path.basename(target)}”已存在，是否覆盖？`,
+      });
+      if (response !== 0) return { ok: false as const };
+    }
     await writeDocument(arg, target);
     return { ok: true as const, path: target };
   } catch (e) {

@@ -6,8 +6,8 @@ export interface RuntimeTask { id: string; title: string; kind: TaskKind; status
 export interface RuntimeSchedule { id: string; title: string; kind: TaskKind; prompt?: string; projectId?: string; nextRunAt: number; intervalMinutes?: number; enabled: boolean; missedAt?: number; url?: string; directory?: string; fingerprint?: string; lastCheckedAt?: number; lastError?: string }
 export interface McpConnection { id: string; name: string; transport: 'stdio' | 'http'; command?: string; args?: string[]; url?: string; env?: Record<string, string>; token?: string; enabled: boolean; status?: 'connected' | 'disconnected'; error?: string }
 export interface McpTool { name: string; description?: string; inputSchema: JsonObject; readOnly: boolean; destructive: boolean }
-export interface McpCallResult { result?: unknown; authorizationRequired?: { id: string; connectionId: string; tool: string; args: JsonObject; expiresAt: number }; error?: string }
-export interface RuntimeSnapshot { tasks: RuntimeTask[]; schedules: RuntimeSchedule[]; connections: McpConnection[]; recoveryError?: string; pendingMcpCalls?: NonNullable<McpCallResult['authorizationRequired']>[] }
+export interface McpCallResult { result?: unknown; authorizationRequired?: { id: string; connectionId: string; tool: string; args: JsonObject; expiresAt: number }; error?: string; /** 用户拒绝或批准过期，工具确定未执行 */ rejected?: boolean }
+export interface RuntimeSnapshot { tasks: RuntimeTask[]; schedules: RuntimeSchedule[]; connections: McpConnection[]; recoveryError?: string; pendingMcpCalls?: NonNullable<McpCallResult['authorizationRequired']>[]; executingMcpCalls?: string[] }
 export interface BackupPreview { id: string; createdAt: number; files: number; bytes: number; conflicts: string[]; warnings: string[]; repositories: string[] }
 export interface RuntimeAPI {
   runtimeGetState(): Promise<RuntimeSnapshot>;
@@ -28,7 +28,7 @@ export interface RuntimeAPI {
   runtimeDisconnect(id: string): Promise<void>;
   runtimeDeleteConnection(id: string): Promise<void>;
   runtimeListTools(id: string): Promise<McpTool[]>;
-  runtimeCallTool(input: { connectionId: string; tool: string; args: JsonObject }): Promise<McpCallResult>;
+  runtimeCallTool(input: { connectionId: string; tool: string; args: JsonObject; callId?: string }): Promise<McpCallResult>;
   runtimeApproveMcpCall(id: string): Promise<McpCallResult>;
   runtimeCancelMcpCall(id: string): Promise<void>;
   runtimeExportBackup(input: { password: string }): Promise<{ path: string | null; files?: number; bytes?: number }>;

@@ -2,6 +2,58 @@ import { app, ipcMain, type WebContents } from 'electron';
 import fs from 'fs/promises';
 import path from 'path';
 import { randomUUID } from 'crypto';
+import dns from 'dns/promises';
+import net from 'net';
+
+const MAX_REMOTE_IMAGE_BYTES = 20 * 1024 * 1024;
+const MAX_IMAGE_REDIRECTS = 5;
+
+/** 回环 / 私有 / 链路本地 / 组播等地址：主进程代抓图片不得访问（防 SSRF 打本机服务与云元数据） */
+export function isPrivateAddress(ip: string): boolean {
+  const v4 = ip.startsWith('::ffff:') ? ip.slice(7) : ip;
+  if (net.isIPv4(v4)) {
+    const [a, b] = v4.split('.').map(Number);
+    return (
+      a === 0 || a === 10 || a === 127 || a >= 224 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168)
+    );
+  }
+  const v6 = ip.toLowerCase();
+  return v6 === '::' || v6 === '::1' || /^f[cd]/.test(v6) || /^fe[89ab]/.test(v6) || v6.startsWith('ff');
+}
+
+async function assertPublicHttpUrl(raw: string): Promise<URL> {
+  const u = new URL(raw);
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('无效图片 URL');
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  if (/^localhost$/i.test(host) || /\.localhost$/i.test(host)) throw new Error('不允许访问本机地址');
+  const addrs = net.isIP(host) ? [{ address: host }] : await dns.lookup(host, { all: true });
+  if (!addrs.length || addrs.some((a) => isPrivateAddress(a.address))) throw new Error('不允许访问内网或本机地址');
+  return u;
+}
+
+async function readCappedBody(res: Response, cap: number): Promise<Buffer> {
+  const declared = Number(res.headers.get('content-length') || 0);
+  if (declared > cap) throw new Error('图片超过 20MB');
+  if (!res.body) return Buffer.alloc(0);
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > cap) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error('图片超过 20MB');
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
+}
 
 /**
  * Agent 内嵌浏览器 IPC 桥：主进程仅转发到渲染进程的内嵌 webview 控制器。
@@ -116,6 +168,9 @@ ipcMain.handle(
       let contentType = String(arg?.contentType || '').trim();
 
       const b64raw = String(arg?.base64 || '').trim();
+      if (b64raw.length > Math.ceil((MAX_REMOTE_IMAGE_BYTES * 4) / 3) + 256) {
+        return { ok: false as const, error: '图片超过 20MB' };
+      }
       if (b64raw) {
         const dataUrl = /^data:([^;]+);base64,(.+)$/i.exec(b64raw);
         if (dataUrl) {
@@ -147,18 +202,34 @@ ipcMain.handle(
               /* ignore */
             }
           }
-          const res = await fetch(imageUrl, {
-            method: 'GET',
-            redirect: 'follow',
-            signal: ctrl.signal,
-            headers,
-          });
-          buf = Buffer.from(await res.arrayBuffer());
+          /** 手动跟随重定向：每一跳都校验目标不是本机 / 内网地址 */
+          let target = await assertPublicHttpUrl(imageUrl);
+          let res: Response;
+          for (let hop = 0; ; hop++) {
+            res = await fetch(target, {
+              method: 'GET',
+              redirect: 'manual',
+              signal: ctrl.signal,
+              headers,
+            });
+            const location = res.status >= 300 && res.status < 400 ? res.headers.get('location') : null;
+            if (!location) break;
+            await res.body?.cancel().catch(() => undefined);
+            if (hop >= MAX_IMAGE_REDIRECTS) return { ok: false as const, error: '图片重定向次数过多' };
+            target = await assertPublicHttpUrl(new URL(location, target).href);
+          }
           if (!res.ok) {
+            await res.body?.cancel().catch(() => undefined);
             return { ok: false as const, error: `拉取图片 HTTP ${res.status}` };
           }
+          const resType = (res.headers.get('content-type') || '').toLowerCase();
+          if (resType && !resType.startsWith('image/') && !resType.startsWith('application/octet-stream')) {
+            await res.body?.cancel().catch(() => undefined);
+            return { ok: false as const, error: '远程资源不是图片' };
+          }
+          buf = await readCappedBody(res, MAX_REMOTE_IMAGE_BYTES);
           contentType = contentType || res.headers.get('content-type') || '';
-          ext = extFromUrl(imageUrl) || extFromContentType(contentType) || '.jpg';
+          ext = extFromUrl(target.href) || extFromContentType(contentType) || '.jpg';
         } finally {
           clearTimeout(timer);
         }

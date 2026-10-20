@@ -1,5 +1,6 @@
 import type { Message } from "../types";
 import { DOCUMENT_FORMATS, type DocumentFormat } from "../types/document";
+import { markdownContainsPipeTable } from "./markdownTableDetect";
 
 export function documentExportFormatsFromHint(
   hint: Message["exportHint"],
@@ -20,7 +21,7 @@ export function declinesDocumentExport(text: string): boolean {
 export function inferDocumentExportHint(
   userText: string,
 ): Message["exportHint"] | undefined {
-  const t = String(userText || "").trim();
+  const t = withoutDownloadFolderNames(String(userText || "").trim());
   if (!t || declinesDocumentExport(t)) return undefined;
   const patterns: Array<[DocumentFormat, RegExp]> = [
     ["docx", /\b(?:word|docx)\b/i],
@@ -58,10 +59,16 @@ export function inferDocumentExportHint(
   return undefined;
 }
 
-export function unsupportedDocumentRequest(text: string): boolean {
+/** 「下载目录」是本机文件夹名，不是下载动作 */
+function withoutDownloadFolderNames(text: string): string {
+  return text.replace(/下载(?:目录|文件夹)|downloads?\s+folder/gi, " ");
+}
+
+export function unsupportedDocumentRequest(rawText: string): boolean {
+  const text = withoutDownloadFolderNames(rawText);
   return (
     !declinesDocumentExport(text) &&
-    /生成|导出|保存|制作|做成|转成|改成|给我|download|export|create|convert/i.test(
+    /生成|导出|保存|制作|做成|转成|改成|给我|做一?(?:个|份|套)|写一?(?:个|份)|download|export|create|convert/i.test(
       text,
     ) &&
     /pptx?|powerpoint|演示文稿|幻灯片|\b(?:zip|rtf|odt|epub)\b/i.test(text)
@@ -105,17 +112,17 @@ export function inferReplyExportHint(
   if (!c || declinesDocumentExport(userText)) return undefined;
 
   const looksDocument = /(^|\n)#{1,6}\s+/.test(c) && c.length > 400;
-  const hasTable = /\|.+\|.+\|/.test(c);
-  const userAskedTable = /表格|列表|对比|table|list/i.test(userText);
+  /** 只认真正的管道表格：xlsx 依赖表格数据，`a || b || c` 之类不能触发 */
+  const hasTable = markdownContainsPipeTable(c);
 
-  if (!looksDocument && !hasTable && !userAskedTable) return undefined;
+  if (!looksDocument && !hasTable) return undefined;
 
   const formats: Array<"md" | "docx" | "xlsx" | "pdf"> = ["md"];
   if (looksDocument) {
     formats.push("docx");
     formats.push("pdf");
   }
-  if (hasTable || userAskedTable) formats.push("xlsx");
+  if (hasTable) formats.push("xlsx");
 
   return { document: true, formats };
 }

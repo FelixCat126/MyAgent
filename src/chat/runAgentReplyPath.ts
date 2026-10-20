@@ -11,6 +11,7 @@ import {
 } from './runModelReplyShared';
 import type { RunModelReplyUi } from './runModelReplyTypes';
 import { runVideoPostProcess } from './videoGenAssist';
+import { replyRunWasCancelled } from './imageTaskState';
 
 export type RunAgentReplyPathArgs = {
   ui: RunModelReplyUi;
@@ -22,6 +23,8 @@ export type RunAgentReplyPathArgs = {
   exportHint: Message['exportHint'];
   isLocalImageFind: boolean;
   isWebBrowseTask: boolean;
+  /** beginReplyRun 返回的本轮令牌；缺省时退回用户消息 id */
+  runId?: string;
 };
 
 /** @returns true 表示已处理完毕，调用方应直接 return */
@@ -51,6 +54,10 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
     assistantId: `${Date.now() + 1}-a`,
     modelName: activeModel.name,
   });
+  const runId = args.runId ?? userMessage.id;
+  /** 被新一轮顶替后 streamCancelledByUserRef 会被复位，必须同时看本轮令牌 */
+  const runCancelled = () => replyRunWasCancelled(sendSessionId, runId);
+  const isCancelled = () => ui.streamCancelledByUserRef.current || runCancelled();
 
   const reasoningStream = createAnimStream(
     sendSessionId,
@@ -60,7 +67,7 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
   );
 
   let answerStream:ReturnType<typeof createAnimStream>|undefined;
-  const cancelAnimationPoll=window.setInterval(()=>{if(ui.streamCancelledByUserRef.current){reasoningStream.cancel();answerStream?.cancel();}},100);
+  const cancelAnimationPoll=window.setInterval(()=>{if(isCancelled()){reasoningStream.cancel();answerStream?.cancel();}},100);
   try {
     const agentOut = await runAgentLoop({
       chatSessionId: sendSessionId,
@@ -69,7 +76,7 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
       userText: userMessage.content,
       locale: ui.locale,
       onThinkingDelta: reasoningStream.push,
-      shouldCancel: () => ui.streamCancelledByUserRef.current,
+      shouldCancel: isCancelled,
 
     });
     await reasoningStream.finish();
@@ -82,14 +89,14 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
           ui.appendReasoningToMessage(sendSessionId, assistantId, agentOut.reasoning);
         }
       }
-      if(ui.streamCancelledByUserRef.current)return true;
+      if(isCancelled())return true;
       // Tool rounds and answer validation finish before this text is safe to show.
       // Replay the already-complete answer briskly instead of adding a second
       // full-length wait at the normal live-model pace.
       answerStream=createAnimStream(sendSessionId,assistantId,ui.appendToMessage,{pace:'completed'});
       answerStream.push(agentOut.displayText);
       await answerStream.finish();
-      if(ui.streamCancelledByUserRef.current)return true;
+      if(isCancelled())return true;
       speakVoiceWakeReplyOnce(ui, agentOut.displayText);
       if (isLocalImageFind || isWebBrowseTask) {
         ui.updateMessage(sendSessionId, assistantId, {
@@ -107,6 +114,7 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
           activeModel,
           historyBeforeUser,
           generatedFiles: agentOut.exportFiles,
+          runId,
         });
         ui.updateMessage(sendSessionId, assistantId, {
           content: c,
@@ -119,18 +127,22 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
       }
       const currentMsg = useChatStore.getState().sessions.find(s => s.id === sendSessionId)?.messages.find(m => m.id === assistantId);
       void runVideoPostProcess({ ui, sendSessionId, assistantId, rawText: currentMsg?.content ?? agentOut.displayText, userMessage, activeModel, historyBeforeUser, currentMsg }).catch(error => console.warn('[videoGenAssist]', error));
-      ui.setIsStreaming(false);
-      ui.streamingAssistantIdRef.current = null;
-      ui.streamingSessionIdRef.current = null;
-      ui.setStreamingTargetAssistantId(null);
-      ui.clearLoadingForSession(sendSessionId);
+      if (!runCancelled()) {
+        ui.setIsStreaming(false);
+        ui.streamingAssistantIdRef.current = null;
+        ui.streamingSessionIdRef.current = null;
+        ui.setStreamingTargetAssistantId(null);
+        ui.clearLoadingForSession(sendSessionId);
+      }
       return true;
     }
+    /** 未接管：清掉 Agent 阶段写入的思考，让后续路径复用该空气泡而不是另起一个 */
+    if (!runCancelled()) ui.updateMessage(sendSessionId, assistantId, { reasoning: undefined });
   } catch (agentErr) {
     console.error('[Agent]', agentErr);
     reasoningStream.flush();
     const cancelled =
-      ui.streamCancelledByUserRef.current ||
+      isCancelled() ||
       (agentErr instanceof Error &&
         (agentErr.message === 'AGENT_CANCELLED' ||
           (agentErr as Error & { code?: string }).code === 'AGENT_CANCELLED'));
@@ -140,15 +152,17 @@ export async function runAgentReplyPath(args: RunAgentReplyPathArgs): Promise<bo
         ? ui.t('chat.stoppedBanner')
         : ui.t('chat.requestFailed') + (agentErr instanceof Error ? agentErr.message : String(agentErr)),
     });
-    ui.clearLoadingForSession(sendSessionId);
+    if (!runCancelled()) ui.clearLoadingForSession(sendSessionId);
     return true;
   } finally {
     window.clearInterval(cancelAnimationPoll);
-    ui.setIsStreaming(false);
-    ui.streamingAssistantIdRef.current = null;
-    ui.streamingSessionIdRef.current = null;
-    ui.setStreamingTargetAssistantId(null);
-    ui.streamCancelledByUserRef.current = false;
+    if (!runCancelled()) {
+      ui.setIsStreaming(false);
+      ui.streamingAssistantIdRef.current = null;
+      ui.streamingSessionIdRef.current = null;
+      ui.setStreamingTargetAssistantId(null);
+      ui.streamCancelledByUserRef.current = false;
+    }
   }
 
   return false;

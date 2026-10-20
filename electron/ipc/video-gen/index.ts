@@ -1,7 +1,7 @@
 import { app, ipcMain, safeStorage } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { generateMiniMaxVideo, MiniMaxVideoError } from './minimaxVideoAdapter';
+import { generateMiniMaxVideo, MiniMaxVideoError, minimaxVideoOptions } from './minimaxVideoAdapter';
 import type { ModelConfig } from '../../../src/types';
 import type { RuntimeTask } from '../../../src/features/runtime/api';
 import { getRuntimeLedger, notifyRuntimeChanged, registerRuntimeTaskCanceller, registerRuntimeTaskExecutor } from '../../workbench-runtime';
@@ -42,6 +42,7 @@ ipcMain.handle('api:generate-video', async (event, params: GenerateVideoParams) 
   const cfg = params?.videoGeneratorConfig; const requestKey = `${event.sender.id}:${params?.streamRequestId}`;
   if (requestTasks.has(requestKey)) return { ok: false, error: '视频任务正在运行 / Video task already running' };
   if (!params?.prompt?.trim() || !cfg?.model || cfg.provider !== 'minimax' || !cfg.apiKey) return { ok: false, error: '请配置可用的 MiniMax 视频模型、密钥和描述 / Configure a supported MiniMax video model and key' };
+  try { minimaxVideoOptions(cfg.model, cfg.resolution, cfg.duration); } catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e), ...(e instanceof MiniMaxVideoError ? { code: e.code } : {}) }; }
   const emit = (payload: Record<string, unknown>) => { if (params.streamRequestId && !event.sender.isDestroyed()) event.sender.send('video-generation-progress', { requestId: params.streamRequestId, ...payload }); };
   try {
     const ledger = await getRuntimeLedger(); const { apiKey, ...publicConfig } = cfg;

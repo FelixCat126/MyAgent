@@ -24,6 +24,7 @@ import { getGestureUiPhase, setGestureUiPhase } from './utils/gestureUiContext';
 import { ImageLibraryContext } from './context/ImageLibraryContext';
 import { FOOTER_H_PX, SIDEBAR_W_PX, TITLEBAR_H_PX } from './constants/layout';
 import RuntimePanel from './features/runtime/RuntimePanel';
+import McpApprovalPrompt, { type PendingMcpApproval } from './features/runtime/McpApprovalPrompt';
 import { DocumentWorkbenchPanel } from './features/documents/DocumentWorkbenchPanel';
 import { installRuntimeDispatchBridge } from './features/personal/runtimeDispatcher';
 import { installModelConnectionMigration } from './features/connections/modelConnectionMigration';
@@ -48,9 +49,10 @@ const App: React.FC = () => {
   const windowFocused = useMainWindowFocused();
   /** 手势/视觉开启即占用摄像头；面部追踪复用同一路 video 流做眨眼检测 */
   const gesture = useGestureControl(gestureControlEnabled);
-  useFaceTracking(gestureControlEnabled, gesture.videoElement, true);
+  useFaceTracking(gestureControlEnabled, gesture.videoElement);
   const [showSettings, setShowSettings] = useState(false);
   const [showTaskCenter, setShowTaskCenter] = useState(false);
+  const [mcpApprovals, setMcpApprovals] = useState<PendingMcpApproval[]>([]);
   const taskCenterLabel = locale === 'en' ? 'Task center' : '任务中心';
 
   useEffect(() => installRuntimeDispatchBridge((task) => {
@@ -58,6 +60,31 @@ const App: React.FC = () => {
       useChatStore.getState().createSession(null);
     }
   }), []);
+
+  /** Agent 请求外部写操作时在主界面直接给出批准入口；结果返回或主进程不再挂起时移除 */
+  useEffect(() => {
+    const remove = (id: string) => setMcpApprovals((list) => list.filter((item) => item.id !== id));
+    const onNeeded = (event: Event) => {
+      const detail = (event as CustomEvent<PendingMcpApproval>).detail;
+      if (!detail?.id) return;
+      setMcpApprovals((list) => (list.some((item) => item.id === detail.id) ? list : [...list, detail]));
+      void window.electron.runtimeGetState?.().then((snapshot) => {
+        const name = snapshot.connections.find((c) => c.id === detail.connectionId)?.name;
+        if (name) setMcpApprovals((list) => list.map((item) => (item.id === detail.id ? { ...item, connectionName: name } : item)));
+      }).catch(() => undefined);
+    };
+    window.addEventListener('myagent-runtime-approval-needed', onNeeded);
+    const offResult = window.electron.onRuntimeMcpResult?.((event) => remove(event.approvalId)) ?? (() => {});
+    const offChanged = window.electron.onRuntimeChanged?.((snapshot) => {
+      const pending = new Set((snapshot.pendingMcpCalls ?? []).map((call) => call.id));
+      setMcpApprovals((list) => (list.some((item) => !pending.has(item.id)) ? list.filter((item) => pending.has(item.id)) : list));
+    }) ?? (() => {});
+    return () => {
+      window.removeEventListener('myagent-runtime-approval-needed', onNeeded);
+      offResult();
+      offChanged();
+    };
+  }, []);
 
   useEffect(() => {
     if (!showTaskCenter) return;
@@ -145,7 +172,11 @@ const App: React.FC = () => {
    */
   useEffect(() => {
     if (!gestureControlEnabled) return;
-    const onDoubleBlink = () => setShowSettings((v) => !v);
+    const onDoubleBlink = () => {
+      /** 窗口未聚焦时（用户在别的应用里）眨眼不应切换设置面板 */
+      if (!document.hasFocus()) return;
+      setShowSettings((v) => !v);
+    };
     window.addEventListener('myagent-double-blink', onDoubleBlink as EventListener);
     return () =>
       window.removeEventListener('myagent-double-blink', onDoubleBlink as EventListener);
@@ -416,6 +447,7 @@ const App: React.FC = () => {
       </div>
 
       <OnboardingSteps />
+      <McpApprovalPrompt approvals={mcpApprovals} locale={locale} onSettled={(id) => setMcpApprovals((list) => list.filter((item) => item.id !== id))} />
       {showTaskCenter && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-5 backdrop-blur-sm" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowTaskCenter(false); }}>
         <div role="dialog" aria-modal="true" aria-label={taskCenterLabel} className="flex h-[min(760px,88vh)] w-[min(820px,94vw)] min-h-0 flex-col overflow-hidden rounded-2xl border border-stone-300 bg-stone-50 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
           <div className="flex shrink-0 justify-end border-b border-stone-200 p-2 dark:border-slate-700"><button type="button" aria-label={locale === 'en' ? 'Close' : '关闭'} onClick={() => setShowTaskCenter(false)} className="rounded-lg p-2 text-stone-500 hover:bg-stone-200 dark:text-slate-400 dark:hover:bg-slate-800"><FiX /></button></div><div className="min-h-0 flex-1 overflow-y-auto p-5"><RuntimePanel /></div>

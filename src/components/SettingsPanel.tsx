@@ -1,7 +1,6 @@
 import { ModelSettingsHub } from '../features/modelHub/ModelSettingsHub';
 import React, { useEffect } from 'react';
 import { useSettingStore } from '../store/settingStore';
-import { WebSearchSection } from './settings/WebSearchSection';
 import { KnowledgeSection } from './settings/KnowledgeSection';
 import { AppSection } from './settings/AppSection';
 import { useI18n } from '../hooks/useI18n';
@@ -73,8 +72,6 @@ const SettingsPanel: React.FC = () => {
     <div className="flex h-full flex-col bg-stone-100/95 backdrop-blur-xl dark:bg-darkChrome/80">
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden space-y-3 py-3 scrollbar-hide" data-gesture-scroll-target="settings">
         <ModelSettingsHub cardShell={cardShell} systemTtsAvailable={systemTtsAvailable} microphoneMissing={microphoneMissing} />
-
-        <WebSearchSection cardShell={cardShell} t={t} />
 
         <KnowledgeSection cardShell={cardShell} t={t} />
 

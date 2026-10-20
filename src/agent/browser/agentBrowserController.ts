@@ -1,7 +1,19 @@
 import { useAgentBrowserStore } from '../../store/agentBrowserStore';
 import type { FileInfo } from '../../types';
+import { setToolPageKeyProvider } from '../parseAgentTools';
 
 let webviewEl: Electron.WebviewTag | null = null;
+/** 单调递增的页面世代，关闭面板也不归零，用于网页读取类工具的去重签名 */
+let pageGeneration = 0;
+setToolPageKeyProvider(() => {
+  let url = '';
+  try {
+    url = webviewEl?.getURL?.() ?? '';
+  } catch {
+    /* 尚未 attach */
+  }
+  return `${pageGeneration}|${url}`;
+});
 let pendingAttach: (() => void) | null = null;
 let pendingDomReady: (() => void) | null = null;
 /** 导航世代：仅当 readyEpoch === navEpoch 时才认为当前页已就绪 */
@@ -142,6 +154,7 @@ async function ensureWebviewAttached(timeoutMs = 12000): Promise<Electron.Webvie
 }
 
 function beginNavigationEpoch(): void {
+  pageGeneration += 1;
   navEpoch += 1;
   readyEpoch = -1;
   pendingDomReady = null;
@@ -307,7 +320,16 @@ export async function agentBrowserOpen(
     return { ok: true, url, title };
   } catch (e) {
     useAgentBrowserStore.getState().setLoading(false);
-    if (isAgentCancelledError(e)) return { ok: false, error: AGENT_CANCELLED_CODE };
+    if (isAgentCancelledError(e)) {
+      try {
+        webviewEl?.stop();
+      } catch {
+        /* 尚未 attach */
+      }
+      // 半截页面不可被后续同 URL 的 web_open 视为已就绪
+      beginNavigationEpoch();
+      return { ok: false, error: AGENT_CANCELLED_CODE };
+    }
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
@@ -374,10 +396,20 @@ export async function agentBrowserEval(arg: {
     }
     await waitWebviewDomReady(wv, 20000, arg?.shouldCancel);
     const wrapped = `(async () => { try { ${code} } catch (e) { return { __agent_web_error__: String(e && e.message || e) }; } })()`;
+    let evalTimer = 0;
+    let cancelPoll = 0;
     const result = await Promise.race([
       executeInWebview(wv, wrapped, true),
-      new Promise((_, reject) => window.setTimeout(() => reject(new Error('eval timeout 30s')), 30000)),
-    ]);
+      new Promise((_, reject) => {
+        evalTimer = window.setTimeout(() => reject(new Error('eval timeout 30s')), 30000);
+        cancelPoll = window.setInterval(() => {
+          if (arg?.shouldCancel?.()) reject(createAgentCancelledError());
+        }, 120);
+      }),
+    ]).finally(() => {
+      window.clearTimeout(evalTimer);
+      window.clearInterval(cancelPoll);
+    });
     if (result && typeof result === 'object' && '__agent_web_error__' in (result as Record<string, unknown>)) {
       return { ok: false, error: String((result as Record<string, unknown>).__agent_web_error__) };
     }
@@ -397,6 +429,7 @@ export async function agentBrowserEval(arg: {
 export async function agentBrowserClose(): Promise<{ ok: true; closed: boolean }> {
   useAgentBrowserStore.getState().close();
   webviewEl = null;
+  pageGeneration += 1;
   navEpoch = 0;
   readyEpoch = -1;
   pendingDomReady = null;

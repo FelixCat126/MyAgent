@@ -90,7 +90,9 @@ export async function persistConfig(cfg: RemoteGatewayFileConfig): Promise<void>
   await fs.mkdir(path.dirname(configFilePath()), { recursive: true });
   // token 属敏感字段：落盘前按钥匙串加密（不可用时保持明文，与既往一致）
   const onDisk = protectPersistParsed(cfg);
-  await fs.writeFile(configFilePath(), `${JSON.stringify(onDisk, null, 2)}\n`, 'utf-8');
+  await fs.writeFile(configFilePath(), `${JSON.stringify(onDisk, null, 2)}\n`, { encoding: 'utf-8', mode: 0o600 });
+  /** mode 仅对新建文件生效：既有文件也收紧为仅本人可读写 */
+  await fs.chmod(configFilePath(), 0o600).catch(() => undefined);
 }
 
 export async function loadOrCreateConfig(): Promise<RemoteGatewayFileConfig> {

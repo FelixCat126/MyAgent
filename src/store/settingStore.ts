@@ -30,8 +30,6 @@ interface SettingStore {
   gestureControlEnabled: boolean;
   /** 点阵悬浮窗显示开关；独立于手势识别——关闭手势识别后，点阵仍能由业务态（唤醒/思考/回复）驱动 */
   particleFieldEnabled: boolean;
-  /** 视线跟随：开启后显示目光光标、支持 9 点校准；眨眼一次在光标处点击，连续眨眼两次切换设置抽屉 */
-  gazeFollowEnabled: boolean;
   /** 水下 Agent：本机文档检索/读取/导出（全机范围，系统核心目录需授权） */
   agentLocalToolsEnabled: boolean;
   /** 水下 Agent：对话区内嵌浏览（默认开，可在设置关闭） */
@@ -52,7 +50,6 @@ interface SettingStore {
   setVolcAsrResourceId: (v: string) => void;
   setGestureControlEnabled: (v: boolean) => void;
   setParticleFieldEnabled: (v: boolean) => void;
-  setGazeFollowEnabled: (v: boolean) => void;
   setAgentLocalToolsEnabled: (v: boolean) => void;
   setAgentBrowserEnabled: (v: boolean) => void;
   setAgentDeniedPaths: (paths: string[]) => void;
@@ -75,7 +72,6 @@ export const useSettingStore = create<SettingStore>()(
       volcAsrResourceId: '',
       gestureControlEnabled: false,
       particleFieldEnabled: true,
-      gazeFollowEnabled: false,
       agentLocalToolsEnabled: false,
       agentBrowserEnabled: true,
       agentDeniedPaths: [],
@@ -102,7 +98,6 @@ export const useSettingStore = create<SettingStore>()(
       setVolcAsrResourceId: (v: string) => set({ volcAsrResourceId: v }),
       setGestureControlEnabled: (v: boolean) => set({ gestureControlEnabled: v }),
       setParticleFieldEnabled: (v: boolean) => set({ particleFieldEnabled: v }),
-      setGazeFollowEnabled: (v: boolean) => set({ gazeFollowEnabled: v }),
       setAgentLocalToolsEnabled: (v: boolean) => set({ agentLocalToolsEnabled: v }),
       setAgentBrowserEnabled: (v: boolean) => set({ agentBrowserEnabled: v }),
       setAgentDeniedPaths: (paths: string[]) =>
@@ -112,10 +107,10 @@ export const useSettingStore = create<SettingStore>()(
     }),
     {
       name: PERSIST_KEYS.setting,
-      version: 17,
+      version: 18,
       storage: zustandPersistJson,
       migrate: (persisted, version) => {
-        const raw = persisted as Record<string, unknown>;
+        const raw = (persisted && typeof persisted === 'object' ? persisted : {}) as Record<string, unknown>;
         const baseMerged =
           version >= 2
             ? ({ ...raw } as Record<string, unknown>)
@@ -132,6 +127,7 @@ export const useSettingStore = create<SettingStore>()(
         delete baseMerged.volcAsrWakePhrase;
         delete baseMerged.volcAsrStopPhrases;
         delete baseMerged.volcAsrEnabled;
+        delete baseMerged.gazeFollowEnabled;
 
         const s = baseMerged as Partial<SettingStore> & Partial<{ speechInputEnabled: boolean }>;
         const speechIn =
@@ -170,10 +166,6 @@ export const useSettingStore = create<SettingStore>()(
             typeof sg.gestureControlEnabled === 'boolean' ? sg.gestureControlEnabled : false,
           particleFieldEnabled:
             typeof sg.particleFieldEnabled === 'boolean' ? sg.particleFieldEnabled : true,
-          gazeFollowEnabled:
-            typeof (baseMerged as { gazeFollowEnabled?: boolean }).gazeFollowEnabled === 'boolean'
-              ? (baseMerged as { gazeFollowEnabled: boolean }).gazeFollowEnabled
-              : false,
           agentLocalToolsEnabled:
             typeof (baseMerged as { agentLocalToolsEnabled?: boolean }).agentLocalToolsEnabled ===
             'boolean'
@@ -182,7 +174,7 @@ export const useSettingStore = create<SettingStore>()(
           agentBrowserEnabled:
             typeof (baseMerged as { agentBrowserEnabled?: boolean }).agentBrowserEnabled === 'boolean'
               ? (baseMerged as { agentBrowserEnabled: boolean }).agentBrowserEnabled
-              : false,
+              : true,
           agentDeniedPaths: Array.isArray((baseMerged as { agentDeniedPaths?: unknown }).agentDeniedPaths)
             ? ((baseMerged as { agentDeniedPaths: string[] }).agentDeniedPaths ?? [])
                 .map((p) => String(p).trim())

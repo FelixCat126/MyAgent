@@ -157,25 +157,43 @@ async function performFullKnowledgeIndexUnlocked(
   };
 }
 
+export const INDEX_MISSING_ERROR = '当前资料目录尚未建立索引，请在设置「知识库」中点击重新索引。';
+export const INDEX_MODEL_MISMATCH_ERROR = '索引所用向量模型与当前配置不一致，请在设置「知识库」中重新索引。';
+export const INDEX_OUTDATED_ERROR = '索引版本过旧，请在设置「知识库」中重新索引。';
+
+/** 不能增量复用的原因；null 表示可复用 */
+export function incrementalReuseBlocker(existing: VectorIndexFileV1 | null, rootAbs: string, embed: KnowledgeEmbedPayload): string | null {
+  if (!existing || !Array.isArray(existing.chunks)) return INDEX_MISSING_ERROR;
+  if (!rootsMatchIndex(existing.root, rootAbs)) return INDEX_MISSING_ERROR;
+  if (existing.provider !== embed.provider || existing.model !== embed.model) return INDEX_MODEL_MISMATCH_ERROR;
+  if (existing.baseUrl !== embed.baseUrl.replace(/\/+$/, '') || Boolean(existing.volcMultimodal) !== Boolean(embed.volcMultimodal)) return existing.baseUrl ? INDEX_MODEL_MISMATCH_ERROR : INDEX_OUTDATED_ERROR;
+  if (!existing.fingerprints) return INDEX_OUTDATED_ERROR;
+  if (!existing.chunks.length) return null;
+  if (!existing.dim || Object.keys(existing.fingerprints).length === 0) return INDEX_OUTDATED_ERROR;
+  return null;
+}
+
 /** 不满足增量条件时需由调用方改用全文索引 */
 export function cantIncrementalReuse(existing: VectorIndexFileV1 | null, rootAbs: string, embed: KnowledgeEmbedPayload): boolean {
-  if (!existing || !Array.isArray(existing.chunks)) return true;
-  if (!rootsMatchIndex(existing.root, rootAbs)) return true;
-  if (existing.provider !== embed.provider || existing.model !== embed.model) return true;
-  if (existing.baseUrl !== embed.baseUrl.replace(/\/+$/, '') || Boolean(existing.volcMultimodal) !== Boolean(embed.volcMultimodal)) return true;
-  if (!existing.fingerprints) return true;
-  if (!existing.chunks.length) return false;
-  if (!existing.dim || Object.keys(existing.fingerprints).length === 0) return true;
-  return false;
+  return incrementalReuseBlocker(existing, rootAbs, embed) !== null;
 }
+
+export type IncrementalIndexOptions = {
+  /** false：不满足增量条件时返回错误而不是全文重建（检索链路使用） */
+  allowFullRebuild?: boolean;
+};
 
 async function performIncrementalKnowledgeIndexUnlocked(
   rawRoot: string,
-  embed: KnowledgeEmbedPayload
+  embed: KnowledgeEmbedPayload,
+  options: IncrementalIndexOptions = {}
 ): Promise<KnowledgeIndexOk | KnowledgeIndexErr> {
+  const allowFullRebuild = options.allowFullRebuild !== false;
   const resolved = path.resolve(expandUserPath(String(rawRoot || '').trim()));
   const existing = await readVectorIndex(resolved);
-  if (cantIncrementalReuse(existing, resolved, embed) || !existing) {
+  const blocker = incrementalReuseBlocker(existing, resolved, embed);
+  if (blocker || !existing) {
+    if (!allowFullRebuild) return { ok: false, error: blocker ?? INDEX_MISSING_ERROR };
     return performFullKnowledgeIndexUnlocked(rawRoot, embed);
   }
 
@@ -234,6 +252,7 @@ async function performIncrementalKnowledgeIndexUnlocked(
         newVectors[0].emb.length &&
         newVectors[0].emb.length !== existing.dim
       ) {
+        if (!allowFullRebuild) return { ok: false as const, error: INDEX_MODEL_MISMATCH_ERROR };
         return performFullKnowledgeIndexUnlocked(rawRoot, embed);
       }
     }
@@ -294,6 +313,6 @@ async function withIndexRootLock(rawRoot: string, operation: (root: string) => P
 export function performFullKnowledgeIndex(rawRoot: string, embed: KnowledgeEmbedPayload): Promise<KnowledgeIndexOk | KnowledgeIndexErr> {
   return withIndexRootLock(rawRoot, (root) => performFullKnowledgeIndexUnlocked(root, embed));
 }
-export function performIncrementalKnowledgeIndex(rawRoot: string, embed: KnowledgeEmbedPayload): Promise<KnowledgeIndexOk | KnowledgeIndexErr> {
-  return withIndexRootLock(rawRoot, (root) => performIncrementalKnowledgeIndexUnlocked(root, embed));
+export function performIncrementalKnowledgeIndex(rawRoot: string, embed: KnowledgeEmbedPayload, options?: IncrementalIndexOptions): Promise<KnowledgeIndexOk | KnowledgeIndexErr> {
+  return withIndexRootLock(rawRoot, (root) => performIncrementalKnowledgeIndexUnlocked(root, embed, options));
 }

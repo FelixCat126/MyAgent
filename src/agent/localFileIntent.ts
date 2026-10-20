@@ -10,10 +10,24 @@ export function looksLikeLocalFileAgentRequest(text: string): boolean {
   if (looksLikeLocalImageFindRequest(t)) return true;
   if (/网站|网页|web\s*site|webpage|https?:\/\//i.test(t)) return false;
   if (/百度|谷歌|google|baidu/i.test(t) && /(?:搜索|搜|打开|查)/.test(t)) return false;
-  return /找|搜|查|列|读|打开|提取|摘要|总结|浏览|文档|文件|资料|xlsx|docx|pdf|\.md|txt|下载|桌面|Documents|Downloads|目录/i.test(
-    t
-  );
+  /** 须同时出现「文件类对象」与「查找/阅读类动作」；单个动词（总结、查、下载）不足以触发磁盘检索 */
+  const explicitLocal = LOCAL_AGENT_SCOPE_RE.test(t) || LOCAL_PATH_RE.test(t);
+  if (!explicitLocal && !LOCAL_OBJECT_RE.test(t)) return false;
+  if (!LOCAL_ACTION_RE.test(t)) return false;
+  /** 「怎么读取文件」是编程/方法提问，「总结上面这篇」指向对话内容，均不必搜磁盘 */
+  if (!explicitLocal && (HOW_TO_RE.test(t) || INLINE_REFERENCE_RE.test(t))) return false;
+  return true;
 }
+
+const LOCAL_AGENT_SCOPE_RE =
+  /本机|本地(?:文件|文档|资料|目录|磁盘)|电脑|磁盘|硬盘|这台(?:电脑|机器|设备)|我的(?:电脑|机器|设备|文档|文件夹)|on\s+my\s+(?:computer|mac|pc|disk)|local\s+(?:files?|disk|folder)/i;
+const LOCAL_PATH_RE = /(?:^|[\s"'“（(])(?:~\/|\/Users\/|[A-Za-z]:\\)/;
+const LOCAL_OBJECT_RE =
+  /文档|文件|资料|文章|目录|xlsx|xls|docx|pdf|csv|\.md\b|txt|桌面|Documents|Downloads|下载(?:目录|文件夹)|\bfiles?\b|\bdocuments?\b|\bfolders?\b/i;
+const LOCAL_ACTION_RE =
+  /找|搜|查|列出|列一下|读|打开|提取|摘录|摘要|总结|浏览|看看|整理|\bfind\b|\bsearch\b|look\s+for|\bread\b|\bopen\b|\blist\b|summari[sz]e|\bextract\b/i;
+const HOW_TO_RE = /怎么|如何|怎样|\bhow\s+(?:to|do|can|should)\b/i;
+const INLINE_REFERENCE_RE = /这段|这句|以下|下面这|上面|上述|刚才|上一条|上条/;
 
 const LOCAL_SCOPE_RE =
   /本机|本地|电脑|磁盘|硬盘|这台|我的(?:电脑|机器|设备)|在我(?:的)?(?:电脑|机器|设备)?/i;

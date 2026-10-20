@@ -4,6 +4,7 @@ import { useChatStore } from '../../../store/chatStore';
 import type { Message, ModelConfig } from '../../../types';
 import type { Locale } from '../../../i18n/types';
 import type { StreamingSpeechReader } from '../../../utils/streamingSpeech';
+import type { SessionRunUi, SessionStreamRefs } from './useChatStreamRefs';
 
 export interface ChatRunModelReplyApi {
   /** 统一命名为 `runModelReply`（保留公开 API key 名） */
@@ -16,26 +17,11 @@ export interface UseChatRunModelReplyParams {
   t: (key: string, params?: Record<string, string | number>) => string;
   consumeVoiceWakeReply: () => boolean;
   setVoiceReplySpeaking: (v: boolean) => void;
-  setVectorRagStatus: (v: {
-    text: string;
-    tone: 'success' | 'info' | 'error';
-  } | null) => void;
-  setImageGenProgress: (v: {
-    current: number;
-    total: number;
-    messageId: string;
-  } | null) => void;
-  setIsStreaming: (v: boolean) => void;
-  setStreamingTargetAssistantId: (v: string | null) => void;
+  /** 流式界面状态按会话写入；每次回复只改自己会话那一份 */
+  patchRunUi: (sessionId: string, patch: Partial<SessionRunUi>) => void;
+  streamRefs: SessionStreamRefs;
   setInlineImageIndex: React.Dispatch<React.SetStateAction<number>>;
   inlineImageIndexRef: React.MutableRefObject<number>;
-  streamingAssistantIdRef: React.MutableRefObject<string | null>;
-  streamingSessionIdRef: React.MutableRefObject<string | null>;
-  streamUnsubRef: React.MutableRefObject<(() => void) | null>;
-  streamHadErrorRef: React.MutableRefObject<boolean>;
-  streamCancelledByUserRef: React.MutableRefObject<boolean>;
-  imageGenCancelledRef: React.MutableRefObject<boolean>;
-  imageGenSyncRef: React.MutableRefObject<{ sessionId: string; messageId: string } | null>;
   speechReaderRef: React.MutableRefObject<StreamingSpeechReader | null>;
 }
 
@@ -56,24 +42,20 @@ export function useChatRunModelReply(p: UseChatRunModelReplyParams): ChatRunMode
 
   const executeModelReplyCallback = useCallback(
     async (sid: string, hist: Message[], user: Message, model: ModelConfig): Promise<void> => {
+      const refs = p.streamRefs.refsFor(sid);
       const ui: RunModelReplyUi = {
         locale: p.uiLocale,
         t: p.t,
         consumeVoiceWakeReply: p.consumeVoiceWakeReply,
         setVoiceReplySpeaking: p.setVoiceReplySpeaking,
-        setVectorRagStatus: p.setVectorRagStatus,
-        setImageGenProgress: p.setImageGenProgress,
-        setIsStreaming: p.setIsStreaming,
-        setStreamingTargetAssistantId: p.setStreamingTargetAssistantId,
+        setVectorRagStatus: (vectorRagStatus) => p.patchRunUi(sid, { vectorRagStatus }),
+        setImageGenProgress: (imageGenProgress) => p.patchRunUi(sid, { imageGenProgress }),
+        setIsStreaming: (isStreaming) => p.patchRunUi(sid, { isStreaming }),
+        setStreamingTargetAssistantId: (streamingTargetAssistantId) =>
+          p.patchRunUi(sid, { streamingTargetAssistantId }),
         setInlineImageIndex: p.setInlineImageIndex,
         inlineImageIndexRef: p.inlineImageIndexRef,
-        streamingAssistantIdRef: p.streamingAssistantIdRef,
-        streamingSessionIdRef: p.streamingSessionIdRef,
-        streamUnsubRef: p.streamUnsubRef,
-        streamHadErrorRef: p.streamHadErrorRef,
-        streamCancelledByUserRef: p.streamCancelledByUserRef,
-        imageGenCancelledRef: p.imageGenCancelledRef,
-        imageGenSyncRef: p.imageGenSyncRef,
+        ...refs,
         speechReaderRef: p.speechReaderRef,
         addMessage,
         updateMessage,
@@ -95,19 +77,10 @@ export function useChatRunModelReply(p: UseChatRunModelReplyParams): ChatRunMode
       p.uiLocale,
       p.consumeVoiceWakeReply,
       p.setVoiceReplySpeaking,
-      p.setVectorRagStatus,
-      p.setImageGenProgress,
-      p.setIsStreaming,
-      p.setStreamingTargetAssistantId,
+      p.patchRunUi,
+      p.streamRefs,
       p.setInlineImageIndex,
       p.inlineImageIndexRef,
-      p.streamingAssistantIdRef,
-      p.streamingSessionIdRef,
-      p.streamUnsubRef,
-      p.streamHadErrorRef,
-      p.streamCancelledByUserRef,
-      p.imageGenCancelledRef,
-      p.imageGenSyncRef,
       p.speechReaderRef,
     ]
   );

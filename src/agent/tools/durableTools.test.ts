@@ -56,11 +56,11 @@ describe('durable agent tool execution', () => {
     expect(persistedSteps[0].key).not.toBe(persistedSteps[1].key);
   });
 
-  it.each(['interrupted', 'running'] as const)('never reissues an MCP write whose persisted state is %s', async (status) => {
+  it.each(['interrupted', 'running'] as const)('never reissues an MCP write whose persisted state is %s, and reports it to the model instead of failing the turn', async (status) => {
     await executeDurableToolBatch('session', [mcpCall], ctx, null, new Map());
     state.task!.steps = [{ ...persistedSteps[0], status, result: undefined }];
     vi.mocked(runAgentLocalToolBatch).mockClear(); vi.mocked(window.electron.runtimeRecordStep).mockClear();
-    await expect(executeDurableToolBatch('session', [mcpCall], ctx, null, new Map())).rejects.toThrow('避免重复写入');
+    expect(await executeDurableToolBatch('session', [mcpCall], ctx, null, new Map())).toMatchObject({ resultText: expect.stringContaining('避免重复写入'), outcomes: [{ isError: true }] });
     expect(runAgentLocalToolBatch).not.toHaveBeenCalled();
     expect(window.electron.runtimeRecordStep).not.toHaveBeenCalled();
   });
@@ -70,14 +70,14 @@ describe('durable agent tool execution', () => {
     await expect(executeDurableToolBatch('session', [mcpCall], ctx, null, new Map())).rejects.toThrow('connection lost');
     expect(persistedSteps[0]).toMatchObject({ status: 'interrupted', error: 'connection lost after send' });
     state.task = { ...state.task!, steps: [...persistedSteps] };
-    await expect(executeDurableToolBatch('session', [mcpCall], ctx, null, new Map())).rejects.toThrow('避免重复写入');
+    expect(await executeDurableToolBatch('session', [mcpCall], ctx, null, new Map())).toMatchObject({ resultText: expect.stringContaining('避免重复写入'), outcomes: [{ isError: true }] });
     expect(runAgentLocalToolBatch).toHaveBeenCalledTimes(1);
   });
 
   it('also blocks an immediate in-process retry after an ambiguous MCP throw', async () => {
     vi.mocked(runAgentLocalToolBatch).mockRejectedValueOnce(new Error('result lost'));
     await expect(executeDurableToolBatch('session', [mcpCall], ctx, null, new Map())).rejects.toThrow('result lost');
-    await expect(executeDurableToolBatch('session', [mcpCall], ctx, null, new Map())).rejects.toThrow('避免重复写入');
+    expect(await executeDurableToolBatch('session', [mcpCall], ctx, null, new Map())).toMatchObject({ resultText: expect.stringContaining('避免重复写入'), outcomes: [{ isError: true }] });
     expect(runAgentLocalToolBatch).toHaveBeenCalledTimes(1);
   });
 
@@ -85,8 +85,26 @@ describe('durable agent tool execution', () => {
     vi.mocked(runAgentLocalToolBatch).mockResolvedValueOnce({ resultText: '错误：MCP response lost after send', exportFiles: [], attachFiles: [], skippedDuplicate: 0 });
     await executeDurableToolBatch('session', [mcpCall], ctx, null, new Map());
     expect(persistedSteps[0].status).toBe('interrupted');
-    await expect(executeDurableToolBatch('session', [mcpCall], ctx, null, new Map())).rejects.toThrow('避免重复写入');
+    expect(await executeDurableToolBatch('session', [mcpCall], ctx, null, new Map())).toMatchObject({ resultText: expect.stringContaining('避免重复写入'), outcomes: [{ isError: true }] });
     expect(runAgentLocalToolBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows retrying an MCP call that was rejected or expired before execution', async () => {
+    vi.mocked(runAgentLocalToolBatch).mockResolvedValueOnce({ resultText: '错误：用户拒绝或取消了本次工具调用', exportFiles: [], attachFiles: [], skippedDuplicate: 0, outcomes: [{ text: '错误：用户拒绝或取消了本次工具调用', isError: true }], notExecuted: 1 });
+    await executeDurableToolBatch('session', [mcpCall], ctx, null, new Map());
+    expect(persistedSteps[0].status).toBe('failed');
+    state.task = { ...state.task!, steps: [...persistedSteps] };
+    await executeDurableToolBatch('session', [mcpCall], ctx, null, new Map());
+    expect(runAgentLocalToolBatch).toHaveBeenCalledTimes(2);
+    expect(persistedSteps[0].status).toBe('completed');
+  });
+
+  it('truncates the joined batch text with a visible notice', async () => {
+    vi.mocked(runAgentLocalToolBatch).mockResolvedValueOnce({ ...result, resultText: 'x'.repeat(30_000) });
+    const out = await executeDurableToolBatch('session', [exportCall()], ctx, null, new Map());
+    expect(out.resultText.length).toBeLessThan(24_100);
+    expect(out.resultText).toContain('工具结果已截断');
+    expect(out.outcomes[0].text).toContain('工具结果已截断');
   });
 
   it('does not cache a reported local tool error as completed output', async () => {

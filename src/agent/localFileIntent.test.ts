@@ -29,6 +29,35 @@ describe('localFileIntent', () => {
     ).toBe(false);
   });
 
+  it('普通问答与方法提问不进本机检索', () => {
+    for (const text of [
+      '总结一下这段话的要点',
+      '帮我查一下秦始皇是哪年统一六国的',
+      'Python 怎么读取 csv 文件',
+      '列出三个学习英语的方法',
+      '总结上面这篇文章的观点',
+      '怎么下载 Node.js',
+      'How to read a file in Rust?',
+    ]) {
+      expect(looksLikeLocalFileAgentRequest(text), text).toBe(false);
+    }
+  });
+
+  it('明确的本机文件请求仍进入检索', () => {
+    for (const text of [
+      '找一下民法典文档',
+      '从机械表文档里提取精彩描述',
+      '在我本机找一篇描写机械表的文档，摘录里面不超过30字的一段话',
+      '看看我电脑里有哪些报价单',
+      '读一下 ~/Documents/plan.md',
+      '整理桌面上的 pdf',
+      'find the budget xlsx on my computer',
+      '我的电脑里怎么找到上周的合同',
+    ]) {
+      expect(looksLikeLocalFileAgentRequest(text), text).toBe(true);
+    }
+  });
+
   it('网页找图不算本机找图', () => {
     const q = '打开百度，搜索"美女"，进入图片，然后把其中第一张图片返回给我';
     expect(looksLikeLocalImageFindRequest(q)).toBe(false);

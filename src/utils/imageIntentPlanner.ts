@@ -28,6 +28,11 @@ const IMAGE_NOUN_RE =
 
 const CREATE_RE =
   /画|绘制|生成|生图|制作|设计|generate|create|make|出图|来一?(?:张|幅|组)|做一?(?:张|幅|组)|(?:给我|帮我)?(?:做|来)(?:一)?(?:张|幅|组)/i;
+/** 「画一只猫」「帮我画个城堡」这类祈使句本身就是生图请求，无需出现「图片」等名词 */
+/** 结构化图示由模型直接输出（如 mermaid），其名称里的「图」不代表要生图 */
+const DIAGRAM_RE = /流程图|思维导图|架构图|结构图|时序图|甘特图|组织架构图|\bmermaid\b|\bflowchart\b|mind\s*map/i;
+const DRAW_IMPERATIVE_RE =
+  /^(?:请|麻烦)?(?:你)?(?:帮我|给我|替我|帮忙)?(?:画|绘制)(?:一|个|只|张|幅|副|下|出|两|几)|^(?:please\s+)?draw\s+(?:me\s+)?(?:a|an|some|the|two|three)\b/i;
 const REVISION_RE = /(?:重新|再|继续|还是|按照|按|沿用|基于|之前|刚才|上次|同样|换|改|调整|不要|不是|而是|更|偏)/;
 const EXPLICIT_INHERIT_RE =
   /(?:沿用|保持|延续|参考|基于|按照|按|同样|同风格|一致|这张|这些图片|上一张|上一组|上次|之前|刚才|刚刚|原图|那张|那组|same\s+style|keep\s+style|based\s+on|previous|last)/i;
@@ -92,6 +97,7 @@ function textPrefersNonImageOutput(text: string): boolean {
   if (!t) return false;
   if (imageRequestIsDiscussion(t)) return true;
   if (imageRequestIsDataVisualization(t)) return true;
+  if (DIAGRAM_RE.test(t)) return true;
   return NON_IMAGE_OUTPUT_RE.test(t) && !IMAGE_NOUN_RE.test(t);
 }
 
@@ -101,6 +107,7 @@ function looksLikeImageRequest(text: string): boolean {
   if (looksLikeLocalImageFindRequest(t)) return false;
   if (textPrefersNonImageOutput(t)) return false;
   if (CREATE_RE.test(t) && IMAGE_NOUN_RE.test(t)) return true;
+  if (DRAW_IMPERATIVE_RE.test(t)) return true;
   if (IMAGE_NOUN_RE.test(t) && (PER_ITEM_RE.test(t) || GROUP_SCOPE_RE.test(t))) return true;
   if (inferImageCountFromText(t) && VISUAL_OUTPUT_RE.test(t) && CREATE_RE.test(t)) return true;
   if (/(?:多张|几张|一组|几版|几套|多套).{0,18}(?:不同|方案|款式|风格|动作|模特|展示)/.test(t)) return true;
