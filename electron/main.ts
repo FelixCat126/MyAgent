@@ -1,6 +1,8 @@
 import './utils/userDataPath';
 import { rootLogger } from './utils/logger';
 import { bootstrapLogging } from './utils/loggerBootstrap';
+import { createProcessErrorHandlers } from './utils/processErrorHandlers';
+import { writeLogLine } from './utils/logFile';
 bootstrapLogging(app.getVersion());
 /** 须尽早注册：若置于其它 ipc 之后，同目录其它模块在 import 阶段抛错会导致本段 handler 未执行 */
 import './ipc/knowledge';
@@ -21,14 +23,9 @@ import fsSync from 'fs';
 import { fileURLToPath, pathToFileURL } from 'url';
 import fs from 'fs/promises';
 
-process.on('uncaughtException', (error) => {
-  rootLogger.fatal('main uncaughtException', { error: error?.stack || String(error) });
-});
-process.on('unhandledRejection', (reason) => {
-  rootLogger.error('main unhandledRejection', {
-    error: reason instanceof Error ? reason.stack || reason.message : String(reason),
-  });
-});
+const processErrorHandlers = createProcessErrorHandlers(writeLogLine);
+process.on('uncaughtException', processErrorHandlers.onUncaughtException);
+process.on('unhandledRejection', processErrorHandlers.onUnhandledRejection);
 
 import './ipc/model';
 import './ipc/model-service';

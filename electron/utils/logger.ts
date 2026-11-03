@@ -11,6 +11,8 @@
  * 不做（留 v2）：远程上报、Sentry 集成、日志级别远程开关、敏感字段自动脱敏（业务侧负责）
  */
 
+import { createSafeStreamWriter } from './safeStreamWriter';
+
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'fatal';
 
 const LEVEL_RANK: Record<LogLevel, number> = {
@@ -62,9 +64,18 @@ function nowIso(): string {
 function safeStringify(v: unknown): string {
   if (typeof v === 'string') return v;
   try {
-    return JSON.stringify(v);
+    const seen = new WeakSet<object>();
+    return JSON.stringify(v, (_key, value: unknown) => {
+      if (typeof value === 'bigint') return value.toString();
+      if (value && typeof value === 'object') {
+        if (seen.has(value)) return '[Circular]';
+        seen.add(value);
+      }
+      return value;
+    }) ?? 'null';
   } catch {
-    return String(v);
+    // Even user-defined toJSON/toString methods can throw while reporting an error.
+    return '"[Unserializable]"';
   }
 }
 
@@ -96,7 +107,7 @@ export class StructuredLogger implements Logger {
     const line =
       this.dev
         ? `${COLOR[level]}${t} ${level.toUpperCase()} [${this.name}] ${msg}${COLOR.reset}\n${safeStringify(merged)}\n`
-        : JSON.stringify(base) + '\n';
+        : safeStringify(base) + '\n';
     for (const w of this.writers) {
       try {
         w(line);
@@ -150,10 +161,14 @@ export class StructuredLogger implements Logger {
   }
 }
 
-/** 主进程根 logger（默认 stdout，开发态 dev=true；文件落盘在 bootstrap 里 addWriter 接入） */
+// Legacy console.error/warn calls also share stderr. Consume its asynchronous errors
+// before main installs the uncaughtException handler; never report them through stdout.
+createSafeStreamWriter(process.stderr);
+
+/** 主进程根 logger；文件落盘在 bootstrap 里 addWriter 接入。 */
 export const rootLogger: Logger = new StructuredLogger('app', {}, {
-  dev: true,
-  writer: (line) => process.stdout.write(line),
+  dev: process.env.NODE_ENV === 'development',
+  writer: createSafeStreamWriter(process.stdout),
 });
 
 /** 渲染进程根 logger（默认纯 console，主进程统一落盘；IPC 转发见 loggerBootstrap） */

@@ -5,7 +5,7 @@
 import { ipcMain, app } from 'electron';
 import { rootLogger, rendererRootLogger, type LogLevel } from './logger';
 import { getRequestId } from './requestId';
-import { writeLogLine, cleanupOldLogs } from './logFile';
+import { writeLogLine, cleanupOldLogs, LOG_CLEANUP_INTERVAL_MS } from './logFile';
 import { incCounter, listCounters, uptimeSec } from './metrics';
 
 const PKG_VERSION = '0.0.0'; // 实际值在 bootstrap 时由调用方注入
@@ -60,7 +60,11 @@ function registerHealthIpc(version: string): void {
  * 主进程一次性引导：把文件落盘挂入 rootLogger，暴露 IPC。
  * 调用方：electron/main.ts 的 app.whenReady 早期。
  */
+let bootstrapped = false;
+
 export function bootstrapLogging(version: string = PKG_VERSION): void {
+  if (bootstrapped) return;
+  bootstrapped = true;
   /** stdout + 文件双写；rootLogger 已默认 stdout，这里追加文件 */
   rootLogger.addWriter((line) => {
     try {
@@ -74,5 +78,8 @@ export function bootstrapLogging(version: string = PKG_VERSION): void {
 
   registerLoggingIpc();
   registerHealthIpc(version);
+  const cleanupTimer = setInterval(cleanupOldLogs, LOG_CLEANUP_INTERVAL_MS);
+  cleanupTimer.unref();
+  app.once('will-quit', () => clearInterval(cleanupTimer));
   rootLogger.info('logger booted', { version, app: app.getName() });
 }
